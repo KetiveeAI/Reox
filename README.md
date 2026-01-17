@@ -1,79 +1,48 @@
-# REOX Programming Language
+# Reox
 
-A modern, declarative UI framework language for building cross-platform user interfaces.
+**A modern, Swift-like UI programming language that compiles to C for fast performance.**
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Open VSX](https://img.shields.io/badge/Open%20VSX-v1.0.1-green)](https://open-vsx.org/extension/ketiveeai/reox-language)
 
 ## Overview
 
-REOX is a statically-typed, declarative language inspired by SwiftUI, designed for building user interfaces with predictable behavior and system-level performance.
-
-```reox
-fn main() {
-    let app = App("My App")
-    let window = app.create_window("Hello", 800, 600)
-    
-    window.set_root(
-        VStack(16) {
-            Text("Hello, REOX!")
-                .font_size(24)
-            
-            Button("Click Me")
-                .background(color_blue())
-                .on_click(|| println("Clicked!"))
-        }
-    )
-    
-    app.run()
-}
-```
+Reox is a declarative UI framework language designed for building native applications. It combines Swift-like syntax with C-level performance through ahead-of-time compilation.
 
 ## Features
 
-- **Declarative UI** - Component-based model inspired by SwiftUI
-- **Strong Typing** - Static typing with type inference
-- **Zero Dependencies** - Compiles to optimized C code
-- **Cross-Platform** - Works on Linux, macOS, Windows, and NeolyxOS
-- **Transparent & Secure** - Zero telemetry, no hidden runtimes, and open architecture
+- **Swift-like syntax** — clean, expressive, and familiar
+- **Compiles to C** — fast compile times, native performance
+- **Declarative UI** — React/SwiftUI-style component model
+- **Pattern matching** — `match` expressions with exhaustive checking
+- **Bitwise ops** — full support for `&`, `|`, `^`, `<<`, `>>`
+- **Memory safe** — no manual memory management in UI code
+
+## Quick Start
+
+```reox
+fn main() {
+    let app = app_new("Hello");
+    let win = app_create_window(app, "Welcome", 800, 600);
+
+    let btn = button_primary("Click Me");
+    window_set_root(win, btn);
+
+    app_run(app);
+}
+```
 
 ## Installation
 
-### From Source
-
 ```bash
-cd reox
-cargo build --release
+cargo install --path reox-lang
 ```
 
-### Usage
+## Documentation
 
-```bash
-# Compile REOX to C
-reoxc main.reox -o main.c
-
-# Compile to executable
-reoxc main.reox --emit exe -o myapp
-```
-
-## Directory Structure
-
-```
-reox/
-├── src/           # Compiler (Rust)
-│   ├── lexer/     # Tokenizer
-│   ├── parser/    # AST generation
-│   ├── analyzer/  # Type checking
-│   └── codegen/   # C code generation
-├── runtime/       # C runtime library
-├── stdlib/        # Standard library
-├── examples/      # Example programs
-└── tests/         # Test suite
-```
+- [Language Guide](https://reox.ketivee.com)
+- [License](https://reox.ketivee.com/license)
 
 ## License
 
-MIT License - Copyright (c) 2025 KetiveeAI
-
-## Links
-
-- Documentation: https://reox.ketivee.com
-- VS Code Extension: https://open-vsx.org/extension/swanaya/reox-language
-- Organization: https://ketivee.com
+Apache 2.0 — see [LICENSE](LICENSE)
