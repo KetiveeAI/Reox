@@ -1,0 +1,53 @@
+// REOX v1 Integration Test
+// Tests all new Swift/C++ style features
+
+extern fn println(msg: string) -> void;
+extern fn cleanup() -> void;
+extern fn risky_operation() -> void;
+
+fn test_all_features(value: int) -> int {
+    // Defer statement - cleanup runs at function exit
+    defer {
+        cleanup();
+    }
+    
+    // Guard statement - early exit
+    guard value > 0 else {
+        return -1;
+    }
+    
+    // Another defer - runs before first defer (LIFO)
+    defer {
+        println("second cleanup");
+    }
+    
+    // Compound assignment
+    let mut counter: int = 0;
+    counter += 1;
+    counter *= 2;
+    
+    // Pre/post increment
+    let mut i: int = counter;
+    i++;
+    ++i;
+    
+    // Null coalescing
+    let result: int = nil ?? 42;
+    
+    // Optional chaining (simplified)
+    let name: string = "test";
+    
+    // Try/catch
+    try {
+        risky_operation();
+    } catch e {
+        println("error caught");
+    }
+    
+    return counter;
+}
+
+fn main() {
+    let result: int = test_all_features(10);
+    return;
+}

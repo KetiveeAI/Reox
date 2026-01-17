@@ -1,0 +1,14 @@
+# Development files
+node_modules/
+*.log
+.vscode/
+.git/
+bun.lock
+package-lock.json
+
+# Source assets (not needed in package)
+assets/
+
+# Test files
+*.test.js
+*.spec.js

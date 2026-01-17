@@ -1,0 +1,94 @@
+// REOX Gesture Standard Library
+// Native gesture handling for NeolyxOS system UI
+// Gesture handlers compile to plain C callbacks
+
+// === Gesture Event Structures ===
+
+struct Point {
+    x: float,
+    y: float
+}
+
+struct TapEvent {
+    location: Point,
+    tap_count: int
+}
+
+struct PanEvent {
+    location: Point,
+    translation: Point,
+    velocity: Point
+}
+
+struct SwipeEvent {
+    direction: SwipeDirection,
+    velocity: Point
+}
+
+struct PinchEvent {
+    center: Point,
+    scale: float
+}
+
+struct RotateEvent {
+    center: Point,
+    rotation: float
+}
+
+struct LongPressEvent {
+    location: Point,
+    duration: float
+}
+
+struct ScrollEvent {
+    location: Point,
+    delta_x: float,
+    delta_y: float
+}
+
+struct HoverEvent {
+    location: Point,
+    entered: bool
+}
+
+// === Direction Enums ===
+
+kind SwipeDirection {
+    Left,
+    Right,
+    Up,
+    Down
+}
+
+kind Edge {
+    Left,
+    Right,
+    Top,
+    Bottom
+}
+
+// === Gesture Registration ===
+// These compile to plain C callbacks: void __reox_onTap(TapEvent* e) { ... }
+
+extern fn on_tap(view: View, handler: fn(TapEvent) -> void) -> void;
+extern fn on_double_tap(view: View, handler: fn(TapEvent) -> void) -> void;
+extern fn on_long_press(view: View, duration: float, handler: fn(LongPressEvent) -> void) -> void;
+extern fn on_pan(view: View, handler: fn(PanEvent) -> void) -> void;
+extern fn on_swipe(view: View, direction: SwipeDirection, handler: fn(SwipeEvent) -> void) -> void;
+extern fn on_pinch(view: View, handler: fn(PinchEvent) -> void) -> void;
+extern fn on_rotate(view: View, handler: fn(RotateEvent) -> void) -> void;
+extern fn on_scroll(view: View, handler: fn(ScrollEvent) -> void) -> void;
+extern fn on_edge_swipe(view: View, edge: Edge, handler: fn(SwipeEvent) -> void) -> void;
+extern fn on_hover(view: View, handler: fn(HoverEvent) -> void) -> void;
+
+// === Haptic Feedback ===
+// Provides tactile feedback on supported hardware
+
+extern fn haptic_selection() -> void;
+extern fn haptic_impact(intensity: float) -> void;
+extern fn haptic_success() -> void;
+extern fn haptic_warning() -> void;
+extern fn haptic_error() -> void;
+extern fn haptic_light() -> void;
+extern fn haptic_medium() -> void;
+extern fn haptic_heavy() -> void;

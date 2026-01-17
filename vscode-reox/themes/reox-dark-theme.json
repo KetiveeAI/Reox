@@ -1,0 +1,198 @@
+{
+    "name": "REOX Dark",
+    "type": "dark",
+    "colors": {
+        "editor.background": "#1a1b26",
+        "editor.foreground": "#a9b1d6",
+        "editor.lineHighlightBackground": "#24283b",
+        "editor.selectionBackground": "#364a82",
+        "editorCursor.foreground": "#c0caf5",
+        "editorWhitespace.foreground": "#3b4261",
+        "editorIndentGuide.background": "#292e42",
+        "editorIndentGuide.activeBackground": "#3b4261",
+        "sideBar.background": "#16161e",
+        "sideBar.foreground": "#a9b1d6",
+        "activityBar.background": "#16161e",
+        "statusBar.background": "#16161e",
+        "tab.activeBackground": "#1a1b26",
+        "tab.inactiveBackground": "#16161e"
+    },
+    "tokenColors": [
+        {
+            "name": "Comments",
+            "scope": [
+                "comment",
+                "comment.line",
+                "comment.block"
+            ],
+            "settings": {
+                "foreground": "#565f89",
+                "fontStyle": "italic"
+            }
+        },
+        {
+            "name": "Strings",
+            "scope": [
+                "string",
+                "string.quoted"
+            ],
+            "settings": {
+                "foreground": "#9ece6a"
+            }
+        },
+        {
+            "name": "String Interpolation",
+            "scope": "variable.interpolation",
+            "settings": {
+                "foreground": "#7dcfff"
+            }
+        },
+        {
+            "name": "Numbers",
+            "scope": [
+                "constant.numeric"
+            ],
+            "settings": {
+                "foreground": "#ff9e64"
+            }
+        },
+        {
+            "name": "Keywords",
+            "scope": [
+                "keyword.control",
+                "keyword.declaration"
+            ],
+            "settings": {
+                "foreground": "#bb9af7",
+                "fontStyle": "bold"
+            }
+        },
+        {
+            "name": "Modifiers",
+            "scope": "keyword.modifier",
+            "settings": {
+                "foreground": "#f7768e"
+            }
+        },
+        {
+            "name": "Booleans",
+            "scope": "constant.language.boolean",
+            "settings": {
+                "foreground": "#ff9e64"
+            }
+        },
+        {
+            "name": "Null",
+            "scope": "constant.language.null",
+            "settings": {
+                "foreground": "#737aa2"
+            }
+        },
+        {
+            "name": "Primitive Types",
+            "scope": [
+                "storage.type.primitive",
+                "storage.type.sized"
+            ],
+            "settings": {
+                "foreground": "#2ac3de"
+            }
+        },
+        {
+            "name": "Type Names",
+            "scope": "entity.name.type",
+            "settings": {
+                "foreground": "#7aa2f7"
+            }
+        },
+        {
+            "name": "Function Names",
+            "scope": "entity.name.function",
+            "settings": {
+                "foreground": "#7aa2f7"
+            }
+        },
+        {
+            "name": "Builtin Functions",
+            "scope": "support.function.builtin",
+            "settings": {
+                "foreground": "#e0af68"
+            }
+        },
+        {
+            "name": "UI Functions",
+            "scope": "support.function.ui",
+            "settings": {
+                "foreground": "#73daca",
+                "fontStyle": "bold"
+            }
+        },
+        {
+            "name": "Color Functions",
+            "scope": "support.function.color",
+            "settings": {
+                "foreground": "#f7768e"
+            }
+        },
+        {
+            "name": "Animation Functions",
+            "scope": "support.function.animation",
+            "settings": {
+                "foreground": "#bb9af7",
+                "fontStyle": "italic"
+            }
+        },
+        {
+            "name": "View Functions",
+            "scope": "support.function.view",
+            "settings": {
+                "foreground": "#7dcfff"
+            }
+        },
+        {
+            "name": "Text Functions",
+            "scope": "support.function.text",
+            "settings": {
+                "foreground": "#9ece6a"
+            }
+        },
+        {
+            "name": "Attributes",
+            "scope": "entity.name.tag.attribute",
+            "settings": {
+                "foreground": "#ff9e64",
+                "fontStyle": "italic"
+            }
+        },
+        {
+            "name": "Operators",
+            "scope": [
+                "keyword.operator"
+            ],
+            "settings": {
+                "foreground": "#89ddff"
+            }
+        },
+        {
+            "name": "Arrow Operators",
+            "scope": "keyword.operator.arrow",
+            "settings": {
+                "foreground": "#bb9af7"
+            }
+        },
+        {
+            "name": "Punctuation",
+            "scope": "punctuation",
+            "settings": {
+                "foreground": "#a9b1d6"
+            }
+        },
+        {
+            "name": "Variables",
+            "scope": "variable.other",
+            "settings": {
+                "foreground": "#c0caf5"
+            }
+        }
+    ]
+}

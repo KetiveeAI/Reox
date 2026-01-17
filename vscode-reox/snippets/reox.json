@@ -1,0 +1,217 @@
+{
+    "Main Function": {
+        "prefix": "main",
+        "body": [
+            "fn main() -> int {",
+            "\t$0",
+            "\treturn 0;",
+            "}"
+        ],
+        "description": "Main function entry point"
+    },
+    "Function": {
+        "prefix": "fn",
+        "body": [
+            "fn ${1:name}(${2:params}) -> ${3:void} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Function declaration"
+    },
+    "Struct": {
+        "prefix": "struct",
+        "body": [
+            "struct ${1:Name} {",
+            "\t${2:field}: ${3:type}",
+            "}"
+        ],
+        "description": "Struct definition"
+    },
+    "Layer": {
+        "prefix": "layer",
+        "body": [
+            "layer ${1:Name} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "UI Layer component"
+    },
+    "Panel": {
+        "prefix": "panel",
+        "body": [
+            "panel ${1:Name} {",
+            "\ttitle: \"${2:Window Title}\"",
+            "\tsize: (${3:800}, ${4:600})",
+            "\t",
+            "\t$0",
+            "}"
+        ],
+        "description": "Window panel"
+    },
+    "VStack": {
+        "prefix": "vstack",
+        "body": [
+            "vstack(gap: ${1:12}) {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Vertical stack layout"
+    },
+    "HStack": {
+        "prefix": "hstack",
+        "body": [
+            "hstack(gap: ${1:8}) {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Horizontal stack layout"
+    },
+    "Button": {
+        "prefix": "button",
+        "body": [
+            "button(\"${1:Label}\")",
+            "\t.on_click(action { ${2:// handler} })"
+        ],
+        "description": "Button with click handler"
+    },
+    "Text": {
+        "prefix": "text",
+        "body": [
+            "text(\"${1:content}\")",
+            "\t.color(${2:0xFFFFFF})",
+            "\t.size(${3:14})"
+        ],
+        "description": "Text with styling"
+    },
+    "Let Variable": {
+        "prefix": "let",
+        "body": [
+            "let ${1:name}: ${2:type} = ${3:value};"
+        ],
+        "description": "Immutable variable"
+    },
+    "Let Mut": {
+        "prefix": "letm",
+        "body": [
+            "let mut ${1:name}: ${2:type} = ${3:value};"
+        ],
+        "description": "Mutable variable"
+    },
+    "If Statement": {
+        "prefix": "if",
+        "body": [
+            "if ${1:condition} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "If statement"
+    },
+    "If Else": {
+        "prefix": "ife",
+        "body": [
+            "if ${1:condition} {",
+            "\t$2",
+            "} else {",
+            "\t$0",
+            "}"
+        ],
+        "description": "If-else statement"
+    },
+    "While Loop": {
+        "prefix": "while",
+        "body": [
+            "while ${1:condition} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "While loop"
+    },
+    "For Loop": {
+        "prefix": "for",
+        "body": [
+            "for ${1:item} in ${2:collection} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "For loop"
+    },
+    "Match": {
+        "prefix": "match",
+        "body": [
+            "match ${1:value} {",
+            "\twhen ${2:pattern} => ${3:result},",
+            "\t_ => ${0:default}",
+            "}"
+        ],
+        "description": "Match expression"
+    },
+    "Extern Function": {
+        "prefix": "extern",
+        "body": [
+            "extern fn ${1:name}(${2:params}) -> ${3:void};"
+        ],
+        "description": "External function declaration"
+    },
+    "Color RGBA": {
+        "prefix": "rgba",
+        "body": [
+            "color_rgba(${1:255}, ${2:255}, ${3:255}, ${4:255})"
+        ],
+        "description": "RGBA color"
+    },
+    "App Boilerplate": {
+        "prefix": "app",
+        "body": [
+            "// ${1:App Name}",
+            "// REOX Application",
+            "",
+            "extern fn println(s: string) -> void;",
+            "extern fn app_new(name: string) -> App;",
+            "extern fn app_create_window(a: App, title: string, w: int, h: int) -> Window;",
+            "extern fn app_run(a: App) -> void;",
+            "extern fn window_set_root(win: Window, v: View) -> void;",
+            "",
+            "struct App { handle: int }",
+            "struct Window { handle: int }",
+            "struct View { handle: int }",
+            "",
+            "fn main() -> int {",
+            "\tlet app: App = app_new(\"${1:App Name}\");",
+            "\tlet window: Window = app_create_window(app, \"${2:Window Title}\", ${3:800}, ${4:600});",
+            "\t",
+            "\t// Build UI here",
+            "\t$0",
+            "\t",
+            "\tapp_run(app);",
+            "\treturn 0;",
+            "}"
+        ],
+        "description": "Full application boilerplate"
+    },
+    "Card Component": {
+        "prefix": "card",
+        "body": [
+            "let ${1:card}: View = vstack(${2:8.0});",
+            "view_set_background(${1:card}, color_rgba(${3:40}, ${4:42}, ${5:54}, 255));",
+            "view_set_padding(${1:card}, insets_all(${6:16.0}));",
+            "view_set_corner_radius(${1:card}, ${7:12.0});",
+            "view_set_shadow(${1:card}, shadow(0.0, 4.0, 12.0, color_rgba(0, 0, 0, 100)));",
+            "$0"
+        ],
+        "description": "UI card component"
+    },
+    "Animation Fade In": {
+        "prefix": "fadein",
+        "body": [
+            "animate_fade_in(${1:view}, ${2:0.3});"
+        ],
+        "description": "Fade in animation"
+    },
+    "Animation Slide": {
+        "prefix": "slidein",
+        "body": [
+            "animate_slide_in(${1:view}, ${2:0.0}, ${3:-50.0}, ${4:0.4});"
+        ],
+        "description": "Slide in animation"
+    }
+}

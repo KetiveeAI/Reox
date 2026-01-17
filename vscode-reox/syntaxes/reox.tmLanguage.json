@@ -1,0 +1,238 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "REOX",
+    "scopeName": "source.reox",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#numbers"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#types"
+        },
+        {
+            "include": "#functions"
+        },
+        {
+            "include": "#attributes"
+        },
+        {
+            "include": "#operators"
+        },
+        {
+            "include": "#punctuation"
+        },
+        {
+            "include": "#identifiers"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.reox",
+                    "match": "//.*$"
+                },
+                {
+                    "name": "comment.block.reox",
+                    "begin": "/\\*",
+                    "end": "\\*/"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.reox",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.reox",
+                            "match": "\\\\."
+                        },
+                        {
+                            "name": "variable.interpolation.reox",
+                            "match": "\\{[^}]+\\}"
+                        }
+                    ]
+                },
+                {
+                    "name": "string.quoted.single.reox",
+                    "begin": "'",
+                    "end": "'",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.reox",
+                            "match": "\\\\."
+                        }
+                    ]
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.hex.reox",
+                    "match": "\\b0x[0-9a-fA-F]+\\b"
+                },
+                {
+                    "name": "constant.numeric.binary.reox",
+                    "match": "\\b0b[01]+\\b"
+                },
+                {
+                    "name": "constant.numeric.float.reox",
+                    "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b"
+                },
+                {
+                    "name": "constant.numeric.integer.reox",
+                    "match": "\\b[0-9]+\\b"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.reox",
+                    "match": "\\b(if|else|while|for|in|match|when|return|break|continue|loop)\\b"
+                },
+                {
+                    "name": "keyword.declaration.reox",
+                    "match": "\\b(fn|let|struct|kind|layer|panel|action|signal|emit|extern|import|async|await)\\b"
+                },
+                {
+                    "name": "keyword.modifier.reox",
+                    "match": "\\b(mut|pub|const|static)\\b"
+                },
+                {
+                    "name": "constant.language.boolean.reox",
+                    "match": "\\b(true|false)\\b"
+                },
+                {
+                    "name": "constant.language.null.reox",
+                    "match": "\\b(null|none|nil)\\b"
+                },
+                {
+                    "name": "keyword.other.reox",
+                    "match": "\\b(self|super|as|where|maybe)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "storage.type.primitive.reox",
+                    "match": "\\b(int|float|bool|string|void|char|byte)\\b"
+                },
+                {
+                    "name": "storage.type.sized.reox",
+                    "match": "\\b(int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64)\\b"
+                },
+                {
+                    "name": "entity.name.type.reox",
+                    "match": "\\b[A-Z][a-zA-Z0-9]*\\b"
+                }
+            ]
+        },
+        "functions": {
+            "patterns": [
+                {
+                    "name": "entity.name.function.reox",
+                    "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*(?=\\()"
+                },
+                {
+                    "name": "support.function.builtin.reox",
+                    "match": "\\b(print|println|len|type|assert|panic)\\b"
+                },
+                {
+                    "name": "support.function.ui.reox",
+                    "match": "\\b(text|button|input|checkbox|slider|switch|vstack|hstack|zstack|grid|scroll|spacer|divider)\\b"
+                },
+                {
+                    "name": "support.function.color.reox",
+                    "match": "\\b(color_rgba|color_rgb|color_hex|color_hsl|color_lighten|color_darken|color_blend|color_background|color_surface|color_text|color_primary|color_accent)\\b"
+                },
+                {
+                    "name": "support.function.animation.reox",
+                    "match": "\\b(animate_fade_in|animate_fade_out|animate_slide_in|animate_slide_out|animate_scale|animate_rotate|animate_pulse|animate_bounce|animate_shake|animate_color)\\b"
+                },
+                {
+                    "name": "support.function.view.reox",
+                    "match": "\\b(view_set_background|view_set_padding|view_set_corner_radius|view_set_shadow|view_set_border|view_set_opacity|view_add_child|view_set_size|view_set_hidden)\\b"
+                },
+                {
+                    "name": "support.function.text.reox",
+                    "match": "\\b(text_set_font_size|text_set_font_weight|text_set_color|text_set_align)\\b"
+                }
+            ]
+        },
+        "attributes": {
+            "patterns": [
+                {
+                    "name": "entity.name.tag.attribute.reox",
+                    "match": "@[A-Za-z_][A-Za-z0-9_]*"
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.arrow.reox",
+                    "match": "->|=>"
+                },
+                {
+                    "name": "keyword.operator.comparison.reox",
+                    "match": "==|!=|<=|>=|<|>"
+                },
+                {
+                    "name": "keyword.operator.logical.reox",
+                    "match": "&&|\\|\\||!"
+                },
+                {
+                    "name": "keyword.operator.assignment.reox",
+                    "match": "=|\\+=|-=|\\*=|/=|%="
+                },
+                {
+                    "name": "keyword.operator.arithmetic.reox",
+                    "match": "\\+|-|\\*|/|%"
+                },
+                {
+                    "name": "keyword.operator.access.reox",
+                    "match": "\\.|::"
+                },
+                {
+                    "name": "keyword.operator.range.reox",
+                    "match": "\\.\\."
+                }
+            ]
+        },
+        "punctuation": {
+            "patterns": [
+                {
+                    "name": "punctuation.separator.reox",
+                    "match": "[,;:]"
+                },
+                {
+                    "name": "punctuation.bracket.reox",
+                    "match": "[\\[\\]\\(\\)\\{\\}]"
+                }
+            ]
+        },
+        "identifiers": {
+            "patterns": [
+                {
+                    "name": "variable.other.reox",
+                    "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
+                }
+            ]
+        }
+    }
+}

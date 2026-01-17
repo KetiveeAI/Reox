@@ -1,0 +1,272 @@
+// REOX Visual Render Test
+// Tests UI components with actual visual output
+
+extern fn println(s: string) -> void;
+extern fn print(s: string) -> void;
+
+// Color system
+extern fn color_rgba(r: int, g: int, b: int, a: int) -> Color;
+extern fn color_lighten(c: Color, amount: float) -> Color;
+extern fn color_darken(c: Color, amount: float) -> Color;
+extern fn color_blend(a: Color, b: Color, t: float) -> Color;
+
+// Layout
+extern fn vstack(gap: float) -> View;
+extern fn hstack(gap: float) -> View;
+extern fn zstack() -> View;
+
+// Views
+extern fn text_view(text: string) -> View;
+extern fn button_view(label: string) -> View;
+extern fn slider_view(min: float, max: float, value: float) -> View;
+extern fn toggle_view(label: string, on: int) -> View;
+extern fn progress_view(value: float) -> View;
+extern fn divider() -> View;
+extern fn spacer() -> View;
+
+// View modifiers
+extern fn view_set_background(v: View, c: Color) -> void;
+extern fn view_set_padding(v: View, p: EdgeInsets) -> void;
+extern fn view_set_corner_radius(v: View, r: float) -> void;
+extern fn view_set_shadow(v: View, s: Shadow) -> void;
+extern fn view_set_border(v: View, b: Border) -> void;
+extern fn view_set_size(v: View, w: float, h: float) -> void;
+extern fn view_set_opacity(v: View, alpha: float) -> void;
+extern fn view_add_child(parent: View, child: View) -> void;
+
+// Text modifiers
+extern fn text_set_font_size(v: View, size: float) -> void;
+extern fn text_set_color(v: View, c: Color) -> void;
+
+// Geometry helpers
+extern fn insets_all(value: float) -> EdgeInsets;
+extern fn shadow(x: float, y: float, blur: float, c: Color) -> Shadow;
+extern fn border(width: float, c: Color) -> Border;
+
+// App/Window
+extern fn app_new(name: string) -> App;
+extern fn app_create_window(a: App, title: string, w: int, h: int) -> Window;
+extern fn app_run(a: App) -> void;
+extern fn window_set_root(win: Window, v: View) -> void;
+
+// Types
+struct Color { r: int, g: int, b: int, a: int }
+struct EdgeInsets { top: float, right: float, bottom: float, left: float }
+struct Shadow { offset_x: float, offset_y: float, blur: float, color: Color }
+struct Border { width: float, color: Color, style: int }
+struct View { handle: int }
+struct App { handle: int }
+struct Window { handle: int }
+
+// ============================================================================
+// Visual Test Components
+// ============================================================================
+
+fn create_header() -> View {
+    println("");
+    println("=== REOX VISUAL RENDER TEST ===");
+    
+    let header: View = vstack(8.0);
+    let title: View = text_view("REOX Visual Test Suite");
+    text_set_font_size(title, 28.0);
+    text_set_color(title, color_rgba(255, 255, 255, 255));
+    
+    let subtitle: View = text_view("Testing UI Components");
+    text_set_font_size(subtitle, 14.0);
+    text_set_color(subtitle, color_rgba(160, 160, 180, 255));
+    
+    view_add_child(header, title);
+    view_add_child(header, subtitle);
+    view_set_padding(header, insets_all(24.0));
+    view_set_background(header, color_rgba(26, 27, 38, 255));
+    
+    return header;
+}
+
+fn create_card(title: string, content: string) -> View {
+    println("");
+    print("  [Card] ");
+    println(title);
+    
+    let card: View = vstack(12.0);
+    
+    let card_title: View = text_view(title);
+    text_set_font_size(card_title, 18.0);
+    text_set_color(card_title, color_rgba(255, 255, 255, 255));
+    
+    let card_content: View = text_view(content);
+    text_set_font_size(card_content, 14.0);
+    text_set_color(card_content, color_rgba(180, 180, 200, 255));
+    
+    view_add_child(card, card_title);
+    view_add_child(card, card_content);
+    
+    view_set_background(card, color_rgba(40, 42, 54, 255));
+    view_set_padding(card, insets_all(20.0));
+    view_set_corner_radius(card, 12.0);
+    view_set_shadow(card, shadow(0.0, 4.0, 16.0, color_rgba(0, 0, 0, 100)));
+    
+    return card;
+}
+
+fn create_button_row() -> View {
+    println("");
+    println("  [Button Row]");
+    
+    let row: View = hstack(12.0);
+    
+    let btn_primary: View = button_view("Primary");
+    view_set_background(btn_primary, color_rgba(122, 162, 247, 255));
+    view_set_padding(btn_primary, insets_all(12.0));
+    view_set_corner_radius(btn_primary, 8.0);
+    
+    let btn_secondary: View = button_view("Secondary");
+    view_set_background(btn_secondary, color_rgba(86, 95, 137, 255));
+    view_set_padding(btn_secondary, insets_all(12.0));
+    view_set_corner_radius(btn_secondary, 8.0);
+    
+    let btn_danger: View = button_view("Danger");
+    view_set_background(btn_danger, color_rgba(247, 118, 142, 255));
+    view_set_padding(btn_danger, insets_all(12.0));
+    view_set_corner_radius(btn_danger, 8.0);
+    
+    view_add_child(row, btn_primary);
+    view_add_child(row, btn_secondary);
+    view_add_child(row, btn_danger);
+    
+    return row;
+}
+
+fn create_controls_section() -> View {
+    println("");
+    println("  [Controls Section]");
+    
+    let section: View = vstack(16.0);
+    
+    let slider_label: View = text_view("Volume");
+    text_set_color(slider_label, color_rgba(200, 200, 220, 255));
+    let slider: View = slider_view(0.0, 100.0, 75.0);
+    
+    let toggle: View = toggle_view("Dark Mode", 1);
+    
+    let progress_label: View = text_view("Download Progress");
+    text_set_color(progress_label, color_rgba(200, 200, 220, 255));
+    let progress: View = progress_view(0.65);
+    
+    view_add_child(section, slider_label);
+    view_add_child(section, slider);
+    view_add_child(section, divider());
+    view_add_child(section, toggle);
+    view_add_child(section, divider());
+    view_add_child(section, progress_label);
+    view_add_child(section, progress);
+    
+    view_set_background(section, color_rgba(30, 32, 44, 255));
+    view_set_padding(section, insets_all(20.0));
+    view_set_corner_radius(section, 12.0);
+    
+    return section;
+}
+
+fn create_color_palette() -> View {
+    println("");
+    println("  [Color Palette]");
+    
+    let palette: View = hstack(8.0);
+    
+    // Tokyo Night colors as RGBA
+    let c1: View = spacer();
+    view_set_size(c1, 40.0, 40.0);
+    view_set_background(c1, color_rgba(247, 118, 142, 255));
+    view_set_corner_radius(c1, 8.0);
+    
+    let c2: View = spacer();
+    view_set_size(c2, 40.0, 40.0);
+    view_set_background(c2, color_rgba(255, 158, 100, 255));
+    view_set_corner_radius(c2, 8.0);
+    
+    let c3: View = spacer();
+    view_set_size(c3, 40.0, 40.0);
+    view_set_background(c3, color_rgba(224, 175, 104, 255));
+    view_set_corner_radius(c3, 8.0);
+    
+    let c4: View = spacer();
+    view_set_size(c4, 40.0, 40.0);
+    view_set_background(c4, color_rgba(158, 206, 106, 255));
+    view_set_corner_radius(c4, 8.0);
+    
+    let c5: View = spacer();
+    view_set_size(c5, 40.0, 40.0);
+    view_set_background(c5, color_rgba(122, 162, 247, 255));
+    view_set_corner_radius(c5, 8.0);
+    
+    let c6: View = spacer();
+    view_set_size(c6, 40.0, 40.0);
+    view_set_background(c6, color_rgba(187, 154, 247, 255));
+    view_set_corner_radius(c6, 8.0);
+    
+    view_add_child(palette, c1);
+    view_add_child(palette, c2);
+    view_add_child(palette, c3);
+    view_add_child(palette, c4);
+    view_add_child(palette, c5);
+    view_add_child(palette, c6);
+    
+    return palette;
+}
+
+fn main() -> int {
+    println("========================================");
+    println("  REOX Visual Render Test - Starting");
+    println("========================================");
+    
+    let app: App = app_new("REOX Visual Test");
+    let window: Window = app_create_window(app, "Visual Render Test", 800, 600);
+    
+    let main: View = vstack(24.0);
+    view_set_background(main, color_rgba(26, 27, 38, 255));
+    view_set_padding(main, insets_all(32.0));
+    
+    let header: View = create_header();
+    view_add_child(main, header);
+    
+    let content: View = hstack(24.0);
+    
+    let left_col: View = vstack(16.0);
+    let card1: View = create_card("UI Components", "Testing vstack, hstack, buttons, and text");
+    let card2: View = create_card("Color System", "RGBA, blend, lighten, darken");
+    view_add_child(left_col, card1);
+    view_add_child(left_col, card2);
+    
+    let right_col: View = vstack(16.0);
+    let controls: View = create_controls_section();
+    let palette: View = create_color_palette();
+    view_add_child(right_col, controls);
+    view_add_child(right_col, palette);
+    
+    view_add_child(content, left_col);
+    view_add_child(content, right_col);
+    view_add_child(main, content);
+    
+    let buttons: View = create_button_row();
+    view_add_child(main, buttons);
+    
+    window_set_root(window, main);
+    
+    println("");
+    println("========================================");
+    println("  Visual Render Test Complete");
+    println("========================================");
+    println("");
+    println("Components rendered:");
+    println("  - Header with title/subtitle");
+    println("  - 2 styled cards");
+    println("  - Controls (slider, toggle, progress)");
+    println("  - Color palette (6 swatches)");
+    println("  - 3 styled buttons");
+    println("");
+    
+    app_run(app);
+    
+    return 0;
+}

@@ -1,0 +1,73 @@
+{
+    "name": "reox-language",
+    "displayName": "REOX Programming Language",
+    "description": "Syntax highlighting, snippets, and theme for REOX - the modern UI framework language for NeolyxOS",
+    "version": "1.0.1",
+    "publisher": "ketiveeai",
+    "author": "ketiveeai",
+    "license": "MIT",
+    "homepage": "https://reox.ketivee.com",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/ketiveeai/reox"
+    },
+    "bugs": {
+        "url": "https://github.com/ketiveeai/reox/issues"
+    },
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Themes",
+        "Snippets"
+    ],
+    "keywords": [
+        "reox",
+        "neolyxos",
+        "ui framework",
+        "declarative ui",
+        "systems programming",
+        "ketivee"
+    ],
+    "icon": "icon.png",
+    "galleryBanner": {
+        "color": "#0E1A1F",
+        "theme": "dark"
+    },
+    "contributes": {
+        "languages": [
+            {
+                "id": "reox",
+                "aliases": [
+                    "REOX",
+                    "reox"
+                ],
+                "extensions": [
+                    ".reox"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "reox",
+                "scopeName": "source.reox",
+                "path": "./syntaxes/reox.tmLanguage.json"
+            }
+        ],
+        "themes": [
+            {
+                "label": "REOX Dark",
+                "uiTheme": "vs-dark",
+                "path": "./themes/reox-dark-theme.json"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "reox",
+                "path": "./snippets/reox.json"
+            }
+        ]
+    }
+}
