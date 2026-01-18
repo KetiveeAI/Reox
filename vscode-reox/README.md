@@ -1,7 +1,7 @@
 # REOX Programming Language
 
 <p align="center">
-  <img src="https://reox.ketivee.com/reox-icon.png" width="128" alt="REOX Language Icon" />
+  <img src="https://raw.githubusercontent.com/ketiveeai/reox/main/vscode-reox/icon.png" width="128" alt="REOX Language Icon" />
 </p>
 
 <p align="center">
@@ -11,10 +11,10 @@
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=ketiveeai.reox-language">
-    <img src="https://img.shields.io/badge/VS%20Marketplace-v1.0.2-blue?style=flat-square&logo=visual-studio-code" alt="VS Marketplace" />
+    <img src="https://img.shields.io/badge/VS%20Marketplace-v1.0.4-blue?style=flat-square&logo=visual-studio-code" alt="VS Marketplace" />
   </a>
   <a href="https://open-vsx.org/extension/ketiveeai/reox-language">
-    <img src="https://img.shields.io/badge/Open%20VSX-v1.0.2-purple?style=flat-square&logo=eclipse" alt="Open VSX" />
+    <img src="https://img.shields.io/badge/Open%20VSX-v1.0.4-purple?style=flat-square&logo=eclipse" alt="Open VSX" />
   </a>
   <a href="https://reox.ketivee.com">
     <img src="https://img.shields.io/badge/docs-online-green?style=flat-square" alt="Documentation" />
@@ -142,7 +142,7 @@ Available on [Open VSX Registry](https://open-vsx.org/extension/ketiveeai/reox-l
 Download the `.vsix` release and run:
 
 ```bash
-code --install-extension reox-language-1.0.2.vsix
+code --install-extension reox-language-1.0.4.vsix
 ```
 
 ---

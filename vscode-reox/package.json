@@ -2,10 +2,10 @@
     "name": "reox-language",
     "displayName": "REOX Programming Language",
     "description": "Syntax highlighting, snippets, and theme for REOX - the modern UI framework language for NeolyxOS",
-    "version": "1.0.2",
+    "version": "1.0.4",
     "publisher": "ketiveeai",
     "author": "ketiveeai",
-    "license": "MIT",
+    "license": "Apache-2.0",
     "homepage": "https://reox.ketivee.com",
     "repository": {
         "type": "git",
@@ -15,7 +15,16 @@
         "url": "https://github.com/ketiveeai/reox/issues"
     },
     "engines": {
-        "vscode": "^1.60.0"
+        "vscode": "^1.108.0"
+    },
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onLanguage:reox"
+    ],
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./"
     },
     "categories": [
         "Programming Languages",
@@ -46,7 +55,11 @@
                 "extensions": [
                     ".reox"
                 ],
-                "configuration": "./language-configuration.json"
+                "configuration": "./language-configuration.json",
+                "icon": {
+                    "light": "./icon.png",
+                    "dark": "./icon.png"
+                }
             }
         ],
         "grammars": [
@@ -69,5 +82,10 @@
                 "path": "./snippets/reox.json"
             }
         ]
+    },
+    "devDependencies": {
+        "@types/node": "^25.0.9",
+        "@types/vscode": "^1.108.1",
+        "typescript": "^5.9.3"
     }
 }

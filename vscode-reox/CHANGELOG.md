@@ -2,6 +2,20 @@
 
 All notable changes to the REOX Language extension.
 
+## [1.0.4] - 2026-01-18
+
+### Added
+
+- **IntelliSense**: Basic code completion and hover support for keywords, types, and built-ins.
+- **File Icon**: Added official Reox icon for `.reox` files in VS Code explorer.
+
+## [1.0.3] - 2026-01-18
+
+### Fixed
+
+- Updated license to Apache 2.0 to match language core
+- Fixed overview icon visibility on Open VSX Registry
+
 ## [1.0.2] - 2026-01-18
 
 ### Added
