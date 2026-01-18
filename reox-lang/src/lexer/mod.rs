@@ -2,6 +2,8 @@
 // Transforms source text into tokens
 // Zero external dependencies
 
+#![allow(unused_assignments)]
+
 mod token;
 
 pub use token::{Token, TokenKind, Span};

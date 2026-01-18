@@ -1,6 +1,8 @@
 // REOX Compiler - AST Node Definitions
 // Abstract Syntax Tree for REOX language
 
+#![allow(dead_code)]
+
 use crate::lexer::Span;
 
 /// A complete program (list of declarations)

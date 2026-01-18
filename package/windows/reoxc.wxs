@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  REOX Compiler Windows Installer (WiX Manifest)
+  Build with: wix build reoxc.wxs -o reoxc.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="REOX Compiler" 
+           Manufacturer="KetiveeAI"
+           Version="0.5.0" 
+           UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
+           Scope="perMachine">
+    
+    <MajorUpgrade DowngradeErrorMessage="A newer version of REOX Compiler is already installed." />
+    
+    <Media Id="1" Cabinet="reoxc.cab" EmbedCab="yes" />
+    
+    <!-- Installation directory -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Reox">
+        <Directory Id="BinFolder" Name="bin" />
+        <Directory Id="RuntimeFolder" Name="runtime">
+          <Directory Id="IncludeFolder" Name="include" />
+          <Directory Id="LibFolder" Name="lib" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    
+    <!-- Main feature -->
+    <Feature Id="Complete" Title="REOX Compiler" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="PathEnvVar" />
+      <ComponentRef Id="FileAssoc" />
+    </Feature>
+    
+    <!-- Components -->
+    <ComponentGroup Id="ProductComponents" Directory="BinFolder">
+      <Component Id="ReoxcExe">
+        <File Id="reoxc.exe" Source="$(var.SourceDir)\reoxc.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    
+    <!-- Add to PATH -->
+    <Component Id="PathEnvVar" Directory="BinFolder">
+      <Environment Id="PATH" Name="PATH" Value="[BinFolder]" 
+                   Action="set" Part="last" Permanent="no" System="yes" />
+    </Component>
+    
+    <!-- File associations -->
+    <Component Id="FileAssoc" Directory="BinFolder">
+      <RegistryValue Root="HKLM" Key="Software\Classes\.rx" 
+                     Value="ReoxSourceFile" Type="string" />
+      <RegistryValue Root="HKLM" Key="Software\Classes\.reox" 
+                     Value="ReoxSourceFile" Type="string" />
+      <RegistryValue Root="HKLM" Key="Software\Classes\ReoxSourceFile" 
+                     Value="REOX Source File" Type="string" />
+      <RegistryValue Root="HKLM" 
+                     Key="Software\Classes\ReoxSourceFile\DefaultIcon" 
+                     Value="[BinFolder]reoxc.exe,0" Type="string" />
+    </Component>
+    
+    <!-- Custom UI -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.SourceDir)\license.rtf" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.SourceDir)\banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.SourceDir)\dialog.bmp" />
+    
+    <UIRef Id="WixUI_InstallDir" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    
+  </Package>
+</Wix>

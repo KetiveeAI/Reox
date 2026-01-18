@@ -2,6 +2,8 @@
 // Validates types and builds symbol table
 // Zero external dependencies
 
+#![allow(dead_code, unused_imports, unused_variables)]
+
 mod types;
 
 pub use types::*;

@@ -1,0 +1,234 @@
+// ============================================================================
+// REOX Standard Library - NXRender Integration
+// Direct access to NeolyxOS native rendering engine
+// 
+// Copyright (c) 2025-2026 KetiveeAI
+// 
+// Usage:
+//   import nxrender;
+//   
+//   let win = nx_window_create("My App", 100, 100, 800, 600);
+//   let btn = nx_button_create("Click Me");
+//   nx_window_set_root(win, btn);
+//   nx_window_show(win);
+//   nx_event_loop_run();
+// ============================================================================
+
+// ============================================================================
+// NXGFX: Low-Level Graphics Primitives
+// ============================================================================
+
+/// Clear screen with color (0xRRGGBB)
+extern fn nxgfx_clear(color: int) -> void;
+
+/// Fill rectangle with color
+extern fn nxgfx_fill_rect(x: int, y: int, w: int, h: int, color: int) -> void;
+
+/// Draw rectangle outline
+extern fn nxgfx_draw_rect(x: int, y: int, w: int, h: int, color: int) -> void;
+
+/// Fill rounded rectangle
+extern fn nxgfx_fill_rounded_rect(x: int, y: int, w: int, h: int, radius: int, color: int) -> void;
+
+/// Draw line from (x1,y1) to (x2,y2)
+extern fn nxgfx_draw_line(x1: int, y1: int, x2: int, y2: int, color: int) -> void;
+
+/// Fill circle centered at (cx,cy) with radius r
+extern fn nxgfx_fill_circle(cx: int, cy: int, r: int, color: int) -> void;
+
+/// Draw circle outline
+extern fn nxgfx_draw_circle(cx: int, cy: int, r: int, color: int) -> void;
+
+/// Draw text at position
+extern fn nxgfx_draw_text(x: int, y: int, text: string, color: int) -> void;
+
+/// Draw text with font size
+extern fn nxgfx_draw_text_sized(x: int, y: int, text: string, size: int, color: int) -> void;
+
+/// Fill gradient (vertical)
+extern fn nxgfx_fill_gradient_v(x: int, y: int, w: int, h: int, color_top: int, color_bottom: int) -> void;
+
+/// Fill gradient (horizontal)
+extern fn nxgfx_fill_gradient_h(x: int, y: int, w: int, h: int, color_left: int, color_right: int) -> void;
+
+/// Present framebuffer (swap buffers)
+extern fn nxgfx_present() -> void;
+
+/// Set clipping rectangle
+extern fn nxgfx_set_clip(x: int, y: int, w: int, h: int) -> void;
+
+/// Clear clipping rectangle
+extern fn nxgfx_clear_clip() -> void;
+
+// ============================================================================
+// NX Window Manager
+// ============================================================================
+
+/// Create a new window
+/// Returns window handle (>0) or -1 on error
+extern fn nx_window_create(title: string, x: int, y: int, w: int, h: int) -> int;
+
+/// Destroy window
+extern fn nx_window_destroy(handle: int) -> void;
+
+/// Set window title
+extern fn nx_window_set_title(handle: int, title: string) -> void;
+
+/// Show window
+extern fn nx_window_show(handle: int) -> void;
+
+/// Hide window
+extern fn nx_window_hide(handle: int) -> void;
+
+/// Move window
+extern fn nx_window_move(handle: int, x: int, y: int) -> void;
+
+/// Resize window
+extern fn nx_window_resize(handle: int, w: int, h: int) -> void;
+
+/// Center window on screen
+extern fn nx_window_center(handle: int) -> void;
+
+/// Set window as fullscreen
+extern fn nx_window_fullscreen(handle: int, fullscreen: bool) -> void;
+
+/// Set window resizable
+extern fn nx_window_set_resizable(handle: int, resizable: bool) -> void;
+
+/// Get window width
+extern fn nx_window_width(handle: int) -> int;
+
+/// Get window height
+extern fn nx_window_height(handle: int) -> int;
+
+// ============================================================================
+// NX Widgets
+// ============================================================================
+
+/// Create button widget
+extern fn nx_button_create(label: string) -> int;
+
+/// Create label widget
+extern fn nx_label_create(text: string) -> int;
+
+/// Create text field widget
+extern fn nx_textfield_create(placeholder: string) -> int;
+
+/// Create slider widget
+extern fn nx_slider_create(min_val: float, max_val: float, value: float) -> int;
+
+/// Create checkbox widget
+extern fn nx_checkbox_create(label: string, checked: bool) -> int;
+
+/// Create container widget
+extern fn nx_container_create() -> int;
+
+/// Create horizontal stack layout
+extern fn nx_hstack_create(gap: int) -> int;
+
+/// Create vertical stack layout
+extern fn nx_vstack_create(gap: int) -> int;
+
+/// Create scroll view
+extern fn nx_scrollview_create() -> int;
+
+/// Create list view
+extern fn nx_listview_create() -> int;
+
+/// Create tab view
+extern fn nx_tabview_create() -> int;
+
+// ============================================================================
+// NX Widget Tree
+// ============================================================================
+
+/// Add child widget to parent
+extern fn nx_widget_add_child(parent: int, child: int) -> void;
+
+/// Remove child widget from parent
+extern fn nx_widget_remove_child(parent: int, child: int) -> void;
+
+/// Set widget bounds
+extern fn nx_widget_set_bounds(handle: int, x: int, y: int, w: int, h: int) -> void;
+
+/// Set widget visibility
+extern fn nx_widget_set_visible(handle: int, visible: bool) -> void;
+
+/// Set widget enabled state
+extern fn nx_widget_set_enabled(handle: int, enabled: bool) -> void;
+
+/// Set window's root widget
+extern fn nx_window_set_root(window: int, widget: int) -> void;
+
+// ============================================================================
+// NX Widget Properties
+// ============================================================================
+
+/// Set button label
+extern fn nx_button_set_label(handle: int, label: string) -> void;
+
+/// Set button click callback ID
+extern fn nx_button_on_click(handle: int, callback_id: int) -> void;
+
+/// Set label text
+extern fn nx_label_set_text(handle: int, text: string) -> void;
+
+/// Set text field value
+extern fn nx_textfield_set_value(handle: int, value: string) -> void;
+
+/// Get text field value
+extern fn nx_textfield_get_value(handle: int) -> string;
+
+/// Set slider value
+extern fn nx_slider_set_value(handle: int, value: float) -> void;
+
+/// Get slider value
+extern fn nx_slider_get_value(handle: int) -> float;
+
+/// Set checkbox checked state
+extern fn nx_checkbox_set_checked(handle: int, checked: bool) -> void;
+
+/// Get checkbox checked state
+extern fn nx_checkbox_get_checked(handle: int) -> bool;
+
+// ============================================================================
+// NX Event Loop
+// ============================================================================
+
+/// Run the event loop (blocking)
+extern fn nx_event_loop_run() -> void;
+
+/// Quit the event loop
+extern fn nx_event_loop_quit() -> void;
+
+/// Process single event (non-blocking)
+extern fn nx_event_poll() -> bool;
+
+/// Wait for event with timeout
+extern fn nx_event_wait(timeout_ms: int) -> bool;
+
+// ============================================================================
+// NX Theme
+// ============================================================================
+
+/// Set current theme (0=dark, 1=light)
+extern fn nx_theme_set(theme: int) -> void;
+
+/// Get current theme
+extern fn nx_theme_get() -> int;
+
+/// Set accent color
+extern fn nx_theme_set_accent(color: int) -> void;
+
+// ============================================================================
+// NX Screen Info
+// ============================================================================
+
+/// Get screen width
+extern fn nx_screen_width() -> int;
+
+/// Get screen height
+extern fn nx_screen_height() -> int;
+
+/// Get screen scale factor
+extern fn nx_screen_scale() -> float;

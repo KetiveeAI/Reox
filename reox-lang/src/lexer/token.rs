@@ -1,6 +1,8 @@
 // REOX Compiler - Token Definitions
 // Zero external dependencies
 
+#![allow(dead_code)]
+
 /// Source location for error reporting
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {

@@ -1,0 +1,17 @@
+// AI Communication Test
+
+fn main() {
+    print("Initialize Reox AI Runtime...");
+    print("Contacting Gemini API...");
+
+    // User provided API Key
+    let key = "AIzaSyBJqyEeQU-Y8je-D1k3sTgoR_TOk7iVClE";
+    
+    // prompt, model, key
+    // Using gemini-2.0-flash-lite for speed/reliability
+    let response = ai_generate("gemini-2.0-flash-lite", "Explain Reox programming language in 20 words like a pirate.", key);
+
+    print("--- AI Response ---");
+    print(response);
+    print("-------------------");
+}

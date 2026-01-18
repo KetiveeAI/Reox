@@ -2,6 +2,8 @@
 // Self-built, zero external dependencies
 // Supports full compilation pipeline with LTO
 
+#![allow(dead_code, unused_imports)]
+
 use std::env;
 use std::process::Command;
 use std::path::Path;
@@ -16,6 +18,7 @@ pub struct Args {
     pub strip: bool,
     pub verbose: bool,
     pub runtime_path: Option<String>,
+    pub run: bool,
 }
 
 /// Output type
@@ -76,6 +79,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut strip = false;
     let mut verbose = false;
     let mut runtime_path: Option<String> = None;
+    let mut run = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -115,13 +119,18 @@ pub fn parse_args() -> Result<Args, String> {
                 }
                 runtime_path = Some(args[i].clone());
             }
+            "--run" | "-r" => run = true,
             "-v" | "--verbose" => verbose = true,
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("reoxc 0.1.0");
+                println!("reoxc {} ({} {})", 
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                );
                 std::process::exit(0);
             }
             _ => {
@@ -157,6 +166,7 @@ pub fn parse_args() -> Result<Args, String> {
         strip,
         verbose,
         runtime_path,
+        run,
     })
 }
 
@@ -182,6 +192,7 @@ pub fn print_usage() {
     println!();
     println!("  Other:");
     println!("    --runtime <PATH>       Path to runtime library");
+    println!("    --run, -r              Run immediately (interpreter mode)");
     println!("    -v, --verbose          Verbose output");
     println!("    -h, --help             Print help information");
     println!("    -V, --version          Print version information");

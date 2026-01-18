@@ -1,0 +1,184 @@
+# Reox Language - Cross-Platform Release Workflow
+# Builds and packages reoxc for Windows, macOS, and Linux
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g., 0.5.0-beta)"
+        required: true
+        default: "0.5.0-beta"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux (x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build static binary
+        working-directory: reox-lang
+        run: |
+          RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target x86_64-unknown-linux-musl
+          mkdir -p ../dist
+          cp target/x86_64-unknown-linux-musl/release/reoxc ../dist/reoxc-linux-x64
+          chmod +x ../dist/reoxc-linux-x64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reoxc-linux-x64
+          path: dist/reoxc-linux-x64
+
+  build-windows:
+    name: Build Windows (x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build Windows binary
+        working-directory: reox-lang
+        run: |
+          cargo build --release --target x86_64-pc-windows-gnu
+          mkdir -p ../dist
+          cp target/x86_64-pc-windows-gnu/release/reoxc.exe ../dist/reoxc-windows-x64.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reoxc-windows-x64
+          path: dist/reoxc-windows-x64.exe
+
+  build-macos:
+    name: Build macOS (Universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Build Universal Binary
+        working-directory: reox-lang
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          mkdir -p ../dist
+          lipo -create \
+            target/x86_64-apple-darwin/release/reoxc \
+            target/aarch64-apple-darwin/release/reoxc \
+            -output ../dist/reoxc-macos-universal
+          chmod +x ../dist/reoxc-macos-universal
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reoxc-macos-universal
+          path: dist/reoxc-macos-universal
+
+  package-deb:
+    name: Package Debian
+    runs-on: ubuntu-latest
+    needs: build-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: reoxc-linux-x64
+          path: dist/
+
+      - name: Build .deb package
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          mkdir -p deb/reoxc_${VERSION}_amd64/DEBIAN
+          mkdir -p deb/reoxc_${VERSION}_amd64/usr/bin
+          mkdir -p deb/reoxc_${VERSION}_amd64/usr/share/doc/reoxc
+
+          cp dist/reoxc-linux-x64 deb/reoxc_${VERSION}_amd64/usr/bin/reoxc
+          chmod +x deb/reoxc_${VERSION}_amd64/usr/bin/reoxc
+
+          cat > deb/reoxc_${VERSION}_amd64/DEBIAN/control << EOF
+          Package: reoxc
+          Version: ${VERSION}
+          Section: devel
+          Priority: optional
+          Architecture: amd64
+          Maintainer: KetiveeAI <dev@ketivee.com>
+          Description: REOX Language Compiler
+           reoxc is the compiler for the REOX programming language,
+           designed for building native UI applications on NeolyxOS
+           and other platforms.
+          Homepage: https://reox.lang
+          EOF
+
+          cp LICENSE deb/reoxc_${VERSION}_amd64/usr/share/doc/reoxc/copyright
+
+          dpkg-deb --build deb/reoxc_${VERSION}_amd64
+          mv deb/*.deb dist/reoxc_${VERSION}_amd64.deb
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: reoxc-deb
+          path: dist/*.deb
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-windows, build-macos, package-deb]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          cp artifacts/reoxc-linux-x64/reoxc-linux-x64 release/
+          cp artifacts/reoxc-windows-x64/reoxc-windows-x64.exe release/
+          cp artifacts/reoxc-macos-universal/reoxc-macos-universal release/
+          cp artifacts/reoxc-deb/*.deb release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          draft: false
+          prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
+          generate_release_notes: true

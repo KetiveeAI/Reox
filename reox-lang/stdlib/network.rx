@@ -1,0 +1,140 @@
+// ============================================================================
+// REOX Standard Library - Network Module
+// TCP/UDP/HTTP primitives for system-level network programming
+// 
+// Copyright (c) 2025-2026 KetiveeAI
+// ============================================================================
+
+// ============================================================================
+// TCP: Client
+// ============================================================================
+
+/// Create a TCP connection to host:port
+/// Returns socket handle (>0) or -1 on error
+extern fn tcp_connect(host: string, port: int) -> int;
+
+/// Send data over TCP socket
+/// Returns number of bytes sent, or -1 on error
+extern fn tcp_send(socket: int, data: string) -> int;
+
+/// Receive data from TCP socket
+/// Returns received data, or empty string on error/disconnect
+extern fn tcp_recv(socket: int, max_bytes: int) -> string;
+
+/// Close TCP socket
+extern fn tcp_close(socket: int) -> void;
+
+/// Check if socket is connected
+extern fn tcp_is_connected(socket: int) -> bool;
+
+// ============================================================================
+// TCP: Server
+// ============================================================================
+
+/// Create a TCP server listening on port
+/// Returns server handle (>0) or -1 on error
+extern fn tcp_listen(port: int) -> int;
+
+/// Accept incoming connection on server
+/// Returns client socket handle, blocks until connection
+extern fn tcp_accept(server: int) -> int;
+
+/// Accept with timeout (milliseconds)
+/// Returns client socket, or -1 on timeout
+extern fn tcp_accept_timeout(server: int, timeout_ms: int) -> int;
+
+/// Close TCP server
+extern fn tcp_server_close(server: int) -> void;
+
+// ============================================================================
+// UDP: Datagram Sockets
+// ============================================================================
+
+/// Create UDP socket
+/// Returns socket handle (>0) or -1 on error
+extern fn udp_socket() -> int;
+
+/// Bind UDP socket to local port
+extern fn udp_bind(socket: int, port: int) -> bool;
+
+/// Send UDP datagram to host:port
+/// Returns bytes sent, or -1 on error
+extern fn udp_send_to(socket: int, host: string, port: int, data: string) -> int;
+
+/// Receive UDP datagram
+/// Returns data and sets sender info (use udp_last_sender_* to get)
+extern fn udp_recv_from(socket: int, max_bytes: int) -> string;
+
+/// Get last UDP sender's IP address
+extern fn udp_last_sender_ip() -> string;
+
+/// Get last UDP sender's port
+extern fn udp_last_sender_port() -> int;
+
+/// Close UDP socket
+extern fn udp_close(socket: int) -> void;
+
+// ============================================================================
+// HTTP: High-Level Client
+// ============================================================================
+
+/// HTTP GET request
+/// Returns response body as string
+extern fn http_get(url: string) -> string;
+
+/// HTTP POST request with body
+extern fn http_post(url: string, body: string, content_type: string) -> string;
+
+/// HTTP PUT request with body
+extern fn http_put(url: string, body: string, content_type: string) -> string;
+
+/// HTTP DELETE request
+extern fn http_delete(url: string) -> string;
+
+/// HTTP PATCH request
+extern fn http_patch(url: string, body: string, content_type: string) -> string;
+
+/// Get response status code from last HTTP request
+extern fn http_last_status() -> int;
+
+/// Get response header from last HTTP request
+extern fn http_last_header(name: string) -> string;
+
+/// Set custom header for next request
+extern fn http_set_header(name: string, value: string) -> void;
+
+/// Clear custom headers
+extern fn http_clear_headers() -> void;
+
+/// Set request timeout in milliseconds
+extern fn http_set_timeout(ms: int) -> void;
+
+// ============================================================================
+// DNS: Name Resolution
+// ============================================================================
+
+/// Resolve hostname to IP address
+/// Returns IP as string (e.g., "192.168.1.1") or empty on failure
+extern fn dns_resolve(hostname: string) -> string;
+
+/// Resolve hostname to all IP addresses
+extern fn dns_resolve_all(hostname: string) -> Array;
+
+/// Reverse DNS lookup (IP to hostname)
+extern fn dns_reverse(ip: string) -> string;
+
+// ============================================================================
+// Network Info
+// ============================================================================
+
+/// Get local machine's IP address
+extern fn net_local_ip() -> string;
+
+/// Get list of network interfaces
+extern fn net_interfaces() -> Array;
+
+/// Check if network is available
+extern fn net_is_available() -> bool;
+
+/// Get hostname of local machine
+extern fn net_hostname() -> string;

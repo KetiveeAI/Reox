@@ -1,0 +1,19 @@
+Package: reoxc
+Version: 0.5.0-beta
+Section: devel
+Priority: optional
+Architecture: amd64
+Maintainer: KetiveeAI <dev@ketivee.com>
+Depends: libc6 (>= 2.17)
+Suggests: gcc, clang
+Description: REOX Language Compiler
+ reoxc is the compiler for the REOX programming language,
+ designed for building native UI applications on NeolyxOS
+ and other platforms.
+ .
+ Features:
+  - Compile .reox/.rx source to C code
+  - Built-in interpreter for rapid development
+  - Native UI framework support
+  - Cross-platform runtime library
+Homepage: https://reox.lang

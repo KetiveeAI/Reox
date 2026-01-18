@@ -1,6 +1,8 @@
 // REOX Profiler - Instrumentation
 // Code generation for profiling hooks
 
+#![allow(dead_code, unused_imports)]
+
 use crate::parser::{Ast, Decl, FnDecl};
 
 /// Instrumentation mode

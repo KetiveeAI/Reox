@@ -1,0 +1,46 @@
+// Reox Container and Color Test
+
+fn main() {
+    print("=== Reox Container Test ===");
+    
+    // Array operations
+    let arr = [1, 2, 3];
+    print("Original array:");
+    print(arr);
+    
+    let arr2 = push(arr, 4);
+    print("After push(4):");
+    print(arr2);
+    
+    print("Length:");
+    print(len(arr2));
+    
+    // Map operations
+    print("=== Map Test ===");
+    let m = map_new();
+    let m = map_set(m, "name", "Reox");
+    let m = map_set(m, "version", "0.1");
+    print("Map:");
+    print(m);
+    
+    let name = map_get(m, "name");
+    print("map_get(name):");
+    print(name);
+    
+    // Color management
+    print("=== Color Test ===");
+    
+    let red = rgba(255, 0, 0, 255);
+    print("RGBA Red:");
+    print(red);
+    
+    let green = rgb(0, 255, 0);
+    print("RGB Green:");
+    print(green);
+    
+    let blue = hex("#0000FF");
+    print("Hex Blue:");
+    print(blue);
+    
+    print("=== All Tests Passed ===");
+}

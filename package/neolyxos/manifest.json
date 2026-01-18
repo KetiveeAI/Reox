@@ -1,0 +1,67 @@
+{
+    "name": "reoxc",
+    "version": "0.5.0-beta",
+    "description": "REOX Language Compiler for NeolyxOS",
+    "type": "app",
+    "category": "developer",
+    "author": {
+        "name": "KetiveeAI",
+        "email": "dev@ketivee.com",
+        "url": "https://ketivee.com"
+    },
+    "license": "Proprietary",
+    "homepage": "https://reox.lang",
+    "repository": "https://github.com/KetiveeAI/reox",
+    
+    "install": {
+        "path": "/Applications/Developer/Reox.app",
+        "binaries": [
+            {
+                "source": "bin/reoxc",
+                "target": "/System/bin/reoxc",
+                "permissions": 755
+            }
+        ],
+        "symlinks": [
+            {
+                "source": "/System/bin/reoxc",
+                "target": "/System/bin/reox"
+            }
+        ]
+    },
+    
+    "contents": {
+        "bin/": {
+            "reoxc": "The REOX compiler binary"
+        },
+        "runtime/": {
+            "include/": "Runtime header files",
+            "lib/": "Static libraries"
+        },
+        "resources/": {
+            "icon.nxi": "Application icon"
+        }
+    },
+    
+    "fileAssociations": [
+        {
+            "extension": ".rx",
+            "mimeType": "text/x-reox",
+            "description": "REOX Source File",
+            "role": "Editor"
+        },
+        {
+            "extension": ".reox",
+            "mimeType": "text/x-reox", 
+            "description": "REOX Source File",
+            "role": "Editor"
+        }
+    ],
+    
+    "dependencies": {
+        "nxrender": ">=1.0.0"
+    },
+    
+    "minOSVersion": "1.0",
+    "architectures": ["x86_64", "aarch64"]
+}

@@ -1,0 +1,234 @@
+// ============================================================================
+// REOX Standard Library - System Module
+// File I/O, Process Control, and Environment APIs
+// 
+// Copyright (c) 2025-2026 KetiveeAI
+// ============================================================================
+
+// ============================================================================
+// FILE: Read Operations
+// ============================================================================
+
+/// Read entire file contents as string
+/// Returns empty string on error
+extern fn file_read(path: string) -> string;
+
+/// Read file as bytes (raw binary)
+extern fn file_read_bytes(path: string) -> Array;
+
+/// Read file line by line
+extern fn file_read_lines(path: string) -> Array;
+
+/// Check if file exists
+extern fn file_exists(path: string) -> bool;
+
+/// Get file size in bytes (-1 if not found)
+extern fn file_size(path: string) -> int;
+
+/// Check if path is a directory
+extern fn file_is_dir(path: string) -> bool;
+
+/// Check if path is a regular file
+extern fn file_is_file(path: string) -> bool;
+
+// ============================================================================
+// FILE: Write Operations
+// ============================================================================
+
+/// Write string to file (overwrites existing)
+/// Returns true on success
+extern fn file_write(path: string, content: string) -> bool;
+
+/// Write bytes to file
+extern fn file_write_bytes(path: string, data: Array) -> bool;
+
+/// Append string to file
+extern fn file_append(path: string, content: string) -> bool;
+
+/// Delete file
+extern fn file_delete(path: string) -> bool;
+
+/// Rename/move file
+extern fn file_rename(old_path: string, new_path: string) -> bool;
+
+/// Copy file
+extern fn file_copy(src: string, dst: string) -> bool;
+
+// ============================================================================
+// DIRECTORY: Operations
+// ============================================================================
+
+/// List directory contents
+/// Returns array of filenames
+extern fn dir_list(path: string) -> Array;
+
+/// Create directory
+extern fn dir_create(path: string) -> bool;
+
+/// Create directory and all parents
+extern fn dir_create_all(path: string) -> bool;
+
+/// Delete directory (must be empty)
+extern fn dir_delete(path: string) -> bool;
+
+/// Delete directory and all contents
+extern fn dir_delete_all(path: string) -> bool;
+
+/// Get current working directory
+extern fn dir_current() -> string;
+
+/// Change current directory
+extern fn dir_change(path: string) -> bool;
+
+/// Get home directory
+extern fn dir_home() -> string;
+
+/// Get temp directory
+extern fn dir_temp() -> string;
+
+// ============================================================================
+// PATH: Utilities
+// ============================================================================
+
+/// Join path components
+extern fn path_join(base: string, child: string) -> string;
+
+/// Get filename from path
+extern fn path_filename(path: string) -> string;
+
+/// Get directory from path
+extern fn path_dirname(path: string) -> string;
+
+/// Get file extension
+extern fn path_extension(path: string) -> string;
+
+/// Get absolute path
+extern fn path_absolute(path: string) -> string;
+
+/// Normalize path (resolve . and ..)
+extern fn path_normalize(path: string) -> string;
+
+// ============================================================================
+// PROCESS: Control
+// ============================================================================
+
+/// Spawn a new process
+/// Returns process ID (>0) or -1 on error
+extern fn process_spawn(command: string) -> int;
+
+/// Spawn process with arguments
+extern fn process_spawn_args(program: string, args: Array) -> int;
+
+/// Wait for process to complete
+/// Returns exit code
+extern fn process_wait(pid: int) -> int;
+
+/// Check if process is running
+extern fn process_is_running(pid: int) -> bool;
+
+/// Kill process
+extern fn process_kill(pid: int) -> void;
+
+/// Get current process ID
+extern fn process_getpid() -> int;
+
+/// Get parent process ID
+extern fn process_getppid() -> int;
+
+/// Execute command and get output
+extern fn process_exec(command: string) -> string;
+
+// ============================================================================
+// ENVIRONMENT: Variables
+// ============================================================================
+
+/// Get environment variable
+/// Returns empty string if not set
+extern fn env_get(name: string) -> string;
+
+/// Set environment variable
+extern fn env_set(name: string, value: string) -> void;
+
+/// Unset environment variable
+extern fn env_unset(name: string) -> void;
+
+/// Check if environment variable exists
+extern fn env_has(name: string) -> bool;
+
+/// Get all environment variables as Map
+extern fn env_all() -> Map;
+
+/// Get command line arguments
+extern fn env_args() -> Array;
+
+/// Get program name (argv[0])
+extern fn env_program() -> string;
+
+// ============================================================================
+// TIME: Functions
+// ============================================================================
+
+/// Get current Unix timestamp (seconds since epoch)
+extern fn time_now() -> int;
+
+/// Get current time in milliseconds
+extern fn time_millis() -> int;
+
+/// Get current time in microseconds
+extern fn time_micros() -> int;
+
+/// Sleep for specified milliseconds
+extern fn time_sleep(ms: int) -> void;
+
+/// Sleep for specified microseconds
+extern fn time_sleep_micros(us: int) -> void;
+
+/// Get formatted time string
+extern fn time_format(timestamp: int, format: string) -> string;
+
+/// Get year from timestamp
+extern fn time_year(timestamp: int) -> int;
+
+/// Get month from timestamp (1-12)
+extern fn time_month(timestamp: int) -> int;
+
+/// Get day from timestamp (1-31)
+extern fn time_day(timestamp: int) -> int;
+
+/// Get hour from timestamp (0-23)
+extern fn time_hour(timestamp: int) -> int;
+
+/// Get minute from timestamp (0-59)
+extern fn time_minute(timestamp: int) -> int;
+
+/// Get second from timestamp (0-59)
+extern fn time_second(timestamp: int) -> int;
+
+// ============================================================================
+// RANDOM: Number Generation
+// ============================================================================
+
+/// Get random integer in range [min, max]
+extern fn random_int(min_val: int, max_val: int) -> int;
+
+/// Get random float in range [0.0, 1.0)
+extern fn random_float() -> float;
+
+/// Seed random number generator
+extern fn random_seed(seed: int) -> void;
+
+// ============================================================================
+// CRYPTO: Basic Hashing
+// ============================================================================
+
+/// SHA256 hash of string
+extern fn sha256(data: string) -> string;
+
+/// MD5 hash of string
+extern fn md5(data: string) -> string;
+
+/// Base64 encode
+extern fn base64_encode(data: string) -> string;
+
+/// Base64 decode
+extern fn base64_decode(data: string) -> string;

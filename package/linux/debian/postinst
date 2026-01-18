@@ -1,0 +1,17 @@
+#!/bin/bash
+# Post-installation script for reoxc
+
+set -e
+
+# Update shell completions cache if available
+if command -v update-alternatives &> /dev/null; then
+    update-alternatives --install /usr/bin/reox reox /usr/bin/reoxc 100 || true
+fi
+
+# Create symbolic link for short command
+if [ ! -e /usr/bin/reox ]; then
+    ln -sf /usr/bin/reoxc /usr/bin/reox
+fi
+
+echo "REOX compiler installed successfully!"
+echo "Run 'reoxc --help' for usage information."

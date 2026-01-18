@@ -7,6 +7,7 @@ pub mod typechecker;
 pub mod codegen;
 pub mod profiler;
 pub mod interpreter;
+pub mod stdlib;
 
 // Re-export main types for convenience
 pub use lexer::{Token, TokenKind, Span, tokenize, LexError};

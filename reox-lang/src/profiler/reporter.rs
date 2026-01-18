@@ -1,6 +1,8 @@
 // REOX Profiler - Report Generation
 // Formats profiling data for display
 
+#![allow(dead_code, unused_imports)]
+
 use super::{ProfilingSummary, FunctionStats, OutputFormat};
 use std::fmt::Write;
 

@@ -1,11 +1,15 @@
 // REOX Compiler - Main Entry Point
 // Zero external dependencies
 
+#![allow(unused_imports)]
+
 mod lexer;
 mod parser;
 mod typechecker;
 mod codegen;
 mod cli;
+mod interpreter;
+mod stdlib;
 
 use std::env;
 use std::process;
@@ -15,7 +19,12 @@ fn main() {
 
     match args {
         Ok(args) => {
-            if let Err(e) = compile(&args) {
+            if args.run {
+                if let Err(e) = run(&args) {
+                    eprintln!("{}", e);
+                    process::exit(1);
+                }
+            } else if let Err(e) = compile(&args) {
                 eprintln!("{}", e);
                 process::exit(1);
             }
@@ -27,6 +36,26 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+fn run(args: &cli::Args) -> Result<(), String> {
+    // Read source file
+    let source = std::fs::read_to_string(&args.input)
+        .map_err(|e| format!("failed to read '{}': {}", args.input, e))?;
+
+    // Lexical analysis
+    let tokens = lexer::tokenize(&source)
+        .map_err(|e| e.display())?;
+
+    // Parse
+    let ast = parser::parse(&tokens);
+
+    // Run interpreter
+    if let Err(e) = interpreter::eval(&ast) {
+        return Err(format!("runtime error: {}", e.message));
+    }
+
+    Ok(())
 }
 
 fn compile(args: &cli::Args) -> Result<(), String> {

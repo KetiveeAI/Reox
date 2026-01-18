@@ -1,0 +1,46 @@
+// REOX System API Test
+// Tests file I/O, time, and network functions
+
+fn main() -> int {
+    // Test time functions
+    let now: int = time_now();
+    print(now);
+    
+    let ms: int = time_millis();
+    print(ms);
+    
+    // Test file I/O
+    let test_file: string = "/tmp/reox_test.txt";
+    let content: string = "Hello from Reox!";
+    
+    let write_ok: bool = file_write(test_file, content);
+    print(write_ok);
+    
+    let exists: bool = file_exists(test_file);
+    print(exists);
+    
+    let size: int = file_size(test_file);
+    print(size);
+    
+    let read_content: string = file_read(test_file);
+    print(read_content);
+    
+    // Cleanup
+    let deleted: bool = file_delete(test_file);
+    print(deleted);
+    
+    // Test environment
+    let home: string = env_get("HOME");
+    print(home);
+    
+    // Test process exec
+    let output: string = process_exec("echo Hello");
+    print(output);
+    
+    // Test random
+    let rand: int = random_int(1, 100);
+    print(rand);
+    
+    print("System tests done");
+    return 0;
+}
