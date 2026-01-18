@@ -1,0 +1,322 @@
+// ============================================================================
+// REOX Standard Library - Transitions & Animations
+// Native animation system for NeolyxOS UI
+// 
+// Copyright (c) 2025-2026 KetiveeAI
+// 
+// Usage:
+//   import transition;
+//   
+//   let t = transition_ease_out(300);
+//   view_animate_opacity(myButton, 1.0, t);
+// ============================================================================
+
+// ============================================================================
+// TRANSITION TYPES
+// ============================================================================
+
+struct Transition { 
+    id: int,
+    duration_ms: int,
+    easing: int
+}
+
+/*
+ * EASING TYPES:
+ * 0 = linear
+ * 1 = ease (default)
+ * 2 = ease-in
+ * 3 = ease-out
+ * 4 = ease-in-out
+ * 5 = spring
+ * 6 = bounce
+ * 7 = elastic
+ */
+
+/// Linear transition (constant speed)
+extern fn transition_linear(duration_ms: int) -> Transition;
+
+/// Standard ease (default for most animations)
+extern fn transition_ease(duration_ms: int) -> Transition;
+
+/// Ease in (slow start, fast end)
+extern fn transition_ease_in(duration_ms: int) -> Transition;
+
+/// Ease out (fast start, slow end)
+extern fn transition_ease_out(duration_ms: int) -> Transition;
+
+/// Ease in-out (slow start and end)
+extern fn transition_ease_in_out(duration_ms: int) -> Transition;
+
+/// Bounce effect (overshoots and settles)
+extern fn transition_bounce(duration_ms: int) -> Transition;
+
+/// Elastic effect (overshoots with oscillation)
+extern fn transition_elastic(duration_ms: int) -> Transition;
+
+/// Spring physics animation
+/// stiffness: 100-500 typical (higher = snappier)
+/// damping: 10-30 typical (higher = less bounce)
+extern fn transition_spring(stiffness: float, damping: float) -> Transition;
+
+/// Custom cubic bezier curve
+/// x1,y1 = first control point
+/// x2,y2 = second control point
+extern fn transition_cubic_bezier(x1: float, y1: float, x2: float, y2: float, duration_ms: int) -> Transition;
+
+// ============================================================================
+// VIEW ANIMATIONS
+// ============================================================================
+
+/// Animate any numeric property
+extern fn view_animate(v: View, property: string, to: float, t: Transition) -> void;
+
+/// Animate multiple properties at once
+extern fn view_animate_multi(v: View, properties: string, values: string, t: Transition) -> void;
+
+// Convenience functions for common animations
+
+/// Animate opacity (0.0 = invisible, 1.0 = fully visible)
+extern fn view_animate_opacity(v: View, to: float, t: Transition) -> void;
+
+/// Fade in (opacity 0 -> 1)
+extern fn view_fade_in(v: View, t: Transition) -> void;
+
+/// Fade out (opacity 1 -> 0)
+extern fn view_fade_out(v: View, t: Transition) -> void;
+
+/// Animate scale uniformly
+extern fn view_animate_scale(v: View, to: float, t: Transition) -> void;
+
+/// Animate scale X and Y separately
+extern fn view_animate_scale_xy(v: View, x: float, y: float, t: Transition) -> void;
+
+/// Scale in from 0 (pop effect)
+extern fn view_scale_in(v: View, t: Transition) -> void;
+
+/// Scale out to 0
+extern fn view_scale_out(v: View, t: Transition) -> void;
+
+/// Animate position (relative to current)
+extern fn view_animate_position(v: View, x: float, y: float, t: Transition) -> void;
+
+/// Animate position to absolute coordinates
+extern fn view_animate_position_to(v: View, x: float, y: float, t: Transition) -> void;
+
+/// Slide in from direction (0=left, 1=right, 2=top, 3=bottom)
+extern fn view_slide_in(v: View, direction: int, t: Transition) -> void;
+
+/// Slide out to direction
+extern fn view_slide_out(v: View, direction: int, t: Transition) -> void;
+
+/// Animate rotation in degrees
+extern fn view_animate_rotation(v: View, degrees: float, t: Transition) -> void;
+
+/// Spin animation (continuous rotation)
+extern fn view_spin(v: View, duration_ms: int, clockwise: bool) -> void;
+
+/// Animate width
+extern fn view_animate_width(v: View, to: float, t: Transition) -> void;
+
+/// Animate height
+extern fn view_animate_height(v: View, to: float, t: Transition) -> void;
+
+/// Animate size (width and height)
+extern fn view_animate_size(v: View, w: float, h: float, t: Transition) -> void;
+
+/// Animate background color
+extern fn view_animate_background(v: View, to: Color, t: Transition) -> void;
+
+/// Animate corner radius
+extern fn view_animate_corner_radius(v: View, to: float, t: Transition) -> void;
+
+// ============================================================================
+// KEYFRAME ANIMATIONS
+// ============================================================================
+
+struct Animation {
+    id: int,
+    duration_ms: int,
+    loop_count: int
+}
+
+/// Create new keyframe animation
+extern fn keyframe_animation() -> Animation;
+
+/// Add keyframe at time (0.0 = start, 1.0 = end)
+extern fn animation_add_keyframe(a: Animation, time: float, property: string, value: float) -> void;
+
+/// Add keyframe with color value
+extern fn animation_add_keyframe_color(a: Animation, time: float, property: string, c: Color) -> void;
+
+/// Set total duration
+extern fn animation_set_duration(a: Animation, ms: int) -> void;
+
+/// Set loop count (-1 = infinite, 0 = no loop, n = loop n times)
+extern fn animation_set_loop(a: Animation, count: int) -> void;
+
+/// Set direction (0 = normal, 1 = reverse, 2 = alternate)
+extern fn animation_set_direction(a: Animation, direction: int) -> void;
+
+/// Set delay before starting
+extern fn animation_set_delay(a: Animation, ms: int) -> void;
+
+/// Play animation on view
+extern fn animation_play(a: Animation, v: View) -> void;
+
+/// Pause animation
+extern fn animation_pause(a: Animation) -> void;
+
+/// Resume paused animation
+extern fn animation_resume(a: Animation) -> void;
+
+/// Stop and reset animation
+extern fn animation_stop(a: Animation) -> void;
+
+/// Check if animation is playing
+extern fn animation_is_playing(a: Animation) -> bool;
+
+/// Set callback when animation completes
+extern fn animation_on_complete(a: Animation, callback_id: int) -> void;
+
+// ============================================================================
+// ANIMATION GROUPS & SEQUENCES
+// ============================================================================
+
+struct AnimationGroup { id: int }
+
+/// Create animation group (plays animations together)
+extern fn animation_group() -> AnimationGroup;
+
+/// Add animation to group
+extern fn animation_group_add(g: AnimationGroup, a: Animation) -> void;
+
+/// Play all animations in group simultaneously
+extern fn animation_group_play(g: AnimationGroup, v: View) -> void;
+
+struct AnimationSequence { id: int }
+
+/// Create animation sequence (plays animations one after another)
+extern fn animation_sequence() -> AnimationSequence;
+
+/// Add animation to sequence
+extern fn animation_sequence_add(s: AnimationSequence, a: Animation) -> void;
+
+/// Add delay between animations
+extern fn animation_sequence_delay(s: AnimationSequence, ms: int) -> void;
+
+/// Play sequence
+extern fn animation_sequence_play(s: AnimationSequence, v: View) -> void;
+
+// ============================================================================
+// PRESET ANIMATIONS
+// ============================================================================
+
+/*
+ * PRESET ANIMATIONS:
+ * Ready-to-use animations for common UI effects
+ */
+
+/// Pulse effect (scale up and down)
+extern fn preset_pulse(v: View, duration_ms: int) -> void;
+
+/// Shake effect (horizontal wiggle)
+extern fn preset_shake(v: View, intensity: float) -> void;
+
+/// Bounce effect (scale bounce)
+extern fn preset_bounce(v: View) -> void;
+
+/// Wobble effect (rotation wobble)
+extern fn preset_wobble(v: View) -> void;
+
+/// Heartbeat effect (double pulse)
+extern fn preset_heartbeat(v: View) -> void;
+
+/// Flash effect (opacity flash)
+extern fn preset_flash(v: View, count: int) -> void;
+
+/// Rubber band effect (stretch and snap)
+extern fn preset_rubber_band(v: View) -> void;
+
+/// Jello effect (skew wobble)
+extern fn preset_jello(v: View) -> void;
+
+/// Attention pulse (subtle scale for button attention)
+extern fn preset_attention(v: View) -> void;
+
+// ============================================================================
+// ENTER/EXIT TRANSITIONS
+// ============================================================================
+
+/*
+ * PAGE/VIEW TRANSITIONS:
+ * Use for view/page enter and exit animations
+ */
+
+/// Fade enter (for appearing views)
+extern fn enter_fade(v: View, duration_ms: int) -> void;
+
+/// Slide enter from left
+extern fn enter_slide_left(v: View, duration_ms: int) -> void;
+
+/// Slide enter from right
+extern fn enter_slide_right(v: View, duration_ms: int) -> void;
+
+/// Slide enter from top
+extern fn enter_slide_top(v: View, duration_ms: int) -> void;
+
+/// Slide enter from bottom
+extern fn enter_slide_bottom(v: View, duration_ms: int) -> void;
+
+/// Zoom enter (scale from 0)
+extern fn enter_zoom(v: View, duration_ms: int) -> void;
+
+/// Flip enter (3D flip)
+extern fn enter_flip(v: View, duration_ms: int) -> void;
+
+/// Exit fade
+extern fn exit_fade(v: View, duration_ms: int) -> void;
+
+/// Exit slide left
+extern fn exit_slide_left(v: View, duration_ms: int) -> void;
+
+/// Exit slide right
+extern fn exit_slide_right(v: View, duration_ms: int) -> void;
+
+/// Exit zoom (scale to 0)
+extern fn exit_zoom(v: View, duration_ms: int) -> void;
+
+// ============================================================================
+// MOTION PATH
+// ============================================================================
+
+struct MotionPath { id: int }
+
+/// Create motion path for complex animations
+extern fn motion_path_new() -> MotionPath;
+
+/// Add point to path
+extern fn motion_path_add_point(p: MotionPath, x: float, y: float) -> void;
+
+/// Add bezier curve to path
+extern fn motion_path_add_curve(p: MotionPath, cx1: float, cy1: float, cx2: float, cy2: float, x: float, y: float) -> void;
+
+/// Animate view along path
+extern fn view_animate_along_path(v: View, p: MotionPath, t: Transition) -> void;
+
+// ============================================================================
+// STAGGER ANIMATIONS
+// ============================================================================
+
+/// Apply staggered animation to list of views
+/// delay_between: milliseconds between each view starting
+extern fn stagger_animate(views: Array, property: string, to: float, t: Transition, delay_between: int) -> void;
+
+/// Stagger fade in for list items
+extern fn stagger_fade_in(views: Array, duration_ms: int, delay_between: int) -> void;
+
+/// Stagger scale in for list items
+extern fn stagger_scale_in(views: Array, duration_ms: int, delay_between: int) -> void;
+
+/// Stagger slide in from direction
+extern fn stagger_slide_in(views: Array, direction: int, duration_ms: int, delay_between: int) -> void;

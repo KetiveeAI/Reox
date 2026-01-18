@@ -10,22 +10,19 @@ mod codegen;
 mod cli;
 mod interpreter;
 mod stdlib;
+mod templates;
 
 use std::env;
 use std::process;
+use std::path::Path;
 
 fn main() {
-    let args = cli::parse_args();
+    let result = cli::parse_cli();
 
-    match args {
-        Ok(args) => {
-            if args.run {
-                if let Err(e) = run(&args) {
-                    eprintln!("{}", e);
-                    process::exit(1);
-                }
-            } else if let Err(e) = compile(&args) {
-                eprintln!("{}", e);
+    match result {
+        Ok(cmd) => {
+            if let Err(e) = handle_command(cmd) {
+                eprintln!("error: {}", e);
                 process::exit(1);
             }
         }
@@ -36,6 +33,98 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+fn handle_command(cmd: cli::CliCommand) -> Result<(), String> {
+    match cmd {
+        cli::CliCommand::Compile(args) => {
+            if args.run {
+                run(&args)
+            } else {
+                compile(&args)
+            }
+        }
+        cli::CliCommand::Init { template, name } => {
+            init_project(&template, name.as_deref())
+        }
+        cli::CliCommand::New { name, template } => {
+            new_project(&name, &template)
+        }
+        cli::CliCommand::Help => {
+            cli::print_usage();
+            Ok(())
+        }
+        cli::CliCommand::Version => {
+            println!("reoxc {} ({} {})", 
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+            Ok(())
+        }
+    }
+}
+
+fn init_project(template_name: &str, name: Option<&str>) -> Result<(), String> {
+    let template = templates::Template::from_str(template_name)
+        .ok_or_else(|| format!(
+            "unknown template: '{}'. Available: {:?}",
+            template_name,
+            templates::Template::list()
+        ))?;
+    
+    let project_name = name.unwrap_or_else(|| {
+        // Use current directory name
+        std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "MyApp".to_string())
+            .leak()
+    });
+    
+    let config = templates::ProjectConfig::new(project_name);
+    let base_path = std::env::current_dir()
+        .map_err(|e| format!("failed to get current directory: {}", e))?;
+    
+    templates::create_project(template, &config, &base_path)?;
+    
+    println!("✓ Created {} project: {}", template_name, project_name);
+    println!();
+    println!("  Next steps:");
+    println!("    cd {}.app", project_name);
+    println!("    make");
+    println!("    make run");
+    
+    Ok(())
+}
+
+fn new_project(name: &str, template_name: &str) -> Result<(), String> {
+    let template = templates::Template::from_str(template_name)
+        .ok_or_else(|| format!(
+            "unknown template: '{}'. Available: {:?}",
+            template_name,
+            templates::Template::list()
+        ))?;
+    
+    let config = templates::ProjectConfig::new(name);
+    let base_path = std::env::current_dir()
+        .map_err(|e| format!("failed to get current directory: {}", e))?;
+    
+    templates::create_project(template, &config, &base_path)?;
+    
+    let project_dir = match template {
+        templates::Template::NeolyxApp => format!("{}.app", name),
+        _ => name.to_string(),
+    };
+    
+    println!("✓ Created {} project: {}", template_name, name);
+    println!();
+    println!("  Next steps:");
+    println!("    cd {}", project_dir);
+    println!("    make");
+    println!("    make run");
+    
+    Ok(())
 }
 
 fn run(args: &cli::Args) -> Result<(), String> {

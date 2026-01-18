@@ -1,6 +1,6 @@
 // REOX Compiler - CLI Argument Parser
 // Self-built, zero external dependencies
-// Supports full compilation pipeline with LTO
+// Supports full compilation pipeline with LTO + Project Templates
 
 #![allow(dead_code, unused_imports)]
 
@@ -8,7 +8,18 @@ use std::env;
 use std::process::Command;
 use std::path::Path;
 
+/// CLI Command
+#[derive(Debug, Clone)]
+pub enum CliCommand {
+    Compile(Args),
+    Init { template: String, name: Option<String> },
+    New { name: String, template: String },
+    Help,
+    Version,
+}
+
 /// Compiler arguments
+#[derive(Debug, Clone)]
 pub struct Args {
     pub input: String,
     pub output: Option<String>,
@@ -64,13 +75,92 @@ impl Default for OptLevel {
 }
 
 /// Parse command line arguments
-pub fn parse_args() -> Result<Args, String> {
+pub fn parse_cli() -> Result<CliCommand, String> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        return Err("no input file specified".to_string());
+        return Ok(CliCommand::Help);
     }
 
+    // Check for subcommands first
+    match args[1].as_str() {
+        "init" => return parse_init(&args[2..]),
+        "new" => return parse_new(&args[2..]),
+        "help" | "--help" | "-h" => return Ok(CliCommand::Help),
+        "version" | "--version" | "-V" => return Ok(CliCommand::Version),
+        _ => {}
+    }
+
+    // Fall through to compile command
+    parse_compile_args(&args[1..]).map(CliCommand::Compile)
+}
+
+fn parse_init(args: &[String]) -> Result<CliCommand, String> {
+    let mut template = "neolyx-app".to_string();
+    let mut name: Option<String> = None;
+    
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-t" | "--template" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("expected template name after --template".to_string());
+                }
+                template = args[i].clone();
+            }
+            "--help" | "-h" => {
+                print_init_help();
+                std::process::exit(0);
+            }
+            _ => {
+                if !args[i].starts_with('-') && name.is_none() {
+                    name = Some(args[i].clone());
+                }
+            }
+        }
+        i += 1;
+    }
+    
+    Ok(CliCommand::Init { template, name })
+}
+
+fn parse_new(args: &[String]) -> Result<CliCommand, String> {
+    if args.is_empty() {
+        return Err("project name required. Usage: reoxc new <name> [--template <type>]".to_string());
+    }
+    
+    let mut template = "neolyx-app".to_string();
+    let mut name: Option<String> = None;
+    
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-t" | "--template" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("expected template name after --template".to_string());
+                }
+                template = args[i].clone();
+            }
+            "--help" | "-h" => {
+                print_new_help();
+                std::process::exit(0);
+            }
+            _ => {
+                if !args[i].starts_with('-') && name.is_none() {
+                    name = Some(args[i].clone());
+                }
+            }
+        }
+        i += 1;
+    }
+    
+    let name = name.ok_or("project name required")?;
+    Ok(CliCommand::New { name, template })
+}
+
+fn parse_compile_args(args: &[String]) -> Result<Args, String> {
     let mut input: Option<String> = None;
     let mut output: Option<String> = None;
     let mut emit = EmitType::C;
@@ -81,7 +171,7 @@ pub fn parse_args() -> Result<Args, String> {
     let mut runtime_path: Option<String> = None;
     let mut run = false;
 
-    let mut i = 1;
+    let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
 
@@ -170,14 +260,83 @@ pub fn parse_args() -> Result<Args, String> {
     })
 }
 
+/// Legacy function for backwards compatibility
+pub fn parse_args() -> Result<Args, String> {
+    match parse_cli()? {
+        CliCommand::Compile(args) => Ok(args),
+        CliCommand::Help => {
+            print_usage();
+            std::process::exit(0);
+        }
+        CliCommand::Version => {
+            println!("reoxc {} ({} {})", 
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+            std::process::exit(0);
+        }
+        _ => Err("use parse_cli() for init/new commands".to_string()),
+    }
+}
+
+fn print_init_help() {
+    println!("reoxc init - Initialize a new Reox project");
+    println!();
+    println!("USAGE:");
+    println!("    reoxc init [OPTIONS] [NAME]");
+    println!();
+    println!("OPTIONS:");
+    println!("    -t, --template <TYPE>  Project template (default: neolyx-app)");
+    println!("    -h, --help             Show this help");
+    println!();
+    println!("TEMPLATES:");
+    println!("    neolyx-app    NeolyxOS GUI application (default)");
+    println!("    cli           Command-line tool");
+    println!("    library       Reusable library");
+    println!();
+    println!("EXAMPLES:");
+    println!("    reoxc init                           # Create neolyx-app in current dir");
+    println!("    reoxc init MyApp                     # Create MyApp.app");
+    println!("    reoxc init --template cli MyCLI      # Create CLI project");
+}
+
+fn print_new_help() {
+    println!("reoxc new - Create a new named Reox project");
+    println!();
+    println!("USAGE:");
+    println!("    reoxc new <NAME> [OPTIONS]");
+    println!();
+    println!("OPTIONS:");
+    println!("    -t, --template <TYPE>  Project template (default: neolyx-app)");
+    println!("    -h, --help             Show this help");
+    println!();
+    println!("TEMPLATES:");
+    println!("    neolyx-app    NeolyxOS GUI application (default)");
+    println!("    cli           Command-line tool");
+    println!("    library       Reusable library");
+    println!();
+    println!("EXAMPLES:");
+    println!("    reoxc new MyApp                      # Create MyApp.app");
+    println!("    reoxc new MyCLI --template cli       # Create CLI project");
+    println!("    reoxc new MyLib --template library   # Create library project");
+}
+
 /// Print usage information
 pub fn print_usage() {
     println!("reoxc - REOX Language Compiler for NeolyxOS");
     println!();
     println!("USAGE:");
+    println!("    reoxc <COMMAND>");
     println!("    reoxc [OPTIONS] <INPUT>");
     println!();
-    println!("OPTIONS:");
+    println!("COMMANDS:");
+    println!("    init          Initialize a new project in current directory");
+    println!("    new <name>    Create a new named project");
+    println!("    help          Show this help message");
+    println!("    version       Show version information");
+    println!();
+    println!("COMPILE OPTIONS:");
     println!("    -o, --output <FILE>    Output file path");
     println!("    --emit <TYPE>          Output type: c, obj, exe (default: c)");
     println!();
@@ -198,8 +357,10 @@ pub fn print_usage() {
     println!("    -V, --version          Print version information");
     println!();
     println!("EXAMPLES:");
+    println!("    reoxc new MyApp                      Create NeolyxOS app project");
+    println!("    reoxc init --template cli            Initialize CLI project");
     println!("    reoxc main.rx -o main.c              Generate C code");
-    println!("    reoxc app.reox --emit exe -o app     Compile .reox to executable");
+    println!("    reoxc app.reox --emit exe -o app     Compile to executable");
     println!("    reoxc main.rx --emit exe -O3 --lto   Full optimization");
     println!();
     println!("FILE EXTENSIONS:");
