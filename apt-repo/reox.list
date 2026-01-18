@@ -1,0 +1,4 @@
+# Reox APT Repository
+# Add to /etc/apt/sources.list.d/reox.list
+
+deb [signed-by=/usr/share/keyrings/reox.gpg] https://apt.reox.dev stable main

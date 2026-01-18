@@ -1,0 +1,101 @@
+# GitHub Actions workflow to publish APT repository to GitHub Pages
+# Triggered after releases are created
+
+name: Publish APT Repository
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release .deb
+        run: |
+          VERSION="${{ github.event.release.tag_name || 'v0.5.0-beta' }}"
+          VERSION="${VERSION#v}"
+
+          mkdir -p apt-repo/pool/main
+
+          # Download from release
+          curl -fsSL "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/reoxc_${VERSION}_amd64.deb" \
+            -o "apt-repo/pool/main/reoxc_${VERSION}_amd64.deb" || echo "Deb not found in release"
+
+      - name: Install dpkg-dev
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev
+
+      - name: Generate repository metadata
+        run: |
+          cd apt-repo
+
+          # Generate Packages
+          mkdir -p dists/stable/main/binary-amd64
+          dpkg-scanpackages --arch amd64 pool/ > dists/stable/main/binary-amd64/Packages
+          gzip -kf dists/stable/main/binary-amd64/Packages
+
+          # Generate Release
+          cat > dists/stable/Release << EOF
+          Origin: Reox
+          Label: Reox
+          Suite: stable
+          Codename: stable
+          Version: 1.0
+          Architectures: amd64
+          Components: main
+          Description: Reox Language APT Repository
+          Date: $(date -Ru)
+          EOF
+
+          # Add checksums
+          echo "MD5Sum:" >> dists/stable/Release
+          for f in main/binary-amd64/Packages main/binary-amd64/Packages.gz; do
+            if [ -f "dists/stable/$f" ]; then
+              HASH=$(md5sum "dists/stable/$f" | cut -d' ' -f1)
+              SIZE=$(wc -c < "dists/stable/$f")
+              echo " $HASH $SIZE $f" >> dists/stable/Release
+            fi
+          done
+
+          echo "SHA256:" >> dists/stable/Release
+          for f in main/binary-amd64/Packages main/binary-amd64/Packages.gz; do
+            if [ -f "dists/stable/$f" ]; then
+              HASH=$(sha256sum "dists/stable/$f" | cut -d' ' -f1)
+              SIZE=$(wc -c < "dists/stable/$f")
+              echo " $HASH $SIZE $f" >> dists/stable/Release
+            fi
+          done
+
+      - name: Import GPG key and sign
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            echo "$GPG_PRIVATE_KEY" | gpg --import
+            cd apt-repo
+            gpg -abs -o dists/stable/Release.gpg dists/stable/Release
+            gpg --clearsign -o dists/stable/InRelease dists/stable/Release
+            gpg --export --armor > reox.gpg
+          else
+            echo "No GPG key configured, skipping signing"
+          fi
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt-repo
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
