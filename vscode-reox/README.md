@@ -1,7 +1,7 @@
 # REOX Programming Language
 
 <p align="center">
-  <img src="icon.png" width="128" alt="REOX Language Icon" />
+  <img src="https://reox.ketivee.com/reox-icon.png" width="128" alt="REOX Language Icon" />
 </p>
 
 <p align="center">
@@ -11,13 +11,13 @@
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=ketiveeai.reox-language">
-    <img src="https://img.shields.io/visual-studio-marketplace/v/ketiveeai.reox-language?style=flat-square&color=blue" alt="Version" />
+    <img src="https://img.shields.io/badge/VS%20Marketplace-v1.0.2-blue?style=flat-square&logo=visual-studio-code" alt="VS Marketplace" />
   </a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=ketiveeai.reox-language">
-    <img src="https://img.shields.io/visual-studio-marketplace/i/ketiveeai.reox-language?style=flat-square&color=green" alt="Installs" />
+  <a href="https://open-vsx.org/extension/ketiveeai/reox-language">
+    <img src="https://img.shields.io/badge/Open%20VSX-v1.0.2-purple?style=flat-square&logo=eclipse" alt="Open VSX" />
   </a>
   <a href="https://reox.ketivee.com">
-    <img src="https://img.shields.io/badge/docs-online-blue?style=flat-square" alt="Documentation" />
+    <img src="https://img.shields.io/badge/docs-online-green?style=flat-square" alt="Documentation" />
   </a>
 </p>
 
@@ -28,6 +28,7 @@
 **REOX** is a statically-typed, declarative programming language designed specifically for **NeolyxOS**. It combines the expressive power of modern UI composition (inspired by SwiftUI) with the predictable, system-level performance of C/C++.
 
 Reox is built to be:
+
 - **Native**: Directly integrates with NeolyxOS rendering primitives.
 - **Safe**: Strong typing and memory safety features.
 - **Fast**: Compiles to optimized native machine code (LLVM/C backend).
@@ -35,18 +36,20 @@ Reox is built to be:
 
 ## Why Reox?
 
-| Feature | Reox | C++ | Python | Swift |
-|---------|------|-----|--------|-------|
-| **UI Syntax** | Native | Library | Library | Native |
-| **Performance** | System | System | Interpreted | System |
-| **Simplicity** | High | Low | High | High |
-| **AI Native** | Yes | No | Libraries | CoreML |
-| **Target OS** | NeolyxOS | Any | Any | macOS/iOS |
+| Feature         | Reox     | C++     | Python      | Swift     |
+| --------------- | -------- | ------- | ----------- | --------- |
+| **UI Syntax**   | Native   | Library | Library     | Native    |
+| **Performance** | System   | System  | Interpreted | System    |
+| **Async/Await** | Native   | C++20   | Native      | Native    |
+| **Simplicity**  | High     | Low     | High        | High      |
+| **AI Native**   | Yes      | No      | Libraries   | CoreML    |
+| **Target OS**   | NeolyxOS | Any     | Any         | macOS/iOS |
 
 ## Key Features
 
 - 🎨 **Declarative UI**: Build interfaces with a composable, intuitive syntax.
 - 🔒 **Strong Typing**: Catch errors at compile-time with type inference.
+- ⚡ **Async/Await**: Native asynchronous programming for non-blocking operations.
 - 🚀 **Zero Dependencies**: Standard library includes everything you need.
 - 🤖 **AI Integration**: Built-in keywords for defining AI assistants and contexts.
 - 🌙 **Dark Theme**: Includes a custom VS Code theme optimized for Reox.
@@ -56,6 +59,7 @@ Reox is built to be:
 ## Code Examples
 
 ### 1. Hello World
+
 ```reox
 fn main() {
     print("Hello from NeolyxOS!");
@@ -63,6 +67,7 @@ fn main() {
 ```
 
 ### 2. Declarative UI
+
 Build beautiful, native UIs with less code.
 
 ```reox
@@ -88,15 +93,32 @@ window Calculator {
 }
 ```
 
-### 3. AI Integration
+### 3. Async/Await
+
+Non-blocking operations with native async support.
+
+```reox
+async fn fetch_user(id: int) -> User {
+    let data = await http_get("/api/users/{id}");
+    return parse_user(data);
+}
+
+async fn main() {
+    let user = await fetch_user(42);
+    print(user.name);
+}
+```
+
+### 4. AI Integration
+
 Reox treats AI as a first-class citizen.
 
 ```reox
 ai assistant {
     model: "neolyx-gpt"
 
-    fn suggest_action(context: string) -> string {
-        return ai.prompt("Given context: {context}, suggest next action");
+    async fn suggest_action(context: string) -> string {
+        return await ai.prompt("Given context: {context}, suggest next action");
     }
 }
 ```
@@ -106,12 +128,21 @@ ai assistant {
 ## Installation
 
 ### Via VS Code Marketplace
+
 Search for **"REOX Programming Language"** in the VS Code Extensions view (Ctrl+Shift+X) and verify the publisher is **ketiveeai**.
 
+Or install directly: [VS Marketplace](https://marketplace.visualstudio.com/items?itemName=ketiveeai.reox-language)
+
+### Via Open VSX (for VSCodium, Gitpod, etc.)
+
+Available on [Open VSX Registry](https://open-vsx.org/extension/ketiveeai/reox-language) for open-source VS Code alternatives.
+
 ### Manual Installation
+
 Download the `.vsix` release and run:
+
 ```bash
-code --install-extension reox-language-1.0.0.vsix
+code --install-extension reox-language-1.0.2.vsix
 ```
 
 ---
@@ -127,6 +158,7 @@ We welcome contributions to the Reox ecosystem! This extension is open source.
 5. **Push** to the branch and submit a **Pull Request**.
 
 ### Reporting Issues
+
 Please report bugs and feature requests on our [GitHub Issues](https://github.com/ketiveeai/reox/issues) page.
 
 ---

@@ -1,0 +1,23 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Node
+node_modules/
+.npm/
+.yarn/
+
+# VS Code
+.vscode/
+.history/
+*.vsix
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reox specific (temporary builds)
+**/*.o
+**/*.exe
+**/*.bin

@@ -531,6 +531,12 @@ impl CodeGen {
             Expr::Nil(_) => {
                 self.emit("NULL");
             }
+            Expr::Await(operand, _) => {
+                // Emit await as rx_await() runtime call
+                self.emit("rx_await(");
+                self.gen_expr(operand);
+                self.emit(")");
+            }
         }
     }
     

@@ -2,9 +2,27 @@
 
 All notable changes to the REOX Language extension.
 
+## [1.0.2] - 2026-01-18
+
+### Added
+
+- Async/await syntax highlighting (`async fn`, `await`)
+- Error handling keywords (`guard`, `defer`, `try`, `catch`, `throw`)
+
+### Fixed
+
+- README icon now displays correctly on VS Marketplace
+
+## [1.0.1] - 2026-01-15
+
+### Fixed
+
+- Minor syntax highlighting improvements
+
 ## [1.0.0] - 2026-01-12
 
 ### Added
+
 - Initial release
 - Syntax highlighting for `.reox` files
 - REOX Dark theme
@@ -12,6 +30,7 @@ All notable changes to the REOX Language extension.
 - Language configuration (brackets, comments, folding)
 
 ### Syntax Support
+
 - Keywords: `fn`, `let`, `struct`, `kind`, `layer`, `panel`, `action`, `signal`, `emit`
 - Control flow: `if`, `else`, `while`, `for`, `match`, `when`, `return`
 - Types: primitives, sized types, custom types

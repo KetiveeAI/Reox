@@ -104,7 +104,18 @@ impl<'a> Parser<'a> {
 
     fn parse_declaration(&mut self) -> Result<Decl, ParseError> {
         match self.peek_kind() {
-            TokenKind::Fn => self.parse_fn_decl().map(Decl::Function),
+            TokenKind::Fn => self.parse_fn_decl(false).map(Decl::Function),
+            TokenKind::Async => {
+                self.advance(); // consume 'async'
+                if self.check(&TokenKind::Fn) {
+                    self.parse_fn_decl(true).map(Decl::Function)
+                } else {
+                    Err(ParseError::new(
+                        "expected 'fn' after 'async'",
+                        self.peek().span,
+                    ))
+                }
+            }
             TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
             TokenKind::Import => self.parse_import_decl().map(Decl::Import),
             TokenKind::Extern => self.parse_extern_decl().map(Decl::Extern),
@@ -115,7 +126,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_fn_decl(&mut self) -> Result<FnDecl, ParseError> {
+    fn parse_fn_decl(&mut self, is_async: bool) -> Result<FnDecl, ParseError> {
         let start_span = self.peek().span;
         self.consume(&TokenKind::Fn, "expected 'fn'")?;
 
@@ -138,6 +149,7 @@ impl<'a> Parser<'a> {
             params,
             return_type,
             body,
+            is_async,
             span: start_span,
         })
     }
@@ -217,6 +229,10 @@ impl<'a> Parser<'a> {
     fn parse_extern_decl(&mut self) -> Result<ExternDecl, ParseError> {
         let span = self.peek().span;
         self.consume(&TokenKind::Extern, "expected 'extern'")?;
+        
+        // Check for async extern fn
+        let is_async = self.match_token(&[TokenKind::Async]);
+        
         self.consume(&TokenKind::Fn, "expected 'fn' after 'extern'")?;
 
         let name = self.parse_identifier()?;
@@ -236,6 +252,7 @@ impl<'a> Parser<'a> {
             name,
             params,
             return_type,
+            is_async,
             span,
         })
     }
@@ -653,6 +670,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        // Await expression: await expr
+        if self.match_token(&[TokenKind::Await]) {
+            let span = self.peek().span;
+            let operand = self.parse_unary()?;
+            return Ok(Expr::Await(Box::new(operand), span));
+        }
+        
         // Pre-increment/decrement
         if self.match_token(&[TokenKind::PlusPlus]) {
             let span = self.peek().span;
@@ -1239,6 +1263,59 @@ mod tests {
                 }
             }
             _ => panic!("expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_async_function() {
+        let source = r#"
+            async fn fetch_data(url: string) -> string {
+                return url;
+            }
+        "#;
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(&tokens);
+        
+        assert_eq!(ast.declarations.len(), 1);
+        match &ast.declarations[0] {
+            Decl::Function(f) => {
+                assert_eq!(f.name, "fetch_data");
+                assert!(f.is_async);
+            }
+            _ => panic!("expected async function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_await_expression() {
+        let source = r#"
+            async fn main() {
+                let result: string = await fetch("url");
+            }
+        "#;
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(&tokens);
+        
+        assert_eq!(ast.declarations.len(), 1);
+        match &ast.declarations[0] {
+            Decl::Function(f) => {
+                assert!(f.is_async);
+                match &f.body.statements[0] {
+                    Stmt::Let(l) => {
+                        match l.init.as_ref().unwrap() {
+                            Expr::Await(inner, _) => {
+                                match inner.as_ref() {
+                                    Expr::Call(_, _, _) => {}
+                                    _ => panic!("expected call inside await"),
+                                }
+                            }
+                            _ => panic!("expected await expression"),
+                        }
+                    }
+                    _ => panic!("expected let statement"),
+                }
+            }
+            _ => panic!("expected async function"),
         }
     }
 }

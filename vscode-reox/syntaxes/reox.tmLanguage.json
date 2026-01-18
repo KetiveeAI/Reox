@@ -102,7 +102,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.reox",
-                    "match": "\\b(if|else|while|for|in|match|when|return|break|continue|loop)\\b"
+                    "match": "\\b(if|else|while|for|in|match|when|return|break|continue|loop|guard|defer|try|catch|throw)\\b"
                 },
                 {
                     "name": "keyword.declaration.reox",

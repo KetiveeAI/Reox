@@ -531,6 +531,13 @@ impl TypeChecker {
                 }
             }
             Expr::Nil(_) => ResolvedType::Unknown,
+            Expr::Await(operand, _span) => {
+                // Await unwraps the async return type - for now return the inner type
+                let operand_ty = self.infer_expr_type(operand);
+                // If it's a function call, return the function's return type
+                // Otherwise return the operand type itself
+                operand_ty
+            }
         }
     }
 

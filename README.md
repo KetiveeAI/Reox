@@ -1,6 +1,6 @@
 # Reox
 
-**A modern, Swift-like UI programming language that compiles to C for fast performance.**
+**A modern, easy-to-use UI and general purpose programming language that compiles to C for fast performance.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Open VSX](https://img.shields.io/badge/Open%20VSX-v1.0.1-green)](https://open-vsx.org/extension/ketiveeai/reox-language)
@@ -11,7 +11,7 @@ Reox is a declarative UI framework language designed for building native applica
 
 ## Features
 
-- **Swift-like syntax** — clean, expressive, and familiar
+- **Easy syntax** — clean, expressive, and familiar
 - **Compiles to C** — fast compile times, native performance
 - **Declarative UI** — React/SwiftUI-style component model
 - **Pattern matching** — `match` expressions with exhaustive checking

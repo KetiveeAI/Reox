@@ -25,6 +25,7 @@ pub struct FnDecl {
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Block,
+    pub is_async: bool,
     pub span: Span,
 }
 
@@ -65,6 +66,7 @@ pub struct ExternDecl {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
+    pub is_async: bool,
     pub span: Span,
 }
 
@@ -204,6 +206,7 @@ pub enum Expr {
     OptionalChain(Box<Expr>, String, Span),       // obj?.member
     TrailingClosure(Box<Expr>, Box<Block>, Span), // button("Click") { ... }
     Nil(Span),
+    Await(Box<Expr>, Span),                        // await expr
 }
 
 /// Literal values

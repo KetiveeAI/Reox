@@ -2,7 +2,7 @@
     "name": "reox-language",
     "displayName": "REOX Programming Language",
     "description": "Syntax highlighting, snippets, and theme for REOX - the modern UI framework language for NeolyxOS",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "publisher": "ketiveeai",
     "author": "ketiveeai",
     "license": "MIT",
