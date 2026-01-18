@@ -1,4 +1,5 @@
 # REOX Language Architecture for NeolyxOS
+
 ## Production-Ready UI Scripting Language (Like Swift for iOS)
 
 ---
@@ -6,6 +7,7 @@
 ## Design Philosophy
 
 **REOX is NeolyxOS's native UI scripting language:**
+
 - ✅ Swift-like ergonomics for UI development
 - ✅ Optimized for NeolyxOS kernel (not Linux)
 - ✅ Clean, professional codebase (NO emojis, NO unicode art)
@@ -336,7 +338,7 @@ neolyx-kernel/
 build-reox:
     cd ../reox && cargo build --release
     cp ../reox/target/release/libreoxrt.a kernel/lib/
-    
+
 build-kernel: build-reox
     clang++ -c src/**/*.cpp
     rustc --crate-type staticlib src/**/*.rs
@@ -348,6 +350,7 @@ build-kernel: build-reox
 ## Language Examples
 
 ### **Example 1: Hello World**
+
 ```reox
 // main.rx
 use ui::{App, Text, Window}
@@ -365,6 +368,7 @@ fn main() {
 ```
 
 ### **Example 2: Todo App (SwiftUI-style)**
+
 ```reox
 // todo.rx
 use ui::{View, State, VStack, HStack, Button, TextField, List}
@@ -372,7 +376,7 @@ use ui::{View, State, VStack, HStack, Button, TextField, List}
 struct TodoApp: View {
     @State var todos: [String] = []
     @State var input: String = ""
-    
+
     fn body() -> View {
         VStack {
             HStack {
@@ -382,7 +386,7 @@ struct TodoApp: View {
                     input = ""
                 }
             }
-            
+
             List(todos) { todo in
                 Text(todo)
             }
@@ -397,6 +401,7 @@ fn main() {
 ```
 
 ### **Example 3: Custom Widget**
+
 ```reox
 // custom_button.rx
 use ui::{View, State, Shape, Animation}
@@ -404,9 +409,9 @@ use ui::{View, State, Shape, Animation}
 struct CustomButton: View {
     var label: String
     var action: fn()
-    
+
     @State var pressed: Bool = false
-    
+
     fn body() -> View {
         Text(label)
             .padding(16)
@@ -427,6 +432,7 @@ struct CustomButton: View {
 ```
 
 ### **Example 4: Direct Syscall**
+
 ```reox
 // file_manager.rx
 use platform::neolyx::{syscall, File}
@@ -436,8 +442,31 @@ fn read_file(path: String) -> Result<String> {
     let fd = syscall::open(path, syscall::O_RDONLY)?
     let content = syscall::read(fd, 4096)?
     syscall::close(fd)
-    
+
     Result::Ok(String::from_utf8(content)?)
+}
+```
+
+### **Example 5: Async/Await**
+
+```reox
+// async_fetch.rx
+use platform::network::{HttpClient, Response}
+
+async fn fetch_user(url: String) -> Result<User> {
+    let client = HttpClient::new()
+    // Non-blocking wait
+    let response = await client.get(url)
+    let json = await response.json()
+
+    Result::Ok(User::from_json(json))
+}
+
+async fn main() {
+    match await fetch_user("https://api.example.com/me") {
+        Ok(user) => println("User: {user.name}"),
+        Err(e)   => eprintln("Error: {e}")
+    }
 }
 ```
 
@@ -446,6 +475,7 @@ fn read_file(path: String) -> Result<String> {
 ## Memory Model
 
 ### **Ownership System (Rust-inspired)**
+
 ```reox
 // No garbage collection - compile-time memory safety
 fn process_data(data: String) {  // Takes ownership
@@ -462,6 +492,7 @@ fn modify_data(data: &mut String) {  // Borrows mutably
 ```
 
 ### **Zero-Cost Abstractions**
+
 ```reox
 // Compiles to same assembly as hand-written C++
 let numbers = [1, 2, 3, 4, 5]
@@ -495,6 +526,7 @@ main.rx
 ```
 
 **Compile Times:**
+
 - Incremental: < 100ms
 - Full rebuild: < 2s for medium apps
 - Release (optimized): < 10s
@@ -504,6 +536,7 @@ main.rx
 ## Tooling
 
 ### **REOX Compiler (reoxc)**
+
 ```bash
 # Compile app
 reoxc build --release
@@ -522,6 +555,7 @@ reoxdoc --open
 ```
 
 ### **Package Manager Integration**
+
 ```bash
 # Create new project
 reoxc new --template app MyApp
@@ -538,6 +572,7 @@ reoxc build --target neolyx-x86_64
 ## Distribution
 
 ### **Crates Structure**
+
 ```toml
 # Publish to your own registry
 [registry]
@@ -554,6 +589,7 @@ reoxc             # CLI tool
 ```
 
 ### **Public API**
+
 ```
 Developers building apps for NeolyxOS:
 1. Install reoxc CLI
@@ -572,6 +608,7 @@ Extensions:
 ## Code Quality Standards
 
 ### **NO in Codebase:**
+
 - ❌ Emojis
 - ❌ Unicode art
 - ❌ TODO without issue number
@@ -580,6 +617,7 @@ Extensions:
 - ❌ Unsafe without justification
 
 ### **YES in Codebase:**
+
 - ✅ Clear documentation
 - ✅ Unit tests (>80% coverage)
 - ✅ Benchmarks for hot paths
@@ -588,6 +626,7 @@ Extensions:
 - ✅ Performance profiling
 
 ### **CI/CD Checks**
+
 ```yaml
 # .github/workflows/ci.yml
 - rustfmt --check
@@ -603,19 +642,20 @@ Extensions:
 
 ## Performance Targets
 
-| Metric | Target |
-|--------|--------|
-| **UI Frame Rate** | 144 FPS minimum |
-| **App Launch** | < 100ms cold start |
-| **Memory** | < 50MB for simple app |
-| **Compile Time** | < 2s incremental |
-| **Binary Size** | < 5MB stripped |
+| Metric            | Target                |
+| ----------------- | --------------------- |
+| **UI Frame Rate** | 144 FPS minimum       |
+| **App Launch**    | < 100ms cold start    |
+| **Memory**        | < 50MB for simple app |
+| **Compile Time**  | < 2s incremental      |
+| **Binary Size**   | < 5MB stripped        |
 
 ---
 
 ## Summary
 
 **REOX is NeolyxOS's Swift:**
+
 - Native UI scripting language
 - Compiles to machine code (no VM)
 - Memory safe (borrow checker)

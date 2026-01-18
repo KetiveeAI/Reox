@@ -3,7 +3,7 @@
 // 1. Compiler (Rust implementation)
 // ---------------------------------
 //
-// reolab/
+// reox-lang/
 // ├── src/
 // │   ├── main.rs          # Compiler entry point
 // │   ├── lexer/           # Tokenizer
@@ -16,10 +16,10 @@
 // └── examples/            # Example Reox programs
 //
 // Core compiler modules (Rust crate paths):
-// - reolab/src/lexer/mod.rs
-// - reolab/src/parser/mod.rs
-// - reolab/src/typechecker/mod.rs
-// - reolab/src/codegen/mod.rs
+// - reox-lang/src/lexer/mod.rs
+// - reox-lang/src/parser/mod.rs
+// - reox-lang/src/typechecker/mod.rs
+// - reox-lang/src/codegen/mod.rs
 //
 // 2. Standard Library (Reox source)
 // ---------------------------------

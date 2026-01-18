@@ -21,3 +21,7 @@ Thumbs.db
 **/*.o
 **/*.exe
 **/*.bin
+
+# Developer Docs
+Timeline.md
+all.md
