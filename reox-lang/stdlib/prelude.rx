@@ -507,3 +507,142 @@ extern fn assert(condition: bool, message: string) -> void;
 
 /// Log with level (0=debug, 1=info, 2=warn, 3=error)
 extern fn log(level: int, message: string) -> void;
+
+// ============================================================================
+// UI: Visual Effects
+// ============================================================================
+
+/*
+ * EFFECT TYPES:
+ * - Glass: Frosted glass morphism (iOS/macOS style)
+ * - Blur: Gaussian blur on view or background
+ * - Glow: Outer glow effect
+ * - Outline: Stroke around view
+ */
+
+/// Apply glass morphism effect (frosted glass)
+extern fn view_set_glass(v: View, intensity: float) -> void;
+
+/// Apply blur effect to view content
+extern fn view_set_blur(v: View, radius: float) -> void;
+
+/// Apply blur to background only (see-through blur)
+extern fn view_set_background_blur(v: View, radius: float) -> void;
+
+/// Apply glow effect
+extern fn view_set_glow(v: View, color: Color, radius: float, intensity: float) -> void;
+
+/// Apply outline/stroke (different from border - renders outside)
+extern fn view_set_outline(v: View, color: Color, width: float) -> void;
+
+/// Apply outline with offset from view edge
+extern fn view_set_outline_offset(v: View, color: Color, width: float, offset: float) -> void;
+
+// ============================================================================
+// UI: Media (Video & Audio)
+// ============================================================================
+
+/*
+ * MEDIA PLAYER:
+ * - Auto-resizing video/audio players
+ * - Loop, autoplay, mute controls
+ * - Playback state management
+ */
+
+/// Create video player view
+extern fn video_player(source: string) -> View;
+
+/// Create audio player view
+extern fn audio_player(source: string) -> View;
+
+/// Playback controls
+extern fn media_play(v: View) -> void;
+extern fn media_pause(v: View) -> void;
+extern fn media_stop(v: View) -> void;
+extern fn media_seek(v: View, time_seconds: float) -> void;
+extern fn media_get_duration(v: View) -> float;
+extern fn media_get_position(v: View) -> float;
+extern fn media_is_playing(v: View) -> bool;
+
+/// Media properties
+extern fn media_set_loop(v: View, loop_enabled: bool) -> void;
+extern fn media_set_autoplay(v: View, autoplay: bool) -> void;
+extern fn media_set_muted(v: View, muted: bool) -> void;
+extern fn media_set_volume(v: View, volume: float) -> void;
+extern fn media_set_playback_rate(v: View, rate: float) -> void;
+
+/// Video-specific
+extern fn video_set_poster(v: View, image_path: string) -> void;
+extern fn video_set_controls(v: View, show_controls: bool) -> void;
+
+// ============================================================================
+// UI: Content Fit & Aspect Ratio
+// ============================================================================
+
+/*
+ * CONTENT FIT MODES:
+ * 0 = FILL       - Stretch to fill (may distort)
+ * 1 = CONTAIN    - Fit inside, maintain aspect ratio
+ * 2 = COVER      - Fill container, crop if needed
+ * 3 = FIT_WIDTH  - Scale to fit width
+ * 4 = FIT_HEIGHT - Scale to fit height
+ * 5 = NONE       - Original size
+ */
+
+/// Set image content fit mode
+extern fn image_set_fit(v: View, mode: int) -> void;
+
+/// Set video content fit mode
+extern fn video_set_fit(v: View, mode: int) -> void;
+
+/// Set aspect ratio (width:height ratio, e.g., 16.0/9.0 = 1.777)
+extern fn view_set_aspect_ratio(v: View, ratio: float) -> void;
+
+/// Convenient fit mode shortcuts for images
+extern fn image_fit_width(v: View) -> void;
+extern fn image_fit_height(v: View) -> void;
+extern fn image_fill(v: View) -> void;
+extern fn image_contain(v: View) -> void;
+extern fn image_cover(v: View) -> void;
+
+// ============================================================================
+// UI: Shapes
+// ============================================================================
+
+/*
+ * SHAPE VIEWS:
+ * Basic shapes for custom UI elements
+ * All shapes support fill and stroke
+ */
+
+/// Circle shape
+extern fn circle(diameter: float) -> View;
+extern fn circle_filled(diameter: float, fill: Color) -> View;
+
+/// Rectangle with uniform rounded corners
+extern fn rounded_rect(w: float, h: float, radius: float) -> View;
+
+/// Capsule (pill shape - fully rounded ends)
+extern fn capsule(w: float, h: float) -> View;
+
+/// Ellipse (oval)
+extern fn ellipse(w: float, h: float) -> View;
+
+/// Line segment
+extern fn line_view(length: float, thickness: float) -> View;
+extern fn line_styled(length: float, thickness: float, color: Color, dashed: bool) -> View;
+
+/// Triangle (equilateral)
+extern fn triangle(size: float) -> View;
+
+/// Star shape
+extern fn star(points: int, outer_radius: float, inner_radius: float) -> View;
+
+/// Custom SVG path
+extern fn path_view(svg_path: string) -> View;
+
+/// Shape modifiers
+extern fn shape_set_fill(v: View, color: Color) -> void;
+extern fn shape_set_stroke(v: View, color: Color, width: float) -> void;
+extern fn shape_set_stroke_dash(v: View, dash_length: float, gap_length: float) -> void;
+

@@ -59,7 +59,7 @@ static int g_win_count = 0;
 
 /* Simple view structure for demo */
 typedef struct SimpleView {
-    int kind;  /* 0=box, 1=text, 2=button */
+    int kind;  /* 0=box, 1=text, 2=button, 12=video, 13=audio, 14=shape */
     char label[256];
     struct SimpleView* children[64];
     int child_count;
@@ -94,6 +94,51 @@ typedef struct SimpleView {
     float opacity;
     int hidden;
     int enabled;
+    
+    /* Visual Effects */
+    struct {
+        float glass_intensity;   /* 0.0-1.0 */
+        float blur_radius;       /* 0-50 */
+        float bg_blur_radius;    /* background blur */
+        struct { uint8_t r, g, b, a; } glow_color;
+        float glow_radius;
+        float glow_intensity;
+        struct { uint8_t r, g, b, a; } outline_color;
+        float outline_width;
+        float outline_offset;
+    } effects;
+    
+    /* Media properties */
+    struct {
+        char source[256];
+        int is_playing;
+        int loop_enabled;
+        int autoplay;
+        int muted;
+        float volume;            /* 0.0-1.0 */
+        float playback_rate;     /* 0.5-2.0 */
+        float duration;
+        float position;
+        int show_controls;
+        char poster[256];
+    } media;
+    
+    /* Content fit */
+    int fit_mode;               /* 0=fill, 1=contain, 2=cover, 3=fit_width, 4=fit_height */
+    float aspect_ratio;
+    
+    /* Shape properties */
+    struct {
+        int shape_type;         /* 0=rect, 1=circle, 2=capsule, 3=ellipse, 4=line, 5=triangle, 6=star, 7=path */
+        struct { uint8_t r, g, b, a; } fill;
+        struct { uint8_t r, g, b, a; } stroke;
+        float stroke_width;
+        float dash_length;
+        float dash_gap;
+        int star_points;
+        float inner_radius;
+        char svg_path[512];
+    } shape;
 } SimpleView;
 
 
@@ -909,3 +954,309 @@ void log_fn(int64_t level, const char* message) {
     printf("[%s] %s\n", level < 4 ? levels[level] : "LOG", message);
 }
 
+/* ============================================================================
+ * Visual Effects
+ * ============================================================================ */
+
+void view_set_glass(View v, double intensity) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->effects.glass_intensity = (float)intensity;
+    printf("[FX] Glass: intensity=%.2f\n", intensity);
+}
+
+void view_set_blur(View v, double radius) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->effects.blur_radius = (float)radius;
+    printf("[FX] Blur: radius=%.1f\n", radius);
+}
+
+void view_set_background_blur(View v, double radius) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->effects.bg_blur_radius = (float)radius;
+    printf("[FX] BackgroundBlur: radius=%.1f\n", radius);
+}
+
+void view_set_glow(View v, Color color, double radius, double intensity) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->effects.glow_color.r = (uint8_t)color.r;
+        sv->effects.glow_color.g = (uint8_t)color.g;
+        sv->effects.glow_color.b = (uint8_t)color.b;
+        sv->effects.glow_color.a = (uint8_t)color.a;
+        sv->effects.glow_radius = (float)radius;
+        sv->effects.glow_intensity = (float)intensity;
+    }
+    printf("[FX] Glow: radius=%.1f intensity=%.2f\n", radius, intensity);
+}
+
+void view_set_outline(View v, Color color, double width) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->effects.outline_color.r = (uint8_t)color.r;
+        sv->effects.outline_color.g = (uint8_t)color.g;
+        sv->effects.outline_color.b = (uint8_t)color.b;
+        sv->effects.outline_color.a = (uint8_t)color.a;
+        sv->effects.outline_width = (float)width;
+    }
+    printf("[FX] Outline: width=%.1f\n", width);
+}
+
+void view_set_outline_offset(View v, Color color, double width, double offset) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->effects.outline_color.r = (uint8_t)color.r;
+        sv->effects.outline_color.g = (uint8_t)color.g;
+        sv->effects.outline_color.b = (uint8_t)color.b;
+        sv->effects.outline_color.a = (uint8_t)color.a;
+        sv->effects.outline_width = (float)width;
+        sv->effects.outline_offset = (float)offset;
+    }
+    printf("[FX] Outline: width=%.1f offset=%.1f\n", width, offset);
+}
+
+/* ============================================================================
+ * Media Player
+ * ============================================================================ */
+
+View video_player(const char* source) {
+    SimpleView* v = create_view(12, source);
+    if (source) strncpy(v->media.source, source, 255);
+    v->media.volume = 1.0f;
+    v->media.playback_rate = 1.0f;
+    v->media.show_controls = 1;
+    printf("[Media] VideoPlayer: '%s'\n", source);
+    return wrap_view(v);
+}
+
+View audio_player(const char* source) {
+    SimpleView* v = create_view(13, source);
+    if (source) strncpy(v->media.source, source, 255);
+    v->media.volume = 1.0f;
+    v->media.playback_rate = 1.0f;
+    printf("[Media] AudioPlayer: '%s'\n", source);
+    return wrap_view(v);
+}
+
+void media_play(View v) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.is_playing = 1;
+    printf("[Media] Play\n");
+}
+
+void media_pause(View v) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.is_playing = 0;
+    printf("[Media] Pause\n");
+}
+
+void media_stop(View v) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) { sv->media.is_playing = 0; sv->media.position = 0; }
+    printf("[Media] Stop\n");
+}
+
+void media_seek(View v, double time_seconds) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.position = (float)time_seconds;
+    printf("[Media] Seek: %.2fs\n", time_seconds);
+}
+
+double media_get_duration(View v) {
+    SimpleView* sv = unwrap_view(v);
+    return sv ? sv->media.duration : 0.0;
+}
+
+double media_get_position(View v) {
+    SimpleView* sv = unwrap_view(v);
+    return sv ? sv->media.position : 0.0;
+}
+
+int64_t media_is_playing(View v) {
+    SimpleView* sv = unwrap_view(v);
+    return sv ? sv->media.is_playing : 0;
+}
+
+void media_set_loop(View v, int64_t loop_enabled) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.loop_enabled = (int)loop_enabled;
+    printf("[Media] Loop: %s\n", loop_enabled ? "true" : "false");
+}
+
+void media_set_autoplay(View v, int64_t autoplay) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.autoplay = (int)autoplay;
+}
+
+void media_set_muted(View v, int64_t muted) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.muted = (int)muted;
+}
+
+void media_set_volume(View v, double volume) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.volume = (float)volume;
+}
+
+void media_set_playback_rate(View v, double rate) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.playback_rate = (float)rate;
+}
+
+void video_set_poster(View v, const char* path) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv && path) strncpy(sv->media.poster, path, 255);
+}
+
+void video_set_controls(View v, int64_t show) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->media.show_controls = (int)show;
+}
+
+/* ============================================================================
+ * Content Fit
+ * ============================================================================ */
+
+void image_set_fit(View v, int64_t mode) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->fit_mode = (int)mode;
+}
+
+void video_set_fit(View v, int64_t mode) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->fit_mode = (int)mode;
+}
+
+void view_set_aspect_ratio(View v, double ratio) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->aspect_ratio = (float)ratio;
+}
+
+void image_fit_width(View v) { image_set_fit(v, 3); }
+void image_fit_height(View v) { image_set_fit(v, 4); }
+void image_fill(View v) { image_set_fit(v, 0); }
+void image_contain(View v) { image_set_fit(v, 1); }
+void image_cover(View v) { image_set_fit(v, 2); }
+
+/* ============================================================================
+ * Shapes
+ * ============================================================================ */
+
+View circle_shape(double diameter) {
+    SimpleView* v = create_view(14, "Circle");
+    v->shape.shape_type = 1;
+    v->fixed_size.width = (float)diameter;
+    v->fixed_size.height = (float)diameter;
+    printf("[Shape] Circle: d=%.0f\n", diameter);
+    return wrap_view(v);
+}
+
+View circle_filled(double diameter, Color fill) {
+    SimpleView* v = create_view(14, "Circle");
+    v->shape.shape_type = 1;
+    v->fixed_size.width = (float)diameter;
+    v->fixed_size.height = (float)diameter;
+    v->shape.fill.r = (uint8_t)fill.r;
+    v->shape.fill.g = (uint8_t)fill.g;
+    v->shape.fill.b = (uint8_t)fill.b;
+    v->shape.fill.a = (uint8_t)fill.a;
+    return wrap_view(v);
+}
+
+View rounded_rect(double w, double h, double radius) {
+    SimpleView* v = create_view(14, "RoundedRect");
+    v->shape.shape_type = 0;
+    v->fixed_size.width = (float)w;
+    v->fixed_size.height = (float)h;
+    v->corner_radius = (float)radius;
+    printf("[Shape] RoundedRect: %.0fx%.0f r=%.0f\n", w, h, radius);
+    return wrap_view(v);
+}
+
+View capsule(double w, double h) {
+    SimpleView* v = create_view(14, "Capsule");
+    v->shape.shape_type = 2;
+    v->fixed_size.width = (float)w;
+    v->fixed_size.height = (float)h;
+    v->corner_radius = (float)(h < w ? h/2 : w/2);
+    return wrap_view(v);
+}
+
+View ellipse_shape(double w, double h) {
+    SimpleView* v = create_view(14, "Ellipse");
+    v->shape.shape_type = 3;
+    v->fixed_size.width = (float)w;
+    v->fixed_size.height = (float)h;
+    return wrap_view(v);
+}
+
+View line_view(double length, double thickness) {
+    SimpleView* v = create_view(14, "Line");
+    v->shape.shape_type = 4;
+    v->fixed_size.width = (float)length;
+    v->fixed_size.height = (float)thickness;
+    return wrap_view(v);
+}
+
+View line_styled(double length, double thickness, Color color, int64_t dashed) {
+    SimpleView* v = create_view(14, "Line");
+    v->shape.shape_type = 4;
+    v->fixed_size.width = (float)length;
+    v->shape.stroke.r = (uint8_t)color.r;
+    v->shape.stroke.g = (uint8_t)color.g;
+    v->shape.stroke.b = (uint8_t)color.b;
+    v->shape.stroke.a = (uint8_t)color.a;
+    v->shape.stroke_width = (float)thickness;
+    if (dashed) { v->shape.dash_length = 5; v->shape.dash_gap = 3; }
+    return wrap_view(v);
+}
+
+View triangle_shape(double size) {
+    SimpleView* v = create_view(14, "Triangle");
+    v->shape.shape_type = 5;
+    v->fixed_size.width = (float)size;
+    v->fixed_size.height = (float)size;
+    return wrap_view(v);
+}
+
+View star_shape(int64_t points, double outer_r, double inner_r) {
+    SimpleView* v = create_view(14, "Star");
+    v->shape.shape_type = 6;
+    v->shape.star_points = (int)points;
+    v->shape.inner_radius = (float)inner_r;
+    v->fixed_size.width = (float)(outer_r * 2);
+    v->fixed_size.height = (float)(outer_r * 2);
+    return wrap_view(v);
+}
+
+View path_view(const char* svg_path) {
+    SimpleView* v = create_view(14, "Path");
+    v->shape.shape_type = 7;
+    if (svg_path) strncpy(v->shape.svg_path, svg_path, 511);
+    return wrap_view(v);
+}
+
+void shape_set_fill(View v, Color color) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->shape.fill.r = (uint8_t)color.r;
+        sv->shape.fill.g = (uint8_t)color.g;
+        sv->shape.fill.b = (uint8_t)color.b;
+        sv->shape.fill.a = (uint8_t)color.a;
+    }
+}
+
+void shape_set_stroke(View v, Color color, double width) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->shape.stroke.r = (uint8_t)color.r;
+        sv->shape.stroke.g = (uint8_t)color.g;
+        sv->shape.stroke.b = (uint8_t)color.b;
+        sv->shape.stroke.a = (uint8_t)color.a;
+        sv->shape.stroke_width = (float)width;
+    }
+}
+
+void shape_set_stroke_dash(View v, double dash, double gap) {
+    SimpleView* sv = unwrap_view(v);
+    if (sv) { sv->shape.dash_length = (float)dash; sv->shape.dash_gap = (float)gap; }
+}
