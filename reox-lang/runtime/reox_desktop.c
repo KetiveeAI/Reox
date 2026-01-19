@@ -318,9 +318,9 @@ rx_desktop_window* desktop_create_window(rx_desktop* d, const char* title,
     rx_desktop_window* dw = (rx_desktop_window*)calloc(1, sizeof(rx_desktop_window));
     if (!dw) return NULL;
     
-    /* Create underlying window */
-    rx_app dummy = { .name = "app" };
-    dw->window = app_create_window(&dummy, title, width, height);
+    /* Create underlying window using desktop's app context */
+    static rx_app desktop_app = { .name = "NeolyxOS Desktop" };
+    dw->window = app_create_window(&desktop_app, title, width, height);
     dw->state = RX_WINDOW_NORMAL;
     dw->focused = true;
     dw->visible = true;

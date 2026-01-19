@@ -72,7 +72,30 @@ typedef struct SimpleView {
     float corner_radius;
     struct { float x, y, blur; } shadow;
     struct { float width; } border;
+    
+    /* Text properties */
+    float font_size;
+    int font_weight;  /* 100-900 */
+    struct { uint8_t r, g, b, a; } text_color;
+    
+    /* Button style */
+    struct {
+        struct { uint8_t r, g, b, a; } normal;
+        struct { uint8_t r, g, b, a; } hover;
+        struct { uint8_t r, g, b, a; } pressed;
+    } button_style;
+    
+    /* Size constraints */
+    struct { float width, height; } fixed_size;
+    struct { float width, height; } min_size;
+    struct { float width, height; } max_size;
+    
+    /* Visibility and state */
+    float opacity;
+    int hidden;
+    int enabled;
 } SimpleView;
+
 
 static View wrap_view(SimpleView* v) { 
     g_views[g_view_count] = v; 
@@ -87,6 +110,13 @@ static SimpleView* create_view(int kind, const char* label) {
     SimpleView* v = (SimpleView*)calloc(1, sizeof(SimpleView));
     v->kind = kind;
     if (label) strncpy(v->label, label, 255);
+    /* Initialize defaults */
+    v->font_size = 14.0f;
+    v->font_weight = 400;
+    v->text_color = (typeof(v->text_color)){255, 255, 255, 255};
+    v->opacity = 1.0f;
+    v->enabled = 1;
+    v->hidden = 0;
     return v;
 }
 
@@ -234,15 +264,23 @@ void view_add_child(View parent, View child) {
  * ============================================================================ */
 
 void text_set_font_size(View v, double size) {
-    (void)v; (void)size;  /* Store if needed */
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->font_size = (float)size;
 }
 
 void text_set_font_weight(View v, int64_t weight) {
-    (void)v; (void)weight;
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->font_weight = (int)weight;
 }
 
 void text_set_color(View v, Color c) {
-    (void)v; (void)c;
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->text_color.r = (uint8_t)c.r;
+        sv->text_color.g = (uint8_t)c.g;
+        sv->text_color.b = (uint8_t)c.b;
+        sv->text_color.a = (uint8_t)c.a;
+    }
 }
 
 /* ============================================================================
@@ -250,7 +288,12 @@ void text_set_color(View v, Color c) {
  * ============================================================================ */
 
 void button_set_style(View v, Color normal, Color hover, Color pressed) {
-    (void)v; (void)normal; (void)hover; (void)pressed;
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->button_style.normal = (typeof(sv->button_style.normal)){(uint8_t)normal.r, (uint8_t)normal.g, (uint8_t)normal.b, (uint8_t)normal.a};
+        sv->button_style.hover = (typeof(sv->button_style.hover)){(uint8_t)hover.r, (uint8_t)hover.g, (uint8_t)hover.b, (uint8_t)hover.a};
+        sv->button_style.pressed = (typeof(sv->button_style.pressed)){(uint8_t)pressed.r, (uint8_t)pressed.g, (uint8_t)pressed.b, (uint8_t)pressed.a};
+    }
 }
 
 /* ============================================================================
@@ -424,32 +467,47 @@ View image_view(const char* source) {
 
 /* Extended View Modifiers */
 void view_set_size(View v, double w, double h) {
-    (void)v; 
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->fixed_size.width = (float)w;
+        sv->fixed_size.height = (float)h;
+    }
     printf("[UI]     size: %.0f x %.0f\n", w, h);
 }
 
 void view_set_min_size(View v, double w, double h) {
-    (void)v;
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->min_size.width = (float)w;
+        sv->min_size.height = (float)h;
+    }
     printf("[UI]     min-size: %.0f x %.0f\n", w, h);
 }
 
 void view_set_max_size(View v, double w, double h) {
-    (void)v;
+    SimpleView* sv = unwrap_view(v);
+    if (sv) {
+        sv->max_size.width = (float)w;
+        sv->max_size.height = (float)h;
+    }
     printf("[UI]     max-size: %.0f x %.0f\n", w, h);
 }
 
 void view_set_opacity(View v, double alpha) {
-    (void)v;
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->opacity = (float)alpha;
     printf("[UI]     opacity: %.2f\n", alpha);
 }
 
 void view_set_hidden(View v, int64_t hidden) {
-    (void)v;
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->hidden = (int)hidden;
     printf("[UI]     hidden: %s\n", hidden ? "true" : "false");
 }
 
 void view_set_enabled(View v, int64_t enabled) {
-    (void)v;
+    SimpleView* sv = unwrap_view(v);
+    if (sv) sv->enabled = (int)enabled;
     printf("[UI]     enabled: %s\n", enabled ? "true" : "false");
 }
 
@@ -558,19 +616,61 @@ int64_t screen_width(void) { return 1920; }
 int64_t screen_height(void) { return 1080; }
 double screen_scale(void) { return 1.0; }
 
-/* Timer Stubs */
+/* Timer System */
+#define MAX_TIMERS 64
+
+typedef struct {
+    int64_t callback_id;
+    int64_t trigger_ms;
+    int64_t interval_ms;
+    int active;
+} TimerEntry;
+
+static TimerEntry g_timers[MAX_TIMERS];
+static int64_t g_timer_next_id = 1;
+
 int64_t set_timeout(int64_t callback_id, int64_t delay_ms) {
-    printf("[Timer] Timeout: callback=%ld, delay=%ldms\n", callback_id, delay_ms);
-    return 0;
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (!g_timers[i].active) {
+            g_timers[i].callback_id = callback_id;
+            g_timers[i].trigger_ms = delay_ms;  /* Would add current_time_ms() in real impl */
+            g_timers[i].interval_ms = 0;
+            g_timers[i].active = 1;
+            printf("[Timer] Timeout: callback=%ld, delay=%ldms, id=%ld\n", callback_id, delay_ms, g_timer_next_id);
+            return g_timer_next_id++;
+        }
+    }
+    printf("[Timer] Error: No available timer slots\n");
+    return -1;
 }
 
 int64_t set_interval(int64_t callback_id, int64_t interval_ms) {
-    printf("[Timer] Interval: callback=%ld, interval=%ldms\n", callback_id, interval_ms);
-    return 0;
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (!g_timers[i].active) {
+            g_timers[i].callback_id = callback_id;
+            g_timers[i].trigger_ms = interval_ms;
+            g_timers[i].interval_ms = interval_ms;
+            g_timers[i].active = 1;
+            printf("[Timer] Interval: callback=%ld, interval=%ldms, id=%ld\n", callback_id, interval_ms, g_timer_next_id);
+            return g_timer_next_id++;
+        }
+    }
+    printf("[Timer] Error: No available timer slots\n");
+    return -1;
 }
 
 void clear_timer(int64_t timer_id) {
-    printf("[Timer] Cleared: %ld\n", timer_id);
+    if (timer_id > 0 && timer_id <= g_timer_next_id) {
+        /* Find by searching (id is index + 1 in simple impl) */
+        for (int i = 0; i < MAX_TIMERS; i++) {
+            if (g_timers[i].active) {
+                g_timers[i].active = 0;
+                printf("[Timer] Cleared: %ld\n", timer_id);
+                return;
+            }
+        }
+    }
+    printf("[Timer] Not found: %ld\n", timer_id);
 }
 
 
