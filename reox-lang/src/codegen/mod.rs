@@ -350,15 +350,42 @@ impl CodeGen {
     }
 
     fn gen_for(&mut self, f: &ForStmt) {
-        // Convert to C-style for loop (simplified - assumes iterable is range)
-        self.emit_indent();
-        self.emit(&format!("for (int {} = 0; {} < ", f.var, f.var));
-        self.gen_expr(&f.iterable);
-        self.emit(&format!("; {}++) {{\n", f.var));
-        self.indent();
-        self.gen_block(&f.body);
-        self.dedent();
-        self.emit_line("}");
+        match &f.iterable {
+            Expr::Range(start, end, _) => {
+                // Optimized C loop: for (int64_t i = start; i <= end; ++i)
+                self.emit_indent();
+                self.emit(&format!("for (int64_t {} = ", f.var));
+                self.gen_expr(start);
+                self.emit(&format!("; {} <= ", f.var));
+                self.gen_expr(end);
+                self.emit(&format!("; ++{}) {{\n", f.var));
+                self.indent();
+                self.gen_block(&f.body);
+                self.dedent();
+                self.emit_line("}");
+            }
+            _ => {
+                // Default array iteration (simplified for C)
+                // Assuming iterable is an array pointer or similar convention
+                // This would typically rely on a runtime iterator or Array struct in C
+                self.emit_indent();
+                // Create unique iterator name
+                let iter_name = format!("_iter_{}", f.var);
+                self.emit(&format!("array_t* {} = ", iter_name));
+                self.gen_expr(&f.iterable);
+                self.emit(";\n");
+                
+                self.emit_indent();
+                self.emit(&format!("for (int64_t _i = 0; _i < {}->length; ++_i) {{\n", iter_name));
+                self.indent();
+                self.emit_indent();
+                // Extract item
+                self.emit(&format!("int64_t {} = {}->data[_i];\n", f.var, iter_name));
+                self.gen_block(&f.body);
+                self.dedent();
+                self.emit_line("}");
+            }
+        }
     }
 
     fn gen_expr(&mut self, expr: &Expr) {
@@ -377,6 +404,98 @@ impl CodeGen {
                 self.gen_expr(operand);
             }
             Expr::Call(callee, args, _) => {
+                // Check for UI widget function calls
+                if let Expr::Identifier(name, _) = callee.as_ref() {
+                    match name.as_str() {
+                        // UI Widget constructors -> emit reox FFI calls
+                        "button" => {
+                            self.emit("reox_button_create(");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 { self.emit(", "); }
+                                self.gen_expr(arg);
+                            }
+                            self.emit(")");
+                            return;
+                        }
+                        "text" | "label" => {
+                            self.emit("reox_label_create(");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 { self.emit(", "); }
+                                self.gen_expr(arg);
+                            }
+                            self.emit(")");
+                            return;
+                        }
+                        "input" | "textfield" => {
+                            self.emit("reox_textfield_create(");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 { self.emit(", "); }
+                                self.gen_expr(arg);
+                            }
+                            self.emit(")");
+                            return;
+                        }
+                        "slider" => {
+                            self.emit("reox_slider_create(");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 { self.emit(", "); }
+                                self.gen_expr(arg);
+                            }
+                            self.emit(")");
+                            return;
+                        }
+                        "checkbox" => {
+                            self.emit("reox_checkbox_create(");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 { self.emit(", "); }
+                                self.gen_expr(arg);
+                            }
+                            self.emit(")");
+                            return;
+                        }
+                        "vstack" => {
+                            self.emit("reox_vstack(");
+                            if !args.is_empty() {
+                                self.gen_expr(&args[0]);
+                            } else {
+                                self.emit("0");
+                            }
+                            self.emit(")");
+                            return;
+                        }
+                        "hstack" => {
+                            self.emit("reox_hstack(");
+                            if !args.is_empty() {
+                                self.gen_expr(&args[0]);
+                            } else {
+                                self.emit("0");
+                            }
+                            self.emit(")");
+                            return;
+                        }
+                        "window" => {
+                            self.emit("reox_window_create(");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 { self.emit(", "); }
+                                self.gen_expr(arg);
+                            }
+                            self.emit(")");
+                            return;
+                        }
+                        // Theme colors -> emit directly
+                        "color_primary" => { self.emit("(rx_color){0, 122, 255, 255}"); return; }
+                        "color_secondary" => { self.emit("(rx_color){88, 86, 214, 255}"); return; }
+                        "color_success" => { self.emit("(rx_color){52, 199, 89, 255}"); return; }
+                        "color_warning" => { self.emit("(rx_color){255, 149, 0, 255}"); return; }
+                        "color_danger" => { self.emit("(rx_color){255, 59, 48, 255}"); return; }
+                        "color_background" => { self.emit("(rx_color){28, 28, 30, 255}"); return; }
+                        "color_surface" => { self.emit("(rx_color){44, 44, 46, 255}"); return; }
+                        "color_text" => { self.emit("(rx_color){255, 255, 255, 255}"); return; }
+                        // Standard function - emit as-is
+                        _ => {}
+                    }
+                }
+                // Default: emit as regular function call
                 self.gen_expr(callee);
                 self.emit("(");
                 for (i, arg) in args.iter().enumerate() {
@@ -535,6 +654,14 @@ impl CodeGen {
                 // Emit await as rx_await() runtime call
                 self.emit("rx_await(");
                 self.gen_expr(operand);
+                self.emit(")");
+            }
+            Expr::Range(start, end, _) => {
+                // Runtime call to create array from range
+                self.emit("rx_range(");
+                self.gen_expr(start);
+                self.emit(", ");
+                self.gen_expr(end);
                 self.emit(")");
             }
         }

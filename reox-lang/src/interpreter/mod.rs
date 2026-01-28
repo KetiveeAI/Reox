@@ -94,8 +94,294 @@ impl Environment {
             }
             Value::Color { r: 0, g: 0, b: 0, a: 255 }
         }));
+        
+        // Additional array operations
+        e.define("array_get", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                if let (Value::Array(arr), Value::Int(idx)) = (&a[0], &a[1]) {
+                    return arr.get(*idx as usize).cloned().unwrap_or(Value::Nil);
+                }
+            }
+            Value::Nil
+        }));
+        e.define("array_set", Value::NativeAction(|a| {
+            if a.len() >= 3 {
+                if let (Value::Array(mut arr), Value::Int(idx)) = (a[0].clone(), &a[1]) {
+                    if (*idx as usize) < arr.len() {
+                        arr[*idx as usize] = a[2].clone();
+                        return Value::Array(arr);
+                    }
+                }
+            }
+            Value::Nil
+        }));
+        e.define("array_contains", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                if let Value::Array(arr) = &a[0] {
+                    let target = &a[1];
+                    for item in arr {
+                        let found = match (item, target) {
+                            (Value::Int(x), Value::Int(y)) => x == y,
+                            (Value::Float(x), Value::Float(y)) => x == y,
+                            (Value::String(x), Value::String(y)) => x == y,
+                            (Value::Bool(x), Value::Bool(y)) => x == y,
+                            _ => false,
+                        };
+                        if found { return Value::Bool(true); }
+                    }
+                }
+            }
+            Value::Bool(false)
+        }));
+        e.define("array_slice", Value::NativeAction(|a| {
+            if a.len() >= 3 {
+                if let (Value::Array(arr), Value::Int(start), Value::Int(end)) = (&a[0], &a[1], &a[2]) {
+                    let s = (*start as usize).min(arr.len());
+                    let e = (*end as usize).min(arr.len());
+                    return Value::Array(arr[s..e].to_vec());
+                }
+            }
+            Value::Array(vec![])
+        }));
+        
+        // Additional map operations
+        e.define("map_has", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                if let (Value::Map(m), Value::String(k)) = (&a[0], &a[1]) {
+                    return Value::Bool(m.contains_key(k));
+                }
+            }
+            Value::Bool(false)
+        }));
+        e.define("map_remove", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                if let (Value::Map(mut m), Value::String(k)) = (a[0].clone(), &a[1]) {
+                    m.remove(k);
+                    return Value::Map(m);
+                }
+            }
+            Value::Nil
+        }));
+        e.define("map_keys", Value::NativeAction(|a| {
+            if let Some(Value::Map(m)) = a.first() {
+                let keys: Vec<Value> = m.keys().map(|k| Value::String(k.clone())).collect();
+                return Value::Array(keys);
+            }
+            Value::Array(vec![])
+        }));
+        
+        // String operations
+        e.define("str_split", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                if let (Value::String(s), Value::String(delim)) = (&a[0], &a[1]) {
+                    let parts: Vec<Value> = s.split(delim.as_str()).map(|p| Value::String(p.to_string())).collect();
+                    return Value::Array(parts);
+                }
+            }
+            Value::Array(vec![])
+        }));
+        e.define("str_join", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                if let (Value::Array(arr), Value::String(sep)) = (&a[0], &a[1]) {
+                    let strings: Vec<String> = arr.iter().filter_map(|v| {
+                        if let Value::String(s) = v { Some(s.clone()) } else { None }
+                    }).collect();
+                    return Value::String(strings.join(sep));
+                }
+            }
+            Value::String(String::new())
+        }));
+        e.define("str_trim", Value::NativeAction(|a| {
+            if let Some(Value::String(s)) = a.first() {
+                return Value::String(s.trim().to_string());
+            }
+            Value::String(String::new())
+        }));
+        e.define("str_upper", Value::NativeAction(|a| {
+            if let Some(Value::String(s)) = a.first() {
+                return Value::String(s.to_uppercase());
+            }
+            Value::String(String::new())
+        }));
+        e.define("str_lower", Value::NativeAction(|a| {
+            if let Some(Value::String(s)) = a.first() {
+                return Value::String(s.to_lowercase());
+            }
+            Value::String(String::new())
+        }));
+        e.define("str_contains", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                if let (Value::String(s), Value::String(sub)) = (&a[0], &a[1]) {
+                    return Value::Bool(s.contains(sub.as_str()));
+                }
+            }
+            Value::Bool(false)
+        }));
+        e.define("str_replace", Value::NativeAction(|a| {
+            if a.len() >= 3 {
+                if let (Value::String(s), Value::String(from), Value::String(to)) = (&a[0], &a[1], &a[2]) {
+                    return Value::String(s.replace(from.as_str(), to));
+                }
+            }
+            Value::String(String::new())
+        }));
+        
+        // Math operations
+        e.define("abs", Value::NativeAction(|a| {
+            match a.first() {
+                Some(Value::Int(i)) => Value::Int(i.abs()),
+                Some(Value::Float(f)) => Value::Float(f.abs()),
+                _ => Value::Int(0)
+            }
+        }));
+        e.define("min", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                match (&a[0], &a[1]) {
+                    (Value::Int(x), Value::Int(y)) => return Value::Int(*x.min(y)),
+                    (Value::Float(x), Value::Float(y)) => return Value::Float(x.min(*y)),
+                    _ => {}
+                }
+            }
+            Value::Int(0)
+        }));
+        e.define("max", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                match (&a[0], &a[1]) {
+                    (Value::Int(x), Value::Int(y)) => return Value::Int(*x.max(y)),
+                    (Value::Float(x), Value::Float(y)) => return Value::Float(x.max(*y)),
+                    _ => {}
+                }
+            }
+            Value::Int(0)
+        }));
+        e.define("sqrt", Value::NativeAction(|a| {
+            match a.first() {
+                Some(Value::Int(i)) => Value::Float((*i as f64).sqrt()),
+                Some(Value::Float(f)) => Value::Float(f.sqrt()),
+                _ => Value::Float(0.0)
+            }
+        }));
+        e.define("pow", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                match (&a[0], &a[1]) {
+                    (Value::Int(base), Value::Int(exp)) => return Value::Int(base.pow(*exp as u32)),
+                    (Value::Float(base), Value::Float(exp)) => return Value::Float(base.powf(*exp)),
+                    (Value::Int(base), Value::Float(exp)) => return Value::Float((*base as f64).powf(*exp)),
+                    _ => {}
+                }
+            }
+            Value::Int(0)
+        }));
+        e.define("floor", Value::NativeAction(|a| {
+            if let Some(Value::Float(f)) = a.first() { Value::Int(f.floor() as i64) } else { Value::Int(0) }
+        }));
+        e.define("ceil", Value::NativeAction(|a| {
+            if let Some(Value::Float(f)) = a.first() { Value::Int(f.ceil() as i64) } else { Value::Int(0) }
+        }));
+        e.define("round", Value::NativeAction(|a| {
+            if let Some(Value::Float(f)) = a.first() { Value::Int(f.round() as i64) } else { Value::Int(0) }
+        }));
+        
+        // Type conversions
+        e.define("int", Value::NativeAction(|a| {
+            match a.first() {
+                Some(Value::Int(i)) => Value::Int(*i),
+                Some(Value::Float(f)) => Value::Int(*f as i64),
+                Some(Value::String(s)) => Value::Int(s.parse().unwrap_or(0)),
+                Some(Value::Bool(b)) => Value::Int(if *b { 1 } else { 0 }),
+                _ => Value::Int(0)
+            }
+        }));
+        e.define("float", Value::NativeAction(|a| {
+            match a.first() {
+                Some(Value::Int(i)) => Value::Float(*i as f64),
+                Some(Value::Float(f)) => Value::Float(*f),
+                Some(Value::String(s)) => Value::Float(s.parse().unwrap_or(0.0)),
+                _ => Value::Float(0.0)
+            }
+        }));
+        e.define("str", Value::NativeAction(|a| {
+            if let Some(v) = a.first() { Value::String(format!("{}", v)) } else { Value::String(String::new()) }
+        }));
+        e.define("bool", Value::NativeAction(|a| {
+            if let Some(v) = a.first() { Value::Bool(v.is_truthy()) } else { Value::Bool(false) }
+        }));
+        
         // AI
         e.define("ai_generate", Value::NativeAction(crate::stdlib::ai::generate));
+        
+        // ============ Animation Easing ============
+        e.define("ease_linear", Value::NativeAction(|a| {
+            if let Some(Value::Float(t)) = a.first() {
+                Value::Float(t.clamp(0.0, 1.0))
+            } else { Value::Float(0.0) }
+        }));
+        e.define("ease_in", Value::NativeAction(|a| {
+            if let Some(Value::Float(t)) = a.first() {
+                let t = t.clamp(0.0, 1.0);
+                Value::Float(t * t)
+            } else { Value::Float(0.0) }
+        }));
+        e.define("ease_out", Value::NativeAction(|a| {
+            if let Some(Value::Float(t)) = a.first() {
+                let t = t.clamp(0.0, 1.0);
+                Value::Float(1.0 - (1.0 - t) * (1.0 - t))
+            } else { Value::Float(0.0) }
+        }));
+        e.define("ease_in_out", Value::NativeAction(|a| {
+            if let Some(Value::Float(t)) = a.first() {
+                let t = t.clamp(0.0, 1.0);
+                if t < 0.5 {
+                    Value::Float(2.0 * t * t)
+                } else {
+                    Value::Float(1.0 - (-2.0 * t + 2.0).powi(2) / 2.0)
+                }
+            } else { Value::Float(0.0) }
+        }));
+        e.define("lerp", Value::NativeAction(|a| {
+            let a_val = if let Some(Value::Float(v)) = a.get(0) { *v } else { 0.0 };
+            let b_val = if let Some(Value::Float(v)) = a.get(1) { *v } else { 0.0 };
+            let t = if let Some(Value::Float(v)) = a.get(2) { v.clamp(0.0, 1.0) } else { 0.0 };
+            Value::Float(a_val + (b_val - a_val) * t)
+        }));
+        
+        // ============ Theme Colors ============
+        e.define("color_primary", Value::NativeAction(|_| Value::Color { r: 0, g: 122, b: 255, a: 255 }));
+        e.define("color_secondary", Value::NativeAction(|_| Value::Color { r: 88, g: 86, b: 214, a: 255 }));
+        e.define("color_success", Value::NativeAction(|_| Value::Color { r: 52, g: 199, b: 89, a: 255 }));
+        e.define("color_warning", Value::NativeAction(|_| Value::Color { r: 255, g: 149, b: 0, a: 255 }));
+        e.define("color_danger", Value::NativeAction(|_| Value::Color { r: 255, g: 59, b: 48, a: 255 }));
+        e.define("color_background", Value::NativeAction(|_| Value::Color { r: 28, g: 28, b: 30, a: 255 }));
+        e.define("color_surface", Value::NativeAction(|_| Value::Color { r: 44, g: 44, b: 46, a: 255 }));
+        e.define("color_text", Value::NativeAction(|_| Value::Color { r: 255, g: 255, b: 255, a: 255 }));
+        e.define("color_text_dim", Value::NativeAction(|_| Value::Color { r: 142, g: 142, b: 147, a: 255 }));
+        
+        // ============ HSL Color ============
+        e.define("hsl", Value::NativeAction(|a| {
+            let h = if let Some(Value::Float(v)) = a.get(0) { *v } else { 0.0 };
+            let s = if let Some(Value::Float(v)) = a.get(1) { *v / 100.0 } else { 0.0 };
+            let l = if let Some(Value::Float(v)) = a.get(2) { *v / 100.0 } else { 0.0 };
+            
+            let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+            let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+            let m = l - c / 2.0;
+            
+            let (r1, g1, b1) = match h as i32 % 360 {
+                0..=59 => (c, x, 0.0),
+                60..=119 => (x, c, 0.0),
+                120..=179 => (0.0, c, x),
+                180..=239 => (0.0, x, c),
+                240..=299 => (x, 0.0, c),
+                _ => (c, 0.0, x),
+            };
+            
+            Value::Color {
+                r: ((r1 + m) * 255.0) as u8,
+                g: ((g1 + m) * 255.0) as u8,
+                b: ((b1 + m) * 255.0) as u8,
+                a: 255,
+            }
+        }));
         
         // ============ System Module ============
         // File I/O
@@ -526,6 +812,18 @@ impl Interpreter {
             },
             // Await: await expr (simplified, just evaluates the expr)
             Expr::Await(inner, _) => self.expr(inner),
+            // Range expression: start..end generates array [start, start+1, ..., end]
+            Expr::Range(start, end, _) => {
+                let s = self.expr(start)?;
+                let e = self.expr(end)?;
+                match (s, e) {
+                    (Value::Int(from), Value::Int(to)) => {
+                        let arr: Vec<Value> = (from..=to).map(Value::Int).collect();
+                        Ok(Value::Array(arr))
+                    },
+                    _ => Err(RuntimeError::new("range requires int bounds"))
+                }
+            },
         }
     }
     
@@ -535,17 +833,74 @@ impl Interpreter {
     
     fn binop(&self, l: Value, o: &BinOp, r: Value) -> Result<Value, RuntimeError> {
         Ok(match o {
-            BinOp::Add => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Int(a+b), (Value::String(a),Value::String(b)) => Value::String(a+&b), _ => return Err(RuntimeError::new("+")) },
-            BinOp::Sub => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Int(a-b), _ => return Err(RuntimeError::new("-")) },
-            BinOp::Mul => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Int(a*b), _ => return Err(RuntimeError::new("*")) },
-            BinOp::Div => match (l,r) { (Value::Int(a),Value::Int(b)) if b!=0 => Value::Int(a/b), _ => return Err(RuntimeError::new("/")) },
-            BinOp::Mod => match (l,r) { (Value::Int(a),Value::Int(b)) if b!=0 => Value::Int(a%b), _ => return Err(RuntimeError::new("%")) },
-            BinOp::Eq => Value::Bool(self.eq(&l,&r)), BinOp::Ne => Value::Bool(!self.eq(&l,&r)),
-            BinOp::Lt => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Bool(a<b), _ => return Err(RuntimeError::new("<")) },
-            BinOp::Gt => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Bool(a>b), _ => return Err(RuntimeError::new(">")) },
-            BinOp::Le => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Bool(a<=b), _ => return Err(RuntimeError::new("<=")) },
-            BinOp::Ge => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Bool(a>=b), _ => return Err(RuntimeError::new(">=")) },
-            BinOp::And => Value::Bool(l.is_truthy() && r.is_truthy()), BinOp::Or => Value::Bool(l.is_truthy() || r.is_truthy()),
+            BinOp::Add => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) => Value::Int(a+b), 
+                (Value::Float(a),Value::Float(b)) => Value::Float(a+b),
+                (Value::Int(a),Value::Float(b)) => Value::Float(a as f64 + b),
+                (Value::Float(a),Value::Int(b)) => Value::Float(a + b as f64),
+                (Value::String(a),Value::String(b)) => Value::String(a+&b), 
+                _ => return Err(RuntimeError::new("+")) 
+            },
+            BinOp::Sub => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) => Value::Int(a-b), 
+                (Value::Float(a),Value::Float(b)) => Value::Float(a-b),
+                (Value::Int(a),Value::Float(b)) => Value::Float(a as f64 - b),
+                (Value::Float(a),Value::Int(b)) => Value::Float(a - b as f64),
+                _ => return Err(RuntimeError::new("-")) 
+            },
+            BinOp::Mul => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) => Value::Int(a*b), 
+                (Value::Float(a),Value::Float(b)) => Value::Float(a*b),
+                (Value::Int(a),Value::Float(b)) => Value::Float(a as f64 * b),
+                (Value::Float(a),Value::Int(b)) => Value::Float(a * b as f64),
+                _ => return Err(RuntimeError::new("*")) 
+            },
+            BinOp::Div => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) if b!=0 => Value::Int(a/b), 
+                (Value::Float(a),Value::Float(b)) if b!=0.0 => Value::Float(a/b),
+                (Value::Int(a),Value::Float(b)) if b!=0.0 => Value::Float(a as f64 / b),
+                (Value::Float(a),Value::Int(b)) if b!=0 => Value::Float(a / b as f64),
+                _ => return Err(RuntimeError::new("/")) 
+            },
+            BinOp::Mod => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) if b!=0 => Value::Int(a%b), 
+                (Value::Float(a),Value::Float(b)) if b!=0.0 => Value::Float(a%b),
+                (Value::Int(a),Value::Float(b)) if b!=0.0 => Value::Float((a as f64) % b),
+                (Value::Float(a),Value::Int(b)) if b!=0 => Value::Float(a % (b as f64)),
+                _ => return Err(RuntimeError::new("%")) 
+            },
+            BinOp::Eq => Value::Bool(self.eq(&l,&r)), 
+            BinOp::Ne => Value::Bool(!self.eq(&l,&r)),
+            BinOp::Lt => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) => Value::Bool(a<b), 
+                (Value::Float(a),Value::Float(b)) => Value::Bool(a<b),
+                (Value::Int(a),Value::Float(b)) => Value::Bool((a as f64) < b),
+                (Value::Float(a),Value::Int(b)) => Value::Bool(a < (b as f64)),
+                _ => return Err(RuntimeError::new("<")) 
+            },
+            BinOp::Gt => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) => Value::Bool(a>b), 
+                (Value::Float(a),Value::Float(b)) => Value::Bool(a>b),
+                (Value::Int(a),Value::Float(b)) => Value::Bool((a as f64) > b),
+                (Value::Float(a),Value::Int(b)) => Value::Bool(a > (b as f64)),
+                _ => return Err(RuntimeError::new(">")) 
+            },
+            BinOp::Le => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) => Value::Bool(a<=b), 
+                (Value::Float(a),Value::Float(b)) => Value::Bool(a<=b),
+                (Value::Int(a),Value::Float(b)) => Value::Bool((a as f64) <= b),
+                (Value::Float(a),Value::Int(b)) => Value::Bool(a <= (b as f64)),
+                _ => return Err(RuntimeError::new("<=")) 
+            },
+            BinOp::Ge => match (l,r) { 
+                (Value::Int(a),Value::Int(b)) => Value::Bool(a>=b), 
+                (Value::Float(a),Value::Float(b)) => Value::Bool(a>=b),
+                (Value::Int(a),Value::Float(b)) => Value::Bool((a as f64) >= b),
+                (Value::Float(a),Value::Int(b)) => Value::Bool(a >= (b as f64)),
+                _ => return Err(RuntimeError::new(">=")) 
+            },
+            BinOp::And => Value::Bool(l.is_truthy() && r.is_truthy()), 
+            BinOp::Or => Value::Bool(l.is_truthy() || r.is_truthy()),
             // Bitwise operators
             BinOp::BitwiseAnd => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Int(a&b), _ => return Err(RuntimeError::new("&")) },
             BinOp::BitwiseOr => match (l,r) { (Value::Int(a),Value::Int(b)) => Value::Int(a|b), _ => return Err(RuntimeError::new("|")) },
@@ -555,7 +910,16 @@ impl Interpreter {
         })
     }
     
-    fn eq(&self, a: &Value, b: &Value) -> bool { match (a,b) { (Value::Nil,Value::Nil) => true, (Value::Bool(a),Value::Bool(b)) => a==b, (Value::Int(a),Value::Int(b)) => a==b, (Value::String(a),Value::String(b)) => a==b, _ => false } }
+    fn eq(&self, a: &Value, b: &Value) -> bool { 
+        match (a,b) { 
+            (Value::Nil,Value::Nil) => true, 
+            (Value::Bool(a),Value::Bool(b)) => a==b, 
+            (Value::Int(a),Value::Int(b)) => a==b, 
+            (Value::Float(a),Value::Float(b)) => (a - b).abs() < f64::EPSILON,
+            (Value::String(a),Value::String(b)) => a==b, 
+            _ => false 
+        } 
+    }
 }
 
 impl Default for Interpreter { fn default() -> Self { Self::new() } }

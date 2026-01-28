@@ -17,6 +17,12 @@ pub enum ResolvedType {
         params: Vec<ResolvedType>,
         ret: Box<ResolvedType>,
     },
+    // Container types
+    Optional(Box<ResolvedType>),
+    Map(Box<ResolvedType>, Box<ResolvedType>),
+    Tuple(Vec<ResolvedType>),
+    // Special types
+    Color,
     Unknown,
     Error,
 }
@@ -42,12 +48,23 @@ impl ResolvedType {
         if *self == *other {
             return true;
         }
-        // Int can be assigned from Int
-        // Float can be assigned from Int (widening)
-        matches!(
-            (self, other),
-            (ResolvedType::Float, ResolvedType::Int)
-        )
+        match (self, other) {
+            // Float can be assigned from Int (widening)
+            (ResolvedType::Float, ResolvedType::Int) => true,
+            // Optional<T> can be assigned from T
+            (ResolvedType::Optional(inner), other) => inner.is_assignable_from(other),
+            // Array<T> compatibility
+            (ResolvedType::Array(a), ResolvedType::Array(b)) => a.is_assignable_from(b),
+            // Map compatibility
+            (ResolvedType::Map(k1, v1), ResolvedType::Map(k2, v2)) => {
+                k1.is_assignable_from(k2) && v1.is_assignable_from(v2)
+            }
+            // Tuple compatibility (same length and compatible elements)
+            (ResolvedType::Tuple(a), ResolvedType::Tuple(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.is_assignable_from(y))
+            }
+            _ => false,
+        }
     }
 
     /// Get display name for error messages
@@ -64,6 +81,13 @@ impl ResolvedType {
                 let params_str: Vec<String> = params.iter().map(|p| p.display_name()).collect();
                 format!("fn({}) -> {}", params_str.join(", "), ret.display_name())
             }
+            ResolvedType::Optional(inner) => format!("{}?", inner.display_name()),
+            ResolvedType::Map(key, val) => format!("Map<{}, {}>", key.display_name(), val.display_name()),
+            ResolvedType::Tuple(elems) => {
+                let parts: Vec<String> = elems.iter().map(|e| e.display_name()).collect();
+                format!("({})", parts.join(", "))
+            }
+            ResolvedType::Color => "Color".to_string(),
             ResolvedType::Unknown => "<unknown>".to_string(),
             ResolvedType::Error => "<error>".to_string(),
         }

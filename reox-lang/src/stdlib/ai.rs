@@ -63,3 +63,55 @@ pub fn generate(args: Vec<Value>) -> Value {
         Err(e) => Value::String(format!("Error sending request: {}", e)),
     }
 }
+
+// ============== AI Helper Functions ==============
+
+/// Ask AI to complete code
+/// ai_complete("fn calculate_sum(") -> "fn calculate_sum(a: int, b: int) -> int { return a + b; }"
+pub fn ai_complete(code_fragment: &str) -> String {
+    let prompt = format!(
+        "Complete this REOX code. Only return the completed code, no explanations:\n\n{}",
+        code_fragment
+    );
+    format!("AI_COMPLETE: {}", prompt)  // Placeholder - actual impl would call generate
+}
+
+/// Ask AI to explain code
+/// ai_explain("let x = map.filter(|k, v| v > 10);") -> "This filters a map..."
+pub fn ai_explain(code: &str) -> String {
+    let prompt = format!(
+        "Explain this REOX code in simple terms. Be concise:\n\n{}",
+        code
+    );
+    format!("AI_EXPLAIN: {}", prompt)
+}
+
+/// Ask AI to fix code error
+/// ai_fix("type mismatch: expected int, got string") -> suggested fix
+pub fn ai_fix(error_message: &str, code_context: &str) -> String {
+    let prompt = format!(
+        "Fix this REOX code error. Error: {}\n\nCode:\n{}\n\nProvide the corrected code:",
+        error_message, code_context
+    );
+    format!("AI_FIX: {}", prompt)
+}
+
+/// Generate UI component from description
+/// ai_ui("a login form with email and password fields") -> REOX UI code
+pub fn ai_ui(description: &str) -> String {
+    let prompt = format!(
+        "Generate REOX UI code for: {}. Use vstack, hstack, text, button, input components. Return only the code:",
+        description
+    );
+    format!("AI_UI: {}", prompt)
+}
+
+/// Check if code contains potential issues
+/// ai_review("fn divide(a: int, b: int) -> int { return a / b; }") -> "Warning: No zero check for divisor"
+pub fn ai_review(code: &str) -> String {
+    let prompt = format!(
+        "Review this REOX code for potential bugs, security issues, or improvements. Be brief:\n\n{}",
+        code
+    );
+    format!("AI_REVIEW: {}", prompt)
+}

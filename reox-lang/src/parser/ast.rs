@@ -209,6 +209,8 @@ pub enum Expr {
     TrailingClosure(Box<Expr>, Box<Block>, Span), // button("Click") { ... }
     Nil(Span),
     Await(Box<Expr>, Span),                        // await expr
+    // Range expressions
+    Range(Box<Expr>, Box<Expr>, Span),             // start..end (inclusive)
 }
 
 /// Literal values

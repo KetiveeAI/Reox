@@ -1,12 +1,12 @@
 # REOX Language Health Report
 
-**Date:** January 18, 2026  
+**Date:** January 28, 2026  
 **Version:** Pre-v1  
-**Last Updated:** After async/await implementation
+**Last Updated:** After float arithmetic and clippy fixes
 
 ## 📊 Executive Summary
 
-The REOX compiler (`reoxc`) has made significant progress toward v1 readiness. Recent updates have addressed critical issues including async/await support, match expressions, and bitwise operators. The compiler now successfully compiles control flow, function calls, match expressions, and async/await to C code.
+The REOX compiler (`reoxc`) has made significant progress toward v1 readiness. Recent updates have addressed critical issues including async/await support, match expressions, bitwise operators, and float arithmetic. The interpreter now fully supports float operations and mixed int/float arithmetic.
 
 ## ✅ Recently Fixed
 
@@ -41,6 +41,21 @@ The REOX compiler (`reoxc`) has made significant progress toward v1 readiness. R
   - Full precedence ladder in parser: `|`, `^`, `&`, `<<`, `>>`
   - Typechecker enforces int operands
   - Codegen passes through to C operators
+
+### 4. Float Arithmetic - **IMPLEMENTED**
+
+- **Status:** Working (Jan 28, 2026)
+- **Implementation:**
+  - All arithmetic operators (+, -, \*, /, %) now support float types
+  - Mixed int/float operations auto-promote to float
+  - Comparison operators (<, >, <=, >=) work with floats
+  - Float equality uses epsilon comparison
+- **Usage:**
+  ```reox
+  let x: float = 3.14;
+  let y: float = x * 2.0;  // 6.28
+  let z: float = 1 + 0.5;  // Mixed: 1.5
+  ```
 
 ## 🟡 Improvement Areas
 

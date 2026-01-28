@@ -107,7 +107,7 @@ impl TypeChecker {
 
         let ret = f.return_type
             .as_ref()
-            .map(|t| ResolvedType::from_parser_type(t))
+            .map(ResolvedType::from_parser_type)
             .unwrap_or(ResolvedType::Void);
 
         let fn_type = ResolvedType::Function {
@@ -140,7 +140,7 @@ impl TypeChecker {
 
         let ret = e.return_type
             .as_ref()
-            .map(|t| ResolvedType::from_parser_type(t))
+            .map(ResolvedType::from_parser_type)
             .unwrap_or(ResolvedType::Void);
 
         let fn_type = ResolvedType::Function {
@@ -533,12 +533,29 @@ impl TypeChecker {
                 }
             }
             Expr::Nil(_) => ResolvedType::Unknown,
-            Expr::Await(operand, _span) => {
+            Expr::Await(operand, _) => {
                 // Await unwraps the async return type - for now return the inner type
                 let operand_ty = self.infer_expr_type(operand);
                 // If it's a function call, return the function's return type
                 // Otherwise return the operand type itself
                 operand_ty
+            }
+            Expr::Range(start, end, span) => {
+                let start_ty = self.infer_expr_type(start);
+                let end_ty = self.infer_expr_type(end);
+                
+                if start_ty != ResolvedType::Int || end_ty != ResolvedType::Int {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "range bounds must be int, found '{}' and '{}'",
+                            start_ty.display_name(),
+                            end_ty.display_name()
+                        ),
+                        span,
+                    ));
+                }
+                // Range produces an array of integers
+                ResolvedType::Array(Box::new(ResolvedType::Int))
             }
         }
     }
