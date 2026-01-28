@@ -102,15 +102,15 @@
             "patterns": [
                 {
                     "name": "keyword.control.reox",
-                    "match": "\\b(if|else|while|for|in|match|when|return|break|continue|loop|guard|defer|try|catch|throw)\\b"
+                    "match": "\\b(if|else|while|for|in|match|when|return|break|continue|loop|guard|defer|try|catch|throw|where)\\b"
                 },
                 {
                     "name": "keyword.declaration.reox",
-                    "match": "\\b(fn|let|struct|kind|layer|panel|action|signal|emit|extern|import|async|await)\\b"
+                    "match": "\\b(fn|let|struct|kind|layer|panel|action|signal|emit|extern|import|async|await|protocol|extension|typealias)\\b"
                 },
                 {
                     "name": "keyword.modifier.reox",
-                    "match": "\\b(mut|pub|const|static)\\b"
+                    "match": "\\b(mut|pub|const|static|effect)\\b"
                 },
                 {
                     "name": "constant.language.boolean.reox",
@@ -118,11 +118,15 @@
                 },
                 {
                     "name": "constant.language.null.reox",
-                    "match": "\\b(null|none|nil)\\b"
+                    "match": "\\b(null|none|nil|maybe)\\b"
                 },
                 {
                     "name": "keyword.other.reox",
-                    "match": "\\b(self|super|as|where|maybe)\\b"
+                    "match": "\\b(self|super|as|bind)\\b"
+                },
+                {
+                    "name": "keyword.gesture.reox",
+                    "match": "\\b(gesture|on_tap|on_pan|on_swipe|on_pinch|on_rotate)\\b"
                 }
             ]
         },
@@ -197,6 +201,18 @@
                     "match": "&&|\\|\\||!"
                 },
                 {
+                    "name": "keyword.operator.nullcoalescing.reox",
+                    "match": "\\?\\?|\\?\\."
+                },
+                {
+                    "name": "keyword.operator.increment.reox",
+                    "match": "\\+\\+|--"
+                },
+                {
+                    "name": "keyword.operator.bitwise.reox",
+                    "match": "~|\\^|<<|>>"
+                },
+                {
                     "name": "keyword.operator.assignment.reox",
                     "match": "=|\\+=|-=|\\*=|/=|%="
                 },
@@ -206,7 +222,7 @@
                 },
                 {
                     "name": "keyword.operator.access.reox",
-                    "match": "\\.|::"
+                    "match": "\\?\\.?|\\.|::"
                 },
                 {
                     "name": "keyword.operator.range.reox",

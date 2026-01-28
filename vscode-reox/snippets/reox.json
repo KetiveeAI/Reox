@@ -213,5 +213,122 @@
             "animate_slide_in(${1:view}, ${2:0.0}, ${3:-50.0}, ${4:0.4});"
         ],
         "description": "Slide in animation"
+    },
+    "Gesture Tap": {
+        "prefix": "ontap",
+        "body": [
+            "on_tap(${1:view}) {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Tap gesture handler"
+    },
+    "Gesture Pan": {
+        "prefix": "onpan",
+        "body": [
+            "on_pan(${1:view}, dx, dy) {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Pan gesture handler"
+    },
+    "Gesture Swipe": {
+        "prefix": "onswipe",
+        "body": [
+            "on_swipe(${1:view}, direction) {",
+            "\tmatch direction {",
+            "\t\twhen .left => $2,",
+            "\t\twhen .right => $3,",
+            "\t\t_ => {}",
+            "\t}",
+            "}"
+        ],
+        "description": "Swipe gesture handler"
+    },
+    "Gesture Pinch": {
+        "prefix": "onpinch",
+        "body": [
+            "on_pinch(${1:view}, scale) {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Pinch zoom gesture handler"
+    },
+    "Protocol": {
+        "prefix": "protocol",
+        "body": [
+            "protocol ${1:Name} {",
+            "\tfn ${2:method}(&self)${3: -> void};",
+            "}"
+        ],
+        "description": "Protocol (interface) declaration"
+    },
+    "Extension": {
+        "prefix": "extension",
+        "body": [
+            "extension ${1:Type} {",
+            "\tfn ${2:method}(&self) -> ${3:void} {",
+            "\t\t$0",
+            "\t}",
+            "}"
+        ],
+        "description": "Type extension"
+    },
+    "Typealias": {
+        "prefix": "typealias",
+        "body": [
+            "typealias ${1:NewName} = ${2:ExistingType};"
+        ],
+        "description": "Type alias declaration"
+    },
+    "Loop": {
+        "prefix": "loop",
+        "body": [
+            "loop {",
+            "\t$0",
+            "\tif ${1:condition} {",
+            "\t\tbreak;",
+            "\t}",
+            "}"
+        ],
+        "description": "Infinite loop with break"
+    },
+    "Guard": {
+        "prefix": "guard",
+        "body": [
+            "guard ${1:condition} else {",
+            "\t${2:return;}",
+            "}"
+        ],
+        "description": "Guard early-exit statement"
+    },
+    "Try Catch": {
+        "prefix": "trycatch",
+        "body": [
+            "try {",
+            "\t$1",
+            "} catch ${2:err} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Try-catch exception handling"
+    },
+    "Defer": {
+        "prefix": "defer",
+        "body": [
+            "defer {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Defer block (runs on scope exit)"
+    },
+    "Async Function": {
+        "prefix": "asyncfn",
+        "body": [
+            "async fn ${1:name}(${2:params}) -> ${3:void} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Async function declaration"
     }
 }

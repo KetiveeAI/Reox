@@ -1,8 +1,8 @@
 {
     "name": "reox-language",
     "displayName": "REOX Programming Language",
-    "description": "Syntax highlighting, snippets, and theme for REOX - the modern UI framework language for NeolyxOS",
-    "version": "1.0.5",
+    "description": "Syntax highlighting, snippets, IntelliSense, and theme for REOX - the modern UI framework language for NeolyxOS",
+    "version": "1.2.0",
     "publisher": "ketiveeai",
     "author": "ketiveeai",
     "license": "Apache-2.0",

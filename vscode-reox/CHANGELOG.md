@@ -2,12 +2,41 @@
 
 All notable changes to the REOX Language extension.
 
-## [1.0.4] - 2026-01-18
+## [1.1.0] - 2026-01-20 (Pre-release)
 
 ### Added
 
-- **IntelliSense**: Basic code completion and hover support for keywords, types, and built-ins.
-- **File Icon**: Added official Reox icon for `.reox` files in VS Code explorer.
+- **Protocol/Extension/Typealias**: Full syntax highlighting for `protocol`, `extension`, and `typealias` declarations
+- **Gesture Language**: Syntax highlighting for REOX gesture system (`gesture`, `on_tap`, `on_pan`, `on_swipe`, `on_pinch`, `on_rotate`)
+- **Loop Statement**: Added `loop` keyword for infinite loops
+- **Bitwise Operators**: Syntax highlighting for `~`, `^`, `<<`, `>>` bitwise operations
+- **Null Coalescing**: Highlighting for `??` and `?.` optional chaining operators
+- **Increment/Decrement**: Support for `++` and `--` operators
+- **Extended IntelliSense**: Completions for 70+ keywords, types, and built-in functions
+- **Enhanced Hover Docs**: Rich documentation for 30+ language constructs
+- **Animation Functions**: Completions for `animate_*` functions (fade, slide, scale, rotate, pulse, bounce)
+- **Color Functions**: Extended support for `color_lighten`, `color_darken`, `color_blend`, `color_hsl`
+
+### Fixed
+
+- Correct scoping for `where` clause (now control flow, not other)
+- `maybe` moved to constants (optional type marker)
+- `effect` added as a modifier keyword
+- Improved operator precedence in syntax grammar
+
+### Compatibility
+
+- Works with VS Code 1.60.0 through 1.108.x (latest stable)
+
+---
+
+## [1.0.5] - 2026-01-18
+
+### Fixed
+
+- Minor syntax grammar fixes
+
+## [1.0.4] - 2026-01-18
 
 ## [1.0.3] - 2026-01-18
 
