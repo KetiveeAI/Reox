@@ -152,28 +152,118 @@ jobs:
           name: reoxc-deb
           path: dist/*.deb
 
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: [build-linux, build-windows, build-macos, package-deb]
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
+  package-appimage:
+    name: Package AppImage
+    runs-on: ubuntu-20.04
+    needs: build-linux
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download Linux binary
         uses: actions/download-artifact@v4
         with:
-          path: artifacts/
+          name: reoxc-linux-x64
+          path: dist/
 
+      - name: Install dependencies
+        run: sudo apt-get install -y fuse file
+
+      - name: Build AppImage
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          
+          # Prepare AppDir
+          mkdir -p AppDir/usr/bin
+          cp dist/reoxc-linux-x64 AppDir/usr/bin/reoxc
+          chmod +x AppDir/usr/bin/reoxc
+          cp reox-icon.png AppDir/reox.png
+          
+          # Create desktop file
+          cat > AppDir/reox.desktop <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=Reox Compiler
+          Exec=reoxc
+          Icon=reox
+          Categories=Development;
+          Terminal=true
+          EOF
+          
+          # Download linuxdeploy
+          wget -O linuxdeploy-x86_64.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          
+          # Build AppImage
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage --desktop-file AppDir/reox.desktop --icon-file AppDir/reox.png
+          
+          # Rename to standard format
+          mv Reox_Compiler-*.AppImage dist/reoxc-v${VERSION}-x86_64.AppImage
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: reoxc-appimage
+          path: dist/*.AppImage
+
+  package-dmg:
+    name: Package macOS DMG
+    runs-on: macos-latest
+    needs: build-macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download macOS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: reoxc-macos-universal
+          path: dist/
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build DMG
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          mkdir -p dmg_root
+          cp dist/reoxc-macos-universal dmg_root/reoxc
+          chmod +x dmg_root/reoxc
+
+          create-dmg \
+            --volname "Reox Compiler v${VERSION}" \
+            --volicon "reox-icon.png" \
+            --window-pos 200 120 \
+            --window-size 600 300 \
+            --icon-size 100 \
+            --icon "reoxc" 175 120 \
+            --hide-extension "reoxc" \
+            "dist/reoxc-v${VERSION}-macos-universal.dmg" \
+            "dmg_root/"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: reoxc-dmg
+          path: dist/*.dmg
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
       - name: Prepare release files
         run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+
           mkdir -p release
-          cp artifacts/reoxc-linux-x64/reoxc-linux-x64 release/
-          cp artifacts/reoxc-windows-x64/reoxc-windows-x64.exe release/
-          cp artifacts/reoxc-macos-universal/reoxc-macos-universal release/
+          cp artifacts/reoxc-linux-x64/reoxc-linux-x64 release/reoxc-v${VERSION}-linux-x86_64
+          cp artifacts/reoxc-windows-x64/reoxc-windows-x64.exe release/reoxc-v${VERSION}-windows-x86_64.exe
+          cp artifacts/reoxc-macos-universal/reoxc-macos-universal release/reoxc-v${VERSION}-macos-universal
           cp artifacts/reoxc-deb/*.deb release/
+          cp artifacts/reoxc-appimage/*.AppImage release/
+          cp artifacts/reoxc-dmg/*.dmg release/
+          cp reox-icon.png release/reox-icon.png
 
       - name: Create Release
         uses: softprops/action-gh-release@v1

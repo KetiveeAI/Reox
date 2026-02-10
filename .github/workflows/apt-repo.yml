@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -19,24 +19,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Prepare APT Repository
+        run: |
+          # Fetch and checkout gh-pages branch
+          git fetch origin gh-pages || true
+          git checkout gh-pages || git checkout --orphan gh-pages
+
+          mkdir -p apt-repo
+          # Move existing content to apt-repo if we are on gh-pages root
+          # Note: If gh-pages has other content, we should target a specific dir. 
+          # Assuming repo root is the apt repo.
+
+          # We need to preserve 'pool' and 'dists'.
+          # If we are in root of gh-pages, they are already here.
+
       - name: Download release .deb
         run: |
           VERSION="${{ github.event.release.tag_name || 'v0.5.0-beta' }}"
           VERSION="${VERSION#v}"
 
-          mkdir -p apt-repo/pool/main
+          mkdir -p pool/main
 
           # Download from release
+          # Note: We use the NEW name format from release.yml
           curl -fsSL "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/reoxc_${VERSION}_amd64.deb" \
-            -o "apt-repo/pool/main/reoxc_${VERSION}_amd64.deb" || echo "Deb not found in release"
+            -o "pool/main/reoxc_${VERSION}_amd64.deb" || echo "Deb not found in release"
 
       - name: Install dpkg-dev
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev
 
       - name: Generate repository metadata
         run: |
-          cd apt-repo
-
           # Generate Packages
           mkdir -p dists/stable/main/binary-amd64
           dpkg-scanpackages --arch amd64 pool/ > dists/stable/main/binary-amd64/Packages
@@ -80,7 +98,6 @@ jobs:
         run: |
           if [ -n "$GPG_PRIVATE_KEY" ]; then
             echo "$GPG_PRIVATE_KEY" | gpg --import
-            cd apt-repo
             gpg -abs -o dists/stable/Release.gpg dists/stable/Release
             gpg --clearsign -o dists/stable/InRelease dists/stable/Release
             gpg --export --armor > reox.gpg
@@ -88,14 +105,8 @@ jobs:
             echo "No GPG key configured, skipping signing"
           fi
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: apt-repo
-
       - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+        run: |
+          git add pool dists reox.gpg
+          git commit -m "Update APT repository for version ${{ github.event.release.tag_name }}" || echo "No changes to commit"
+          git push origin gh-pages
