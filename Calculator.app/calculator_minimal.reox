@@ -1,0 +1,7 @@
+// Minimal Reox
+extern fn println(s: string) -> void;
+
+fn main() -> int {
+    println("Hello Minimal");
+    return 0;
+}

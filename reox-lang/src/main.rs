@@ -11,6 +11,7 @@ mod cli;
 mod interpreter;
 mod stdlib;
 mod templates;
+mod pkg;
 
 use std::env;
 use std::process;
@@ -49,6 +50,10 @@ fn handle_command(cmd: cli::CliCommand) -> Result<(), String> {
         }
         cli::CliCommand::New { name, template } => {
             new_project(&name, &template)
+        }
+        cli::CliCommand::Pkg(args) => {
+            let cmd = pkg::parse_pkg_args(&args)?;
+            pkg::handle_pkg(cmd)
         }
         cli::CliCommand::Help => {
             cli::print_usage();

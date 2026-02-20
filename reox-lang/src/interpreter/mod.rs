@@ -309,6 +309,91 @@ impl Environment {
         
         // AI
         e.define("ai_generate", Value::NativeAction(crate::stdlib::ai::generate));
+        e.define("ai_complete", Value::NativeAction(|a| {
+            if let Some(Value::String(s)) = a.first() {
+                Value::String(crate::stdlib::ai::ai_complete(s))
+            } else { Value::String(String::new()) }
+        }));
+        e.define("ai_explain", Value::NativeAction(|a| {
+            if let Some(Value::String(s)) = a.first() {
+                Value::String(crate::stdlib::ai::ai_explain(s))
+            } else { Value::String(String::new()) }
+        }));
+        e.define("ai_fix", Value::NativeAction(|a| {
+            let err = if let Some(Value::String(s)) = a.get(0) { s.clone() } else { String::new() };
+            let ctx = if let Some(Value::String(s)) = a.get(1) { s.clone() } else { String::new() };
+            Value::String(crate::stdlib::ai::ai_fix(&err, &ctx))
+        }));
+        e.define("ai_ui", Value::NativeAction(|a| {
+            if let Some(Value::String(s)) = a.first() {
+                Value::String(crate::stdlib::ai::ai_ui(s))
+            } else { Value::String(String::new()) }
+        }));
+        e.define("ai_review", Value::NativeAction(|a| {
+            if let Some(Value::String(s)) = a.first() {
+                Value::String(crate::stdlib::ai::ai_review(s))
+            } else { Value::String(String::new()) }
+        }));
+        // Input
+        e.define("input", Value::NativeAction(|a| {
+            if let Some(Value::String(prompt)) = a.first() {
+                print!("{}", prompt);
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            let mut line = String::new();
+            let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
+            Value::String(line.trim_end().to_string())
+        }));
+        // Type introspection
+        e.define("type_of", Value::NativeAction(|a| {
+            if let Some(v) = a.first() { Value::String(v.type_name().to_string()) } else { Value::String("nil".to_string()) }
+        }));
+        // Range
+        e.define("range", Value::NativeAction(|a| {
+            let start = if let Some(Value::Int(v)) = a.get(0) { *v } else { 0 };
+            let end = if let Some(Value::Int(v)) = a.get(1) { *v } else { 0 };
+            if start >= end { return Value::Array(vec![]); }
+            Value::Array((start..end).map(Value::Int).collect())
+        }));
+        // Clamp
+        e.define("clamp", Value::NativeAction(|a| {
+            if a.len() >= 3 {
+                match (&a[0], &a[1], &a[2]) {
+                    (Value::Int(v), Value::Int(lo), Value::Int(hi)) => Value::Int((*v).max(*lo).min(*hi)),
+                    (Value::Float(v), Value::Float(lo), Value::Float(hi)) => Value::Float(v.max(*lo).min(*hi)),
+                    _ => Value::Nil
+                }
+            } else { Value::Nil }
+        }));
+        // Sign
+        e.define("sign", Value::NativeAction(|a| {
+            match a.first() {
+                Some(Value::Int(i)) => Value::Int(if *i > 0 { 1 } else if *i < 0 { -1 } else { 0 }),
+                Some(Value::Float(f)) => Value::Int(if *f > 0.0 { 1 } else if *f < 0.0 { -1 } else { 0 }),
+                _ => Value::Int(0)
+            }
+        }));
+        // File type checks
+        e.define("is_file", Value::NativeAction(|a| {
+            if let Some(Value::String(p)) = a.first() { Value::Bool(std::path::Path::new(p).is_file()) } else { Value::Bool(false) }
+        }));
+        e.define("is_dir", Value::NativeAction(|a| {
+            if let Some(Value::String(p)) = a.first() { Value::Bool(std::path::Path::new(p).is_dir()) } else { Value::Bool(false) }
+        }));
+        e.define("create_dir", Value::NativeAction(|a| {
+            if let Some(Value::String(p)) = a.first() { Value::Bool(std::fs::create_dir_all(p).is_ok()) } else { Value::Bool(false) }
+        }));
+        e.define("file_append", Value::NativeAction(|a| {
+            if a.len() >= 2 {
+                if let (Value::String(path), Value::String(content)) = (&a[0], &a[1]) {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+                        return Value::Bool(f.write_all(content.as_bytes()).is_ok());
+                    }
+                }
+            }
+            Value::Bool(false)
+        }));
         
         // ============ Animation Easing ============
         e.define("ease_linear", Value::NativeAction(|a| {

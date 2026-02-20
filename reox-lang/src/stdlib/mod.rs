@@ -1,6 +1,11 @@
 // REOX Standard Library
+// Functions here are library exports used by the codegen path (C generation).
+// The interpreter has its own inline native implementations for runtime.
 
-pub mod core;    // Utility functions: len, type_of, range, math
-pub mod io;      // File and console I/O
-pub mod ui;      // Color and animation utilities
-pub mod ai;      // AI/LLM integration
+#[allow(unused)]
+pub mod core;
+#[allow(unused)]
+pub mod io;
+#[allow(unused)]
+pub mod ui;
+pub mod ai;

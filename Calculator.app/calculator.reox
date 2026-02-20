@@ -1,0 +1,278 @@
+// Calculator App in Reox
+// Demonstrates ReoxUI with C-style extern syntax
+
+// ==========================================
+// Type Definitions
+// ==========================================
+struct Color { r: int, g: int, b: int, a: int }
+struct EdgeInsets { top: float, right: float, bottom: float, left: float }
+struct View { handle: int }
+struct App { handle: int }
+struct Window { handle: int }
+struct Shadow { offset_x: float, offset_y: float, blur: float, color: Color }
+
+// ==========================================
+// External Functions
+// ==========================================
+
+// Print
+extern fn println(s: string) -> void;
+extern fn print(s: string) -> void;
+extern fn int_to_string(i: int) -> string;
+extern fn float_to_string(f: float) -> string;
+extern fn string_concat(a: string, b: string) -> string;
+extern fn string_eq(a: string, b: string) -> bool;
+
+// File I/O
+extern fn append_file(path: string, content: string) -> void;
+
+// Colors
+extern fn color_rgba(r: int, g: int, b: int, a: int) -> Color;
+extern fn color_background() -> Color;
+extern fn color_surface() -> Color;
+extern fn color_text() -> Color;
+extern fn color_primary() -> Color;
+extern fn color_secondary() -> Color;
+extern fn color_accent() -> Color;
+
+// Geometry
+extern fn insets_all(value: float) -> EdgeInsets;
+extern fn shadow(x: float, y: float, blur: float, c: Color) -> Shadow;
+
+// Layout
+extern fn vstack(gap: float) -> View;
+extern fn hstack(gap: float) -> View;
+extern fn grid_view(cols: int, gap: float) -> View;
+extern fn spacer() -> View;
+
+// Views
+extern fn text_view(text: string) -> View;
+extern fn button_view(label: string) -> View;
+extern fn toggle_view(label: string, on: bool) -> View;
+
+// Modifiers
+extern fn view_set_background(v: View, c: Color) -> void;
+extern fn view_set_padding(v: View, p: EdgeInsets) -> void;
+extern fn view_set_corner_radius(v: View, r: float) -> void;
+extern fn view_set_shadow(v: View, s: Shadow) -> void;
+extern fn view_add_child(parent: View, child: View) -> void;
+extern fn view_set_size(v: View, w: float, h: float) -> void;
+
+extern fn text_view_set_text(v: View, text: string) -> void;
+extern fn text_set_font_size(v: View, size: float) -> void;
+extern fn text_set_font_weight(v: View, weight: int) -> void;
+extern fn text_set_color(v: View, c: Color) -> void;
+extern fn text_set_align(v: View, align: int) -> void; 
+
+extern fn button_set_style(v: View, normal: Color, hover: Color, pressed: Color) -> void;
+extern fn button_set_on_click(v: View, callback_id: int) -> void; 
+
+// App
+extern fn app_new(name: string) -> App;
+extern fn app_create_window(app: App, title: string, w: int, h: int) -> Window;
+extern fn app_run(app: App) -> void;
+extern fn window_set_root(win: Window, v: View) -> void;
+
+// ==========================================
+// Application Logic
+// ==========================================
+
+// Global State Accessors (implemented in runtime_extensions.c)
+extern fn get_display() -> string;
+extern fn set_display(s: string) -> void;
+extern fn get_accumulator() -> float;
+extern fn set_accumulator(v: float) -> void;
+extern fn get_pending_op() -> string;
+extern fn set_pending_op(s: string) -> void;
+extern fn get_new_entry() -> bool;
+extern fn set_new_entry(v: bool) -> void;
+extern fn get_settings_visible() -> bool;
+extern fn set_settings_visible(v: bool) -> void;
+
+extern fn get_display_label_handle() -> int;
+extern fn set_display_label_handle(h: int) -> void;
+extern fn get_root_view_handle() -> int;
+extern fn set_root_view_handle(h: int) -> void;
+
+// UI References (Removed globals)
+
+fn update_ui() -> void {
+    let handle: int = get_display_label_handle();
+    if handle != -1 {
+        // Construct View struct from handle
+        let v: View = View { handle: handle };
+        text_view_set_text(v, get_display());
+    }
+}
+
+fn save_history(entry: string) -> void {
+    append_file("history.txt", entry);
+    append_file("history.txt", "\n"); // newline
+}
+
+fn set_op(op: string) -> void {
+    set_pending_op(op);
+    set_new_entry(true);
+}
+
+fn on_add() -> void { set_op("+"); }
+fn on_sub() -> void { set_op("-"); }
+fn on_mul() -> void { set_op("*"); }
+fn on_div() -> void { set_op("/"); }
+
+fn on_eq() -> void {
+    set_new_entry(true);
+    set_display("Result"); 
+    update_ui();
+    save_history("Calculation performed");
+}
+
+fn on_clear() -> void {
+    clear_all();
+}
+
+fn clear_all() -> void {
+    set_display("0");
+    set_accumulator(0.0);
+    set_pending_op("");
+    set_new_entry(true);
+    update_ui();
+}
+
+fn append_digit(digit: string) -> void {
+    // Basic append without check for now to allow compilation
+    let current: string = get_display();
+    set_display(string_concat(current, digit));
+    update_ui();
+}
+
+// Handler wrappers for digits (ID mapping would happen here in a real runtime)
+fn on_click_handler(id: int) -> void {
+    println("Button clicked!");
+}
+
+extern fn get_button_color_wrapper(is_op: bool, is_action: bool, state: int) -> Color;
+
+fn create_button(label: string, is_op: bool, is_action: bool, id: int) -> View {
+    let btn: View = button_view(label);
+    
+    let base_color: Color = get_button_color_wrapper(is_op, is_action, 0);
+    let hover_color: Color = get_button_color_wrapper(is_op, is_action, 1);
+    let pressed_color: Color = color_rgba(30, 30, 30, 255);
+    
+    button_set_style(btn, base_color, hover_color, pressed_color);
+    view_set_corner_radius(btn, 8.0); 
+    
+    button_set_on_click(btn, id);
+    
+    return btn;
+}
+
+fn create_keypad() -> View {
+    let keypad: View = grid_view(4, 12.0); 
+    
+    // Rows (Ids are placeholders: 100+ for digits, 200+ for ops)
+    view_add_child(keypad, create_button("C", true, false, 201));
+    view_add_child(keypad, create_button("+/-", true, false, 202));
+    view_add_child(keypad, create_button("%", true, false, 203));
+    view_add_child(keypad, create_button("/", true, false, 204));
+    
+    view_add_child(keypad, create_button("7", false, false, 107));
+    view_add_child(keypad, create_button("8", false, false, 108));
+    view_add_child(keypad, create_button("9", false, false, 109));
+    view_add_child(keypad, create_button("x", true, false, 205));
+    
+    view_add_child(keypad, create_button("4", false, false, 104));
+    view_add_child(keypad, create_button("5", false, false, 105));
+    view_add_child(keypad, create_button("6", false, false, 106));
+    view_add_child(keypad, create_button("-", true, false, 206));
+    
+    view_add_child(keypad, create_button("1", false, false, 101));
+    view_add_child(keypad, create_button("2", false, false, 102));
+    view_add_child(keypad, create_button("3", false, false, 103));
+    view_add_child(keypad, create_button("+", true, false, 207));
+    
+    view_add_child(keypad, create_button("0", false, false, 100)); 
+    view_add_child(keypad, create_button(".", false, false, 110));
+    view_add_child(keypad, create_button("=", false, true, 208)); 
+    view_add_child(keypad, create_button("H", false, false, 300)); // History/Settings
+
+    return keypad;
+}
+
+fn create_settings() -> View {
+    let v: View = vstack(16.0);
+    view_set_background(v, color_surface());
+    view_set_padding(v, insets_all(20.0));
+    view_set_corner_radius(v, 12.0);
+    
+    let title: View = text_view("Settings");
+    text_set_font_size(title, 20.0);
+    view_add_child(v, title);
+    
+    let sound_toggle: View = toggle_view("Sound Effects", true);
+    view_add_child(v, sound_toggle);
+    
+    let haptic_toggle: View = toggle_view("Haptic Feedback", true);
+    view_add_child(v, haptic_toggle);
+    
+    let theme_toggle: View = toggle_view("High Contrast", false);
+    view_add_child(v, theme_toggle);
+    
+    return v;
+}
+
+fn main() -> int {
+    println("Starting Reox Calculator...");
+
+    let app: App = app_new("Calculator");
+    let window: Window = app_create_window(app, "Calculator", 320, 520);
+
+    // Root
+    let root_view: View = vstack(16.0);
+    view_set_background(root_view, color_background());
+    view_set_padding(root_view, insets_all(20.0));
+    set_root_view_handle(root_view.handle);
+
+    // Display
+    let display_container: View = vstack(0.0);
+    view_set_background(display_container, color_rgba(40, 40, 40, 255)); 
+    view_set_corner_radius(display_container, 12.0);
+    view_set_padding(display_container, insets_all(16.0));
+
+    let display_label: View = text_view("0");
+    text_set_font_size(display_label, 48.0);
+    text_set_font_weight(display_label, 300);
+    text_set_align(display_label, 2);
+    text_set_color(display_label, color_text());
+    
+    // Save handle
+    set_display_label_handle(display_label.handle);
+    
+    view_add_child(display_container, display_label);
+    view_add_child(root_view, display_container);
+
+    // Main Calculator UI
+    let main_layout: View = create_keypad();
+    view_add_child(root_view, main_layout);
+
+    // Settings UI (initially hidden or just executed to verify compilation)
+    view_add_child(root_view, spacer());
+    
+    let settings_btn: View = button_view("Settings");
+    button_set_style(settings_btn, color_surface(), color_text(), color_primary());
+    view_add_child(root_view, settings_btn);
+    
+    let settings_panel: View = create_settings();
+    view_add_child(root_view, settings_panel);
+
+    // Log start
+    save_history("Calculator Started");
+
+    window_set_root(window, root_view);
+
+    println("Calculator UI Ready");
+    app_run(app);
+
+    return 0;
+}

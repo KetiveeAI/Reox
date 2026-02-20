@@ -486,9 +486,45 @@ impl TypeChecker {
                     ResolvedType::Array(Box::new(elem_ty))
                 }
             }
-            Expr::Match(_, _, _) => {
-                // Match expressions are complex - return Unknown for now
-                ResolvedType::Unknown
+            Expr::Match(scrutinee, arms, span) => {
+                // Infer the type being matched on
+                let _scrutinee_ty = self.infer_expr_type(scrutinee);
+                
+                if arms.is_empty() {
+                    return ResolvedType::Void;
+                }
+                
+                // Infer types from all arm bodies and find common type
+                let mut common_type: Option<ResolvedType> = None;
+                
+                for arm in arms {
+                    let arm_ty = self.infer_expr_type(&arm.body);
+                    
+                    match &common_type {
+                        None => {
+                            common_type = Some(arm_ty);
+                        }
+                        Some(existing) => {
+                            // Check if types are compatible
+                            if !existing.is_assignable_from(&arm_ty) && !arm_ty.is_assignable_from(existing) {
+                                self.errors.push(TypeError::new(
+                                    format!(
+                                        "match arms have incompatible types: '{}' and '{}'",
+                                        existing.display_name(),
+                                        arm_ty.display_name()
+                                    ),
+                                    span,
+                                ));
+                            }
+                            // Use the more general type if one is assignable from the other
+                            if arm_ty.is_assignable_from(existing) {
+                                common_type = Some(arm_ty);
+                            }
+                        }
+                    }
+                }
+                
+                common_type.unwrap_or(ResolvedType::Void)
             }
             // Swift/C++ style expressions
             Expr::CompoundAssign(target, _op, value, span) => {

@@ -3,11 +3,133 @@
         "prefix": "main",
         "body": [
             "fn main() -> int {",
+            "\tprintln(\"Starting ${1:App}...\");",
             "\t$0",
             "\treturn 0;",
             "}"
         ],
         "description": "Main function entry point"
+    },
+    "App Boilerplate": {
+        "prefix": "app",
+        "body": [
+            "struct App { handle: int }",
+            "struct Window { handle: int }",
+            "struct View { handle: int }",
+            "",
+            "fn main() -> int {",
+            "\tlet app: App = app_new(\"${1:My App}\");",
+            "\tlet window: Window = app_create_window(app, \"${2:Title}\", ${3:800}, ${4:600});",
+            "\t",
+            "\t// Root container",
+            "\tlet root: View = vstack(${5:16.0});",
+            "\tview_set_padding(root, insets_all(20.0));",
+            "\tview_set_background(root, color_background());",
+            "\t",
+            "\t$0",
+            "\t",
+            "\twindow_set_root(window, root);",
+            "\tapp_run(app);",
+            "\treturn 0;",
+            "}"
+        ],
+        "description": "Basic REOX application structure"
+    },
+    "VStack": {
+        "prefix": "vstack",
+        "body": [
+            "let ${1:stack}: View = vstack(${2:16.0});"
+        ],
+        "description": "Vertical stack container"
+    },
+    "HStack": {
+        "prefix": "hstack",
+        "body": [
+            "let ${1:row}: View = hstack(${2:16.0});"
+        ],
+        "description": "Horizontal stack container"
+    },
+    "Add Child": {
+        "prefix": "add",
+        "body": [
+            "view_add_child(${1:parent}, ${2:child});"
+        ],
+        "description": "Add child view to container"
+    },
+    "Text View": {
+        "prefix": "text",
+        "body": [
+            "let ${1:label}: View = text_view(\"${2:Content}\");",
+            "text_set_color(${1:label}, color_text());",
+            "text_set_font_size(${1:label}, ${3:16.0});"
+        ],
+        "description": "Text label with basic styling"
+    },
+    "Button": {
+        "prefix": "button",
+        "body": [
+            "let ${1:btn}: View = button_view(\"${2:Click Me}\");",
+            "// button_set_on_click(${1:btn}, action_id);"
+        ],
+        "description": "Button view"
+    },
+    "Card": {
+        "prefix": "card",
+        "body": [
+            "let ${1:card}: View = vstack(${2:12.0});",
+            "view_set_background(${1:card}, color_surface());",
+            "view_set_padding(${1:card}, insets_all(${3:16.0}));",
+            "view_set_corner_radius(${1:card}, ${4:12.0});",
+            "view_set_shadow(${1:card}, shadow(0.0, 4.0, 12.0, color_rgba(0, 0, 0, 80)));",
+            "$0"
+        ],
+        "description": "Styled card container"
+    },
+    "Set Background": {
+        "prefix": "bg",
+        "body": [
+            "view_set_background(${1:view}, color_${2:surface}());"
+        ],
+        "description": "Set view background color"
+    },
+    "Set Padding": {
+        "prefix": "padding",
+        "body": [
+            "view_set_padding(${1:view}, insets_all(${2:16.0}));"
+        ],
+        "description": "Set view padding"
+    },
+    "Set Corner Radius": {
+        "prefix": "radius",
+        "body": [
+            "view_set_corner_radius(${1:view}, ${2:12.0});"
+        ],
+        "description": "Set view corner radius"
+    },
+    "Color RGBA": {
+        "prefix": "rgba",
+        "body": [
+            "color_rgba(${1:255}, ${2:255}, ${3:255}, ${4:255})"
+        ],
+        "description": "Create RGBA color"
+    },
+    "For Loop": {
+        "prefix": "for",
+        "body": [
+            "for ${1:i} in ${2:0}..${3:10} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "For loop range"
+    },
+    "If Statement": {
+        "prefix": "if",
+        "body": [
+            "if ${1:condition} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "If statement"
     },
     "Function": {
         "prefix": "fn",
@@ -27,291 +149,12 @@
         ],
         "description": "Struct definition"
     },
-    "Layer": {
-        "prefix": "layer",
-        "body": [
-            "layer ${1:Name} {",
-            "\t$0",
-            "}"
-        ],
-        "description": "UI Layer component"
-    },
-    "Panel": {
-        "prefix": "panel",
-        "body": [
-            "panel ${1:Name} {",
-            "\ttitle: \"${2:Window Title}\"",
-            "\tsize: (${3:800}, ${4:600})",
-            "\t",
-            "\t$0",
-            "}"
-        ],
-        "description": "Window panel"
-    },
-    "VStack": {
-        "prefix": "vstack",
-        "body": [
-            "vstack(gap: ${1:12}) {",
-            "\t$0",
-            "}"
-        ],
-        "description": "Vertical stack layout"
-    },
-    "HStack": {
-        "prefix": "hstack",
-        "body": [
-            "hstack(gap: ${1:8}) {",
-            "\t$0",
-            "}"
-        ],
-        "description": "Horizontal stack layout"
-    },
-    "Button": {
-        "prefix": "button",
-        "body": [
-            "button(\"${1:Label}\")",
-            "\t.on_click(action { ${2:// handler} })"
-        ],
-        "description": "Button with click handler"
-    },
-    "Text": {
-        "prefix": "text",
-        "body": [
-            "text(\"${1:content}\")",
-            "\t.color(${2:0xFFFFFF})",
-            "\t.size(${3:14})"
-        ],
-        "description": "Text with styling"
-    },
-    "Let Variable": {
-        "prefix": "let",
-        "body": [
-            "let ${1:name}: ${2:type} = ${3:value};"
-        ],
-        "description": "Immutable variable"
-    },
-    "Let Mut": {
-        "prefix": "letm",
-        "body": [
-            "let mut ${1:name}: ${2:type} = ${3:value};"
-        ],
-        "description": "Mutable variable"
-    },
-    "If Statement": {
-        "prefix": "if",
-        "body": [
-            "if ${1:condition} {",
-            "\t$0",
-            "}"
-        ],
-        "description": "If statement"
-    },
-    "If Else": {
-        "prefix": "ife",
-        "body": [
-            "if ${1:condition} {",
-            "\t$2",
-            "} else {",
-            "\t$0",
-            "}"
-        ],
-        "description": "If-else statement"
-    },
-    "While Loop": {
-        "prefix": "while",
-        "body": [
-            "while ${1:condition} {",
-            "\t$0",
-            "}"
-        ],
-        "description": "While loop"
-    },
-    "For Loop": {
-        "prefix": "for",
-        "body": [
-            "for ${1:item} in ${2:collection} {",
-            "\t$0",
-            "}"
-        ],
-        "description": "For loop"
-    },
-    "Match": {
-        "prefix": "match",
-        "body": [
-            "match ${1:value} {",
-            "\twhen ${2:pattern} => ${3:result},",
-            "\t_ => ${0:default}",
-            "}"
-        ],
-        "description": "Match expression"
-    },
     "Extern Function": {
         "prefix": "extern",
         "body": [
             "extern fn ${1:name}(${2:params}) -> ${3:void};"
         ],
-        "description": "External function declaration"
-    },
-    "Color RGBA": {
-        "prefix": "rgba",
-        "body": [
-            "color_rgba(${1:255}, ${2:255}, ${3:255}, ${4:255})"
-        ],
-        "description": "RGBA color"
-    },
-    "App Boilerplate": {
-        "prefix": "app",
-        "body": [
-            "// ${1:App Name}",
-            "// REOX Application",
-            "",
-            "extern fn println(s: string) -> void;",
-            "extern fn app_new(name: string) -> App;",
-            "extern fn app_create_window(a: App, title: string, w: int, h: int) -> Window;",
-            "extern fn app_run(a: App) -> void;",
-            "extern fn window_set_root(win: Window, v: View) -> void;",
-            "",
-            "struct App { handle: int }",
-            "struct Window { handle: int }",
-            "struct View { handle: int }",
-            "",
-            "fn main() -> int {",
-            "\tlet app: App = app_new(\"${1:App Name}\");",
-            "\tlet window: Window = app_create_window(app, \"${2:Window Title}\", ${3:800}, ${4:600});",
-            "\t",
-            "\t// Build UI here",
-            "\t$0",
-            "\t",
-            "\tapp_run(app);",
-            "\treturn 0;",
-            "}"
-        ],
-        "description": "Full application boilerplate"
-    },
-    "Card Component": {
-        "prefix": "card",
-        "body": [
-            "let ${1:card}: View = vstack(${2:8.0});",
-            "view_set_background(${1:card}, color_rgba(${3:40}, ${4:42}, ${5:54}, 255));",
-            "view_set_padding(${1:card}, insets_all(${6:16.0}));",
-            "view_set_corner_radius(${1:card}, ${7:12.0});",
-            "view_set_shadow(${1:card}, shadow(0.0, 4.0, 12.0, color_rgba(0, 0, 0, 100)));",
-            "$0"
-        ],
-        "description": "UI card component"
-    },
-    "Animation Fade In": {
-        "prefix": "fadein",
-        "body": [
-            "animate_fade_in(${1:view}, ${2:0.3});"
-        ],
-        "description": "Fade in animation"
-    },
-    "Animation Slide": {
-        "prefix": "slidein",
-        "body": [
-            "animate_slide_in(${1:view}, ${2:0.0}, ${3:-50.0}, ${4:0.4});"
-        ],
-        "description": "Slide in animation"
-    },
-    "Gesture Tap": {
-        "prefix": "ontap",
-        "body": [
-            "on_tap(${1:view}) {",
-            "\t$0",
-            "}"
-        ],
-        "description": "Tap gesture handler"
-    },
-    "Gesture Pan": {
-        "prefix": "onpan",
-        "body": [
-            "on_pan(${1:view}, dx, dy) {",
-            "\t$0",
-            "}"
-        ],
-        "description": "Pan gesture handler"
-    },
-    "Gesture Swipe": {
-        "prefix": "onswipe",
-        "body": [
-            "on_swipe(${1:view}, direction) {",
-            "\tmatch direction {",
-            "\t\twhen .left => $2,",
-            "\t\twhen .right => $3,",
-            "\t\t_ => {}",
-            "\t}",
-            "}"
-        ],
-        "description": "Swipe gesture handler"
-    },
-    "Gesture Pinch": {
-        "prefix": "onpinch",
-        "body": [
-            "on_pinch(${1:view}, scale) {",
-            "\t$0",
-            "}"
-        ],
-        "description": "Pinch zoom gesture handler"
-    },
-    "Protocol": {
-        "prefix": "protocol",
-        "body": [
-            "protocol ${1:Name} {",
-            "\tfn ${2:method}(&self)${3: -> void};",
-            "}"
-        ],
-        "description": "Protocol (interface) declaration"
-    },
-    "Extension": {
-        "prefix": "extension",
-        "body": [
-            "extension ${1:Type} {",
-            "\tfn ${2:method}(&self) -> ${3:void} {",
-            "\t\t$0",
-            "\t}",
-            "}"
-        ],
-        "description": "Type extension"
-    },
-    "Typealias": {
-        "prefix": "typealias",
-        "body": [
-            "typealias ${1:NewName} = ${2:ExistingType};"
-        ],
-        "description": "Type alias declaration"
-    },
-    "Loop": {
-        "prefix": "loop",
-        "body": [
-            "loop {",
-            "\t$0",
-            "\tif ${1:condition} {",
-            "\t\tbreak;",
-            "\t}",
-            "}"
-        ],
-        "description": "Infinite loop with break"
-    },
-    "Guard": {
-        "prefix": "guard",
-        "body": [
-            "guard ${1:condition} else {",
-            "\t${2:return;}",
-            "}"
-        ],
-        "description": "Guard early-exit statement"
-    },
-    "Try Catch": {
-        "prefix": "trycatch",
-        "body": [
-            "try {",
-            "\t$1",
-            "} catch ${2:err} {",
-            "\t$0",
-            "}"
-        ],
-        "description": "Try-catch exception handling"
+        "description": "External function definition"
     },
     "Defer": {
         "prefix": "defer",
@@ -320,15 +163,6 @@
             "\t$0",
             "}"
         ],
-        "description": "Defer block (runs on scope exit)"
-    },
-    "Async Function": {
-        "prefix": "asyncfn",
-        "body": [
-            "async fn ${1:name}(${2:params}) -> ${3:void} {",
-            "\t$0",
-            "}"
-        ],
-        "description": "Async function declaration"
+        "description": "Defer cleanup block"
     }
 }

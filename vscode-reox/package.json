@@ -53,7 +53,8 @@
                     "reox"
                 ],
                 "extensions": [
-                    ".reox"
+                    ".reox",
+                    ".rx"
                 ],
                 "configuration": "./language-configuration.json",
                 "icon": {

@@ -14,6 +14,7 @@ pub enum CliCommand {
     Compile(Args),
     Init { template: String, name: Option<String> },
     New { name: String, template: String },
+    Pkg(Vec<String>),
     Help,
     Version,
 }
@@ -86,6 +87,7 @@ pub fn parse_cli() -> Result<CliCommand, String> {
     match args[1].as_str() {
         "init" => return parse_init(&args[2..]),
         "new" => return parse_new(&args[2..]),
+        "pkg" => return Ok(CliCommand::Pkg(args[2..].to_vec())),
         "help" | "--help" | "-h" => return Ok(CliCommand::Help),
         "version" | "--version" | "-V" => return Ok(CliCommand::Version),
         _ => {}
@@ -333,6 +335,7 @@ pub fn print_usage() {
     println!("COMMANDS:");
     println!("    init          Initialize a new project in current directory");
     println!("    new <name>    Create a new named project");
+    println!("    pkg           Package manager (add, remove, list)");
     println!("    help          Show this help message");
     println!("    version       Show version information");
     println!();
