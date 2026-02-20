@@ -11,10 +11,10 @@
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=ketiveeai.reox-language">
-    <img src="https://img.shields.io/badge/VS%20Marketplace-v1.0.4-blue?style=flat-square&logo=visual-studio-code" alt="VS Marketplace" />
+    <img src="https://img.shields.io/badge/VS%20Marketplace-v1.2.1-blue?style=flat-square&logo=visual-studio-code" alt="VS Marketplace" />
   </a>
   <a href="https://open-vsx.org/extension/ketiveeai/reox-language">
-    <img src="https://img.shields.io/badge/Open%20VSX-v1.0.4-purple?style=flat-square&logo=eclipse" alt="Open VSX" />
+    <img src="https://img.shields.io/badge/Open%20VSX-v1.2.1-purple?style=flat-square&logo=eclipse" alt="Open VSX" />
   </a>
   <a href="https://reox.ketivee.com">
     <img src="https://img.shields.io/badge/docs-online-green?style=flat-square" alt="Documentation" />
