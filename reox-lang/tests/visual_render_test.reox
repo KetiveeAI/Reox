@@ -15,7 +15,7 @@ extern fn vstack(gap: float) -> View;
 extern fn hstack(gap: float) -> View;
 extern fn zstack() -> View;
 
-// Views
+// Viewso
 extern fn text_view(text: string) -> View;
 extern fn button_view(label: string) -> View;
 extern fn slider_view(min: float, max: float, value: float) -> View;

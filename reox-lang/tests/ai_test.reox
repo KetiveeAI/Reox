@@ -4,8 +4,10 @@ fn main() {
     print("Initialize Reox AI Runtime...");
     print("Contacting Gemini API...");
 
-    // User provided API Key
-    let key = "AIzaSyBJqyEeQU-Y8je-D1k3sTgoR_TOk7iVClE";
+    
+
+    // Gemini API Key Please add your own key here
+    let key = GeminiAPIKey;
     
     // prompt, model, key
     // Using gemini-2.0-flash-lite for speed/reliability

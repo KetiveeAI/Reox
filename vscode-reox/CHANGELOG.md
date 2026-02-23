@@ -1,3 +1,11 @@
+## [1.2.1] - 2026-02-20
+
+### Changes
+- Package manager integration: `reoxc pkg` commands
+- Updated standard library documentation
+- Stability improvements for syntax highlighting
+- Theme and snippet updates
+
 # Change Log
 
 All notable changes to the REOX Language extension.
