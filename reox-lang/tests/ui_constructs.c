@@ -76,6 +76,14 @@ void Button_body(void) {
     int64_t width = MAX_WIDTH;
 }
 
+static void Button_on_tap(void* ctx) {
+    int64_t x = 1;
+}
+
+static void Button_on_swipe(void* ctx, int64_t direction) {
+    int64_t d = direction;
+}
+
 void MainWindow_root(void) {
     const char* title = "REOX App";
 }

@@ -1071,6 +1071,7 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut signals = Vec::new();
         let mut methods = Vec::new();
+        let mut gestures = Vec::new();
 
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
             match self.peek_kind() {
@@ -1085,6 +1086,41 @@ impl<'a> Parser<'a> {
                     };
                     self.consume(&TokenKind::Semicolon, "expected ';' after signal")?;
                     signals.push(SignalField { name: sig_name, payload_type, span: sig_span });
+                }
+                TokenKind::OnTap | TokenKind::OnPan | TokenKind::OnSwipe
+                | TokenKind::OnPinch | TokenKind::OnRotate => {
+                    let gesture_span = self.peek().span;
+                    let kind = match self.peek_kind() {
+                        TokenKind::OnTap => "on_tap",
+                        TokenKind::OnPan => "on_pan",
+                        TokenKind::OnSwipe => "on_swipe",
+                        TokenKind::OnPinch => "on_pinch",
+                        TokenKind::OnRotate => "on_rotate",
+                        _ => unreachable!(),
+                    }.to_string();
+                    self.advance(); // consume gesture keyword
+
+                    // Optional parameter list
+                    let params = if self.check(&TokenKind::LParen) {
+                        self.advance();
+                        let mut params = Vec::new();
+                        while !self.check(&TokenKind::RParen) && !self.is_at_end() {
+                            let pname = self.parse_identifier()?;
+                            self.consume(&TokenKind::Colon, "expected ':' after param name")?;
+                            let pty = self.parse_type()?;
+                            params.push(Param { name: pname, ty: pty, span: gesture_span });
+                            self.match_token(&[TokenKind::Comma]);
+                        }
+                        self.consume(&TokenKind::RParen, "expected ')'")?;
+                        params
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Body block
+                    let body = self.parse_block()?;
+
+                    gestures.push(GestureHandler { kind, params, body, span: gesture_span });
                 }
                 TokenKind::Fn | TokenKind::Pub | TokenKind::Static => {
                     let is_pub = self.match_token(&[TokenKind::Pub]);
@@ -1127,7 +1163,7 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(&TokenKind::RBrace, "expected '}'")?;
-        Ok(LayerDecl { name, fields, signals, methods, is_pub, span })
+        Ok(LayerDecl { name, fields, signals, methods, gestures, is_pub, span })
     }
 
     /// Parse: panel Name { title: "...", size: (w, h), fn root() -> View { ... } }
@@ -1777,6 +1813,24 @@ mod tests {
                 assert_eq!(l.methods[0].name, "body");
             }
             _ => panic!("expected layer declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_layer_with_gestures() {
+        let tokens = tokenize("layer Card { on_tap { } on_swipe(dir: int) { } }").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Layer(l) => {
+                assert_eq!(l.name, "Card");
+                assert_eq!(l.gestures.len(), 2);
+                assert_eq!(l.gestures[0].kind, "on_tap");
+                assert_eq!(l.gestures[0].params.len(), 0);
+                assert_eq!(l.gestures[1].kind, "on_swipe");
+                assert_eq!(l.gestures[1].params.len(), 1);
+                assert_eq!(l.gestures[1].params[0].name, "dir");
+            }
+            _ => panic!("expected layer with gestures"),
         }
     }
 

@@ -369,6 +369,7 @@ pub struct LayerDecl {
     pub fields: Vec<Field>,
     pub signals: Vec<SignalField>,
     pub methods: Vec<FnDecl>,
+    pub gestures: Vec<GestureHandler>,
     pub is_pub: bool,
     pub span: Span,
 }
@@ -378,6 +379,15 @@ pub struct LayerDecl {
 pub struct SignalField {
     pub name: String,
     pub payload_type: Option<Type>,
+    pub span: Span,
+}
+
+/// Gesture handler inside a layer
+#[derive(Debug, Clone)]
+pub struct GestureHandler {
+    pub kind: String,
+    pub params: Vec<Param>,
+    pub body: Block,
     pub span: Span,
 }
 

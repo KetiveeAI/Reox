@@ -353,6 +353,26 @@ impl CodeGen {
             self.gen_function_named(&mangled_name, method);
             self.emit_line("");
         }
+
+        // Generate gesture handler callbacks
+        for gesture in &l.gestures {
+            let fn_name = format!("{}_{}", l.name, gesture.kind);
+            let param_strs: Vec<String> = gesture.params.iter()
+                .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
+                .collect();
+            let params_c = if param_strs.is_empty() {
+                "void* ctx".to_string()
+            } else {
+                format!("void* ctx, {}", param_strs.join(", "))
+            };
+
+            self.emit_line(&format!("static void {}({}) {{", fn_name, params_c));
+            self.indent();
+            self.gen_block(&gesture.body);
+            self.dedent();
+            self.emit_line("}");
+            self.emit_line("");
+        }
     }
 
     fn gen_panel(&mut self, p: &PanelDecl) {

@@ -39,6 +39,14 @@ layer Button {
     signal on_click;
     let label: string = "Click";
 
+    on_tap {
+        let x: int = 1;
+    }
+
+    on_swipe(direction: int) {
+        let d: int = direction;
+    }
+
     fn body() {
         let width: int = MAX_WIDTH;
     }
