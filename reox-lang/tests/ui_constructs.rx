@@ -1,0 +1,72 @@
+// REOX UI Constructs - End-to-end compilation test
+// Tests all new UI language features
+
+const MAX_WIDTH: int = 800;
+const MAX_HEIGHT: int = 600;
+
+typealias Dimension = int;
+
+variant Direction {
+    Up,
+    Down,
+    Left,
+    Right
+}
+
+variant Shape {
+    Circle(radius: float),
+    Rect(w: int, h: int)
+}
+
+protocol Renderable {
+    fn render(ctx: int);
+    fn size() -> int;
+}
+
+struct Color {
+    r: int,
+    g: int,
+    b: int
+}
+
+extension Color {
+    fn brighten(amount: int) -> int {
+        return amount * 2;
+    }
+}
+
+layer Button {
+    signal on_click;
+    let label: string = "Click";
+
+    fn body() {
+        let width: int = MAX_WIDTH;
+    }
+}
+
+panel MainWindow {
+    fn root() {
+        let title: string = "REOX App";
+    }
+}
+
+pub fn helper() -> int {
+    return 42;
+}
+
+fn main() {
+    let width: Dimension = MAX_WIDTH;
+    let height: int = MAX_HEIGHT;
+
+    let dir: int = 0;
+    let result: int = helper();
+
+    let bright: int = Color_brighten(10);
+    Button_body();
+    MainWindow_root();
+
+    print(width);
+    print(height);
+    print(result);
+    print(bright);
+}

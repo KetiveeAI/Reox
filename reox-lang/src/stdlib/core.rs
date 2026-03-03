@@ -26,6 +26,8 @@ pub fn type_of(val: &Value) -> String {
         Value::Color { .. } => "color".to_string(),
         Value::Struct { name, .. } => format!("struct:{}", name),
         Value::NativeAction { .. } => "action".to_string(),
+        Value::Closure { .. } => "closure".to_string(),
+        Value::Variant { type_name, case_name, .. } => format!("{}::{}", type_name, case_name),
     }
 }
 

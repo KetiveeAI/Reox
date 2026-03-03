@@ -8,6 +8,8 @@ mod types;
 
 pub use types::*;
 
+use std::collections::HashMap;
+
 use crate::parser::{
     Ast, Decl, Stmt, Expr, Literal, BinOp, UnaryOp,
     FnDecl, StructDecl, ExternDecl, Block, Type, LetStmt,
@@ -43,15 +45,32 @@ pub struct TypeChecker {
     symbols: SymbolTable,
     errors: Vec<TypeError>,
     current_return_type: Option<ResolvedType>,
+    type_aliases: HashMap<String, ResolvedType>,
 }
 
 impl TypeChecker {
     pub fn new() -> Self {
-        Self {
+        let mut tc = Self {
             symbols: SymbolTable::new(),
             errors: Vec::new(),
             current_return_type: None,
-        }
+            type_aliases: HashMap::new(),
+        };
+        // Register built-in functions
+        let _ = tc.symbols.define(Symbol {
+            name: "print".to_string(),
+            ty: ResolvedType::Function {
+                params: vec![ResolvedType::Unknown],
+                ret: Box::new(ResolvedType::Void),
+            },
+            mutable: false,
+            kind: SymbolKind::Function,
+        });
+        let _ = tc.symbols.define_function("print".to_string(), ResolvedType::Function {
+            params: vec![ResolvedType::Unknown],
+            ret: Box::new(ResolvedType::Void),
+        });
+        tc
     }
 
     /// Type check the entire AST
@@ -62,14 +81,132 @@ impl TypeChecker {
                 Decl::Struct(s) => self.register_struct(s),
                 Decl::Function(f) => self.register_function(f),
                 Decl::Extern(e) => self.register_extern(e),
-                Decl::Import(_) => {} // Skip imports for now
+                Decl::Import(_) => {}
+                Decl::Variant(v) => {
+                    // Register variant type itself
+                    let _ = self.symbols.define(Symbol {
+                        name: v.name.clone(),
+                        ty: ResolvedType::Struct(v.name.clone()),
+                        mutable: false,
+                        kind: SymbolKind::Struct,
+                    });
+                    // Register each case as a constructor function
+                    for case in &v.cases {
+                        let case_symbol_name = format!("{}_{}", v.name, case.name);
+                        if case.fields.is_empty() {
+                            let _ = self.symbols.define(Symbol {
+                                name: case_symbol_name,
+                                ty: ResolvedType::Struct(v.name.clone()),
+                                mutable: false,
+                                kind: SymbolKind::Variable,
+                            });
+                        } else {
+                            let param_types: Vec<ResolvedType> = case.fields.iter()
+                                .map(|f| ResolvedType::from_parser_type(&f.ty))
+                                .collect();
+                            let _ = self.symbols.define(Symbol {
+                                name: case_symbol_name,
+                                ty: ResolvedType::Function {
+                                    params: param_types,
+                                    ret: Box::new(ResolvedType::Struct(v.name.clone())),
+                                },
+                                mutable: false,
+                                kind: SymbolKind::Function,
+                            });
+                        }
+                    }
+                }
+                Decl::Protocol(p) => {
+                    // Register protocol as a named type
+                    let _ = self.symbols.define(Symbol {
+                        name: p.name.clone(),
+                        ty: ResolvedType::Struct(p.name.clone()),
+                        mutable: false,
+                        kind: SymbolKind::Struct,
+                    });
+                    // Register protocol method signatures
+                    for method in &p.methods {
+                        let mangled = format!("{}_{}", p.name, method.name);
+                        let _ = self.symbols.define(Symbol {
+                            name: mangled,
+                            ty: ResolvedType::Function {
+                                params: method.params.iter()
+                                    .map(|param| ResolvedType::from_parser_type(&param.ty))
+                                    .collect(),
+                                ret: Box::new(method.return_type.as_ref()
+                                    .map(|t| ResolvedType::from_parser_type(t))
+                                    .unwrap_or(ResolvedType::Void)),
+                            },
+                            mutable: false,
+                            kind: SymbolKind::Function,
+                        });
+                    }
+                }
+                Decl::Extension(ext) => {
+                    for method in &ext.methods {
+                        self.register_function_named(&format!("{}_{}", ext.target, method.name), method);
+                    }
+                }
+                Decl::Layer(l) => {
+                    let _ = self.symbols.define(Symbol {
+                        name: l.name.clone(),
+                        ty: ResolvedType::Struct(l.name.clone()),
+                        mutable: false,
+                        kind: SymbolKind::Struct,
+                    });
+                    for method in &l.methods {
+                        self.register_function_named(&format!("{}_{}", l.name, method.name), method);
+                    }
+                }
+                Decl::Panel(p) => {
+                    for method in &p.methods {
+                        self.register_function_named(&format!("{}_{}", p.name, method.name), method);
+                    }
+                }
+                Decl::Const(c) => {
+                    let ty = c.ty.as_ref()
+                        .map(|t| ResolvedType::from_parser_type(t))
+                        .unwrap_or(ResolvedType::Unknown);
+                    let _ = self.symbols.define(Symbol {
+                        name: c.name.clone(),
+                        ty,
+                        mutable: false,
+                        kind: SymbolKind::Variable,
+                    });
+                }
+                Decl::Typealias(t) => {
+                    let resolved = ResolvedType::from_parser_type(&t.target);
+                    self.type_aliases.insert(t.name.clone(), resolved.clone());
+                    let _ = self.symbols.define(Symbol {
+                        name: t.name.clone(),
+                        ty: resolved,
+                        mutable: false,
+                        kind: SymbolKind::Struct,
+                    });
+                }
             }
         }
 
-        // Second pass: type check function bodies
+        // Second pass: type check all function/method bodies
         for decl in &ast.declarations {
-            if let Decl::Function(f) = decl {
-                self.check_function(f);
+            match decl {
+                Decl::Function(f) => self.check_function(f),
+                Decl::Extension(ext) => {
+                    for method in &ext.methods {
+                        self.check_function(method);
+                    }
+                }
+                Decl::Layer(l) => {
+                    for method in &l.methods {
+                        self.check_function(method);
+                    }
+                }
+                Decl::Panel(p) => {
+                    for method in &p.methods {
+                        self.check_function(method);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -126,6 +263,31 @@ impl TypeChecker {
         // Also add to symbol table for lookup
         let _ = self.symbols.define(Symbol {
             name: f.name.clone(),
+            ty: fn_type,
+            mutable: false,
+            kind: SymbolKind::Function,
+        });
+    }
+
+    fn register_function_named(&mut self, name: &str, f: &FnDecl) {
+        let params: Vec<ResolvedType> = f.params
+            .iter()
+            .map(|p| ResolvedType::from_parser_type(&p.ty))
+            .collect();
+
+        let ret = f.return_type
+            .as_ref()
+            .map(ResolvedType::from_parser_type)
+            .unwrap_or(ResolvedType::Void);
+
+        let fn_type = ResolvedType::Function {
+            params,
+            ret: Box::new(ret),
+        };
+
+        let _ = self.symbols.define_function(name.to_string(), fn_type.clone());
+        let _ = self.symbols.define(Symbol {
+            name: name.to_string(),
             ty: fn_type,
             mutable: false,
             kind: SymbolKind::Function,
@@ -252,8 +414,28 @@ impl TypeChecker {
         }
     }
 
+    fn resolve_type(&self, ty: &ResolvedType) -> ResolvedType {
+        match ty {
+            ResolvedType::Struct(name) => {
+                if let Some(resolved) = self.type_aliases.get(name) {
+                    self.resolve_type(resolved)
+                } else {
+                    ty.clone()
+                }
+            }
+            ResolvedType::Optional(inner) => {
+                ResolvedType::Optional(Box::new(self.resolve_type(inner)))
+            }
+            ResolvedType::Array(inner) => {
+                ResolvedType::Array(Box::new(self.resolve_type(inner)))
+            }
+            _ => ty.clone(),
+        }
+    }
+
     fn check_let(&mut self, l: &LetStmt) {
-        let declared_type = l.ty.as_ref().map(|t| ResolvedType::from_parser_type(t));
+        let declared_type = l.ty.as_ref()
+            .map(|t| self.resolve_type(&ResolvedType::from_parser_type(t)));
         
         let inferred_type = l.init.as_ref().map(|e| self.infer_expr_type(e));
 
@@ -592,6 +774,21 @@ impl TypeChecker {
                 }
                 // Range produces an array of integers
                 ResolvedType::Array(Box::new(ResolvedType::Int))
+            }
+            Expr::Action(params, return_type, body, _span) => {
+                let param_types: Vec<ResolvedType> = params.iter()
+                    .map(|p| ResolvedType::from_parser_type(&p.ty))
+                    .collect();
+                let ret = return_type.as_ref()
+                    .map(|t| ResolvedType::from_parser_type(t))
+                    .unwrap_or(ResolvedType::Void);
+                self.symbols.push_scope();
+                self.check_block(body);
+                self.symbols.pop_scope();
+                ResolvedType::Function {
+                    params: param_types,
+                    ret: Box::new(ret),
+                }
             }
         }
     }

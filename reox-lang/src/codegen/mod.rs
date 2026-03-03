@@ -7,6 +7,8 @@ use crate::parser::{
     FnDecl, StructDecl, ExternDecl, Block, Type, LetStmt,
     ReturnStmt, IfStmt, WhileStmt, ForStmt, GuardStmt, DeferStmt,
     TryCatchStmt, ThrowStmt,
+    VariantDecl, ProtocolDecl, ExtensionDecl, LayerDecl, PanelDecl,
+    ConstDecl, TypealiasDecl,
 };
 use std::io::{self, Write};
 
@@ -14,7 +16,9 @@ use std::io::{self, Write};
 pub struct CodeGen {
     output: String,
     indent: usize,
-    defer_stack: Vec<Block>,  // Track deferred blocks for cleanup
+    defer_stack: Vec<Block>,
+    closure_counter: usize,
+    closure_defs: String,
 }
 
 impl CodeGen {
@@ -23,6 +27,8 @@ impl CodeGen {
             output: String::new(),
             indent: 0,
             defer_stack: Vec::new(),
+            closure_counter: 0,
+            closure_defs: String::new(),
         }
     }
 
@@ -67,20 +73,59 @@ impl CodeGen {
         self.emit_line("#include \"reox_nxrender_bridge.h\"");  // NXRender integration
         self.emit_line("");
 
-        // Forward declarations for structs
+        // Forward declarations for structs and variants
         for decl in &ast.declarations {
-            if let Decl::Struct(s) = decl {
-                self.emit_line(&format!("typedef struct {} {};", s.name, s.name));
+            match decl {
+                Decl::Struct(s) => self.emit_line(&format!("typedef struct {} {};", s.name, s.name)),
+                Decl::Variant(v) => self.emit_line(&format!("typedef struct {0} {0};", v.name)),
+                Decl::Layer(l) => self.emit_line(&format!("typedef struct {0} {0};", l.name)),
+                _ => {}
             }
         }
-        if ast.declarations.iter().any(|d| matches!(d, Decl::Struct(_))) {
-            self.emit_line("");
+        self.emit_line("");
+
+        // Generate typealias
+        for decl in &ast.declarations {
+            if let Decl::Typealias(t) = decl {
+                self.gen_typealias(t);
+            }
+        }
+
+        // Generate const
+        for decl in &ast.declarations {
+            if let Decl::Const(c) = decl {
+                self.gen_const(c);
+            }
+        }
+
+        // Generate variant (tagged union)
+        for decl in &ast.declarations {
+            if let Decl::Variant(v) = decl {
+                self.gen_variant(v);
+                self.emit_line("");
+            }
         }
 
         // Generate struct definitions
         for decl in &ast.declarations {
             if let Decl::Struct(s) = decl {
                 self.gen_struct(s);
+                self.emit_line("");
+            }
+        }
+
+        // Generate protocol (vtable)
+        for decl in &ast.declarations {
+            if let Decl::Protocol(p) = decl {
+                self.gen_protocol(p);
+                self.emit_line("");
+            }
+        }
+
+        // Generate layer structs
+        for decl in &ast.declarations {
+            if let Decl::Layer(l) = decl {
+                self.gen_layer_struct(l);
                 self.emit_line("");
             }
         }
@@ -95,21 +140,57 @@ impl CodeGen {
             self.emit_line("");
         }
 
-        // Generate function prototypes
+        // Generate function prototypes (including extension methods)
         for decl in &ast.declarations {
-            if let Decl::Function(f) = decl {
-                self.gen_fn_prototype(f);
+            match decl {
+                Decl::Function(f) => self.gen_fn_prototype(f),
+                Decl::Extension(ext) => {
+                    for method in &ext.methods {
+                        let mangled_name = format!("{}_{}", ext.target, method.name);
+                        self.gen_fn_prototype_named(&mangled_name, method);
+                    }
+                }
+                Decl::Layer(l) => {
+                    for method in &l.methods {
+                        let mangled_name = format!("{}_{}", l.name, method.name);
+                        self.gen_fn_prototype_named(&mangled_name, method);
+                    }
+                }
+                Decl::Panel(p) => {
+                    for method in &p.methods {
+                        let mangled_name = format!("{}_{}", p.name, method.name);
+                        self.gen_fn_prototype_named(&mangled_name, method);
+                    }
+                }
+                _ => {}
             }
         }
-        if ast.declarations.iter().any(|d| matches!(d, Decl::Function(_))) {
+        self.emit_line("");
+
+        // Emit closure static functions (generated during expression codegen)
+        if !self.closure_defs.is_empty() {
+            self.emit(&self.closure_defs.clone());
             self.emit_line("");
         }
 
         // Generate function implementations
         for decl in &ast.declarations {
-            if let Decl::Function(f) = decl {
-                self.gen_function(f);
-                self.emit_line("");
+            match decl {
+                Decl::Function(f) => {
+                    self.gen_function(f);
+                    self.emit_line("");
+                }
+                Decl::Extension(ext) => {
+                    self.gen_extension(ext);
+                }
+                Decl::Layer(l) => {
+                    self.gen_layer_methods(l);
+                }
+                Decl::Panel(p) => {
+                    self.gen_panel(p);
+                    self.emit_line("");
+                }
+                _ => {}
             }
         }
 
@@ -161,6 +242,201 @@ impl CodeGen {
         };
 
         self.emit_line(&format!("{} {}({});", ret_type, f.name, params_str));
+    }
+
+    fn gen_fn_prototype_named(&mut self, name: &str, f: &FnDecl) {
+        let ret_type = f.return_type.as_ref()
+            .map(|t| self.type_to_c(t))
+            .unwrap_or_else(|| "void".to_string());
+
+        let params: Vec<String> = f.params.iter()
+            .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
+            .collect();
+
+        let params_str = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params.join(", ")
+        };
+
+        self.emit_line(&format!("{} {}({});", ret_type, name, params_str));
+    }
+
+    fn gen_variant(&mut self, v: &VariantDecl) {
+        // Emit C enum for tag
+        self.emit_line(&format!("typedef enum {{"));
+        self.indent();
+        for (i, case) in v.cases.iter().enumerate() {
+            let suffix = if i < v.cases.len() - 1 { "," } else { "" };
+            self.emit_line(&format!("{}_{}{}", v.name.to_uppercase(), case.name.to_uppercase(), suffix));
+        }
+        self.dedent();
+        self.emit_line(&format!("}} {}_Tag;", v.name));
+        self.emit_line("");
+
+        // Emit tagged union struct
+        self.emit_line(&format!("struct {} {{", v.name));
+        self.indent();
+        self.emit_line(&format!("{}_Tag tag;", v.name));
+
+        // If any case has fields, emit a union
+        let has_payload = v.cases.iter().any(|c| !c.fields.is_empty());
+        if has_payload {
+            self.emit_line("union {");
+            self.indent();
+            for case in &v.cases {
+                if !case.fields.is_empty() {
+                    self.emit_line("struct {");
+                    self.indent();
+                    for field in &case.fields {
+                        let c_type = self.type_to_c(&field.ty);
+                        self.emit_line(&format!("{} {};", c_type, field.name));
+                    }
+                    self.dedent();
+                    self.emit_line(&format!("}} {};", case.name.to_lowercase()));
+                }
+            }
+            self.dedent();
+            self.emit_line("} data;");
+        }
+
+        self.dedent();
+        self.emit_line("};");
+    }
+
+    fn gen_protocol(&mut self, p: &ProtocolDecl) {
+        // Protocol → vtable struct of function pointers
+        self.emit_line(&format!("typedef struct {}_vtable {{", p.name));
+        self.indent();
+        for method in &p.methods {
+            let ret_type = method.return_type.as_ref()
+                .map(|t| self.type_to_c(t))
+                .unwrap_or_else(|| "void".to_string());
+
+            let mut params: Vec<String> = vec!["void* self".to_string()];
+            for param in &method.params {
+                params.push(format!("{} {}", self.type_to_c(&param.ty), param.name));
+            }
+
+            self.emit_line(&format!("{} (*{})({});", ret_type, method.name, params.join(", ")));
+        }
+        self.dedent();
+        self.emit_line(&format!("}} {}_vtable;", p.name));
+    }
+
+    fn gen_extension(&mut self, ext: &ExtensionDecl) {
+        for method in &ext.methods {
+            let mangled_name = format!("{}_{}", ext.target, method.name);
+            self.gen_function_named(&mangled_name, method);
+            self.emit_line("");
+        }
+    }
+
+    fn gen_layer_struct(&mut self, l: &LayerDecl) {
+        self.emit_line(&format!("struct {} {{", l.name));
+        self.indent();
+        for field in &l.fields {
+            let c_type = self.type_to_c(&field.ty);
+            self.emit_line(&format!("{} {};", c_type, field.name));
+        }
+        // Signal callback slots
+        for signal in &l.signals {
+            self.emit_line(&format!("void (*{})(void*);", signal.name));
+        }
+        self.dedent();
+        self.emit_line("};");
+    }
+
+    fn gen_layer_methods(&mut self, l: &LayerDecl) {
+        for method in &l.methods {
+            let mangled_name = format!("{}_{}", l.name, method.name);
+            self.gen_function_named(&mangled_name, method);
+            self.emit_line("");
+        }
+    }
+
+    fn gen_panel(&mut self, p: &PanelDecl) {
+        // Generate panel methods
+        for method in &p.methods {
+            let mangled_name = format!("{}_{}", p.name, method.name);
+            self.gen_function_named(&mangled_name, method);
+            self.emit_line("");
+        }
+
+        // Generate panel setup function
+        self.emit_line(&format!("void {}_setup(void) {{", p.name));
+        self.indent();
+        self.emit_line("rx_app_t* app = rx_app_new();");
+
+        // Emit property assignments
+        for (key, value) in &p.properties {
+            match key.as_str() {
+                "title" => {
+                    self.emit_indent();
+                    self.emit("rx_app_set_title(app, ");
+                    self.gen_expr(value);
+                    self.emit(");\n");
+                }
+                "size" => {
+                    self.emit_indent();
+                    self.emit("rx_app_set_size(app, ");
+                    self.gen_expr(value);
+                    self.emit(");\n");
+                }
+                _ => {
+                    self.emit_line(&format!("/* panel property: {} */", key));
+                }
+            }
+        }
+
+        self.emit_line("rx_app_run(app);");
+        self.dedent();
+        self.emit_line("}");
+    }
+
+    fn gen_const(&mut self, c: &ConstDecl) {
+        let c_type = c.ty.as_ref()
+            .map(|t| self.type_to_c(t))
+            .unwrap_or_else(|| "const int64_t".to_string());
+
+        self.emit_indent();
+        self.emit(&format!("static const {} {} = ", c_type, c.name));
+        self.gen_expr(&c.value);
+        self.emit(";\n");
+    }
+
+    fn gen_typealias(&mut self, t: &TypealiasDecl) {
+        let target_c = self.type_to_c(&t.target);
+        self.emit_line(&format!("typedef {} {};", target_c, t.name));
+    }
+
+    fn gen_function_named(&mut self, name: &str, f: &FnDecl) {
+        self.defer_stack.clear();
+
+        let ret_type = f.return_type.as_ref()
+            .map(|t| self.type_to_c(t))
+            .unwrap_or_else(|| "void".to_string());
+
+        let params: Vec<String> = f.params.iter()
+            .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
+            .collect();
+
+        let params_str = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params.join(", ")
+        };
+
+        self.emit_line(&format!("{} {}({}) {{", ret_type, name, params_str));
+        self.indent();
+        self.gen_block(&f.body);
+
+        if !self.defer_stack.is_empty() {
+            self.emit_deferred_cleanup();
+        }
+
+        self.dedent();
+        self.emit_line("}");
     }
 
     fn gen_function(&mut self, f: &FnDecl) {
@@ -664,6 +940,38 @@ impl CodeGen {
                 self.gen_expr(end);
                 self.emit(")");
             }
+            Expr::Action(params, return_type, body, _) => {
+                // Generate a static C function for this closure
+                let closure_id = self.closure_counter;
+                self.closure_counter += 1;
+                let fn_name = format!("__rx_closure_{}", closure_id);
+
+                let ret_c = return_type.as_ref()
+                    .map(|t| self.type_to_c(t))
+                    .unwrap_or_else(|| "void".to_string());
+
+                let param_strs: Vec<String> = params.iter()
+                    .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
+                    .collect();
+                let params_c = if param_strs.is_empty() {
+                    "void".to_string()
+                } else {
+                    param_strs.join(", ")
+                };
+
+                // Generate the closure body into the deferred closure definitions buffer
+                let mut body_gen = CodeGen::new();
+                body_gen.indent = 1;
+                body_gen.gen_block(body);
+
+                self.closure_defs.push_str(&format!(
+                    "static {} {}({}) {{\n{}}}\n\n",
+                    ret_c, fn_name, params_c, body_gen.output
+                ));
+
+                // Emit the function pointer at the call site
+                self.emit(&fn_name);
+            }
         }
     }
     
@@ -711,6 +1019,15 @@ impl CodeGen {
             Type::Void => "void".to_string(),
             Type::Named(name) => name.clone(),
             Type::Array(inner) => format!("{}*", self.type_to_c(inner)),
+            Type::Optional(inner) => format!("{}*", self.type_to_c(inner)),
+            Type::Function(params, ret) => {
+                let ret_c = self.type_to_c(ret);
+                let params_c: Vec<String> = params.iter().map(|p| self.type_to_c(p)).collect();
+                format!("{}(*)({})", ret_c, if params_c.is_empty() { "void".to_string() } else { params_c.join(", ") })
+            }
+            Type::Tuple(elems) => {
+                format!("rx_tuple{}", elems.len())
+            }
         }
     }
 

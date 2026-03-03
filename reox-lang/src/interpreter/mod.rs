@@ -13,6 +13,8 @@ pub enum Value {
     Color { r: u8, g: u8, b: u8, a: u8 },
     Struct { name: String, fields: HashMap<String, Value> },
     NativeAction(fn(Vec<Value>) -> Value),
+    Closure { params: Vec<Param>, body: Block, env: Vec<HashMap<String, Value>> },
+    Variant { type_name: String, case_name: String, payload: Vec<Value> },
 }
 
 impl Value {
@@ -23,7 +25,8 @@ impl Value {
         match self { Value::Nil => "nil", Value::Bool(_) => "bool", Value::Int(_) => "int",
                      Value::Float(_) => "float", Value::String(_) => "string", Value::Array(_) => "array",
                      Value::Map(_) => "map", Value::Color {..} => "color",
-                     Value::Struct {..} => "struct", Value::NativeAction(_) => "native" }
+                     Value::Struct {..} => "struct", Value::NativeAction(_) => "native",
+                     Value::Closure {..} => "closure", Value::Variant {..} => "variant" }
     }
 }
 
@@ -38,6 +41,16 @@ impl std::fmt::Display for Value {
             Value::Color{r,g,b,a} => write!(f, "rgba({},{},{},{})", r, g, b, a),
             Value::Struct{name,..} => write!(f, "<{}>", name),
             Value::NativeAction(_) => write!(f, "<native>"),
+            Value::Closure {..} => write!(f, "<closure>"),
+            Value::Variant { type_name, case_name, payload } => {
+                write!(f, "{}.{}", type_name, case_name)?;
+                if !payload.is_empty() {
+                    write!(f, "(")?;
+                    for (i, v) in payload.iter().enumerate() { if i > 0 { write!(f, ", ")?; } write!(f, "{}", v)?; }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -618,8 +631,46 @@ impl Interpreter {
     
     pub fn eval(&mut self, ast: &Ast) -> Result<Value, RuntimeError> {
         for d in &ast.declarations {
-            match d { Decl::Struct(s) => { self.structs.insert(s.name.clone(), s.clone()); },
-                      Decl::Function(f) => { self.functions.insert(f.name.clone(), f.clone()); }, _ => {} }
+            match d {
+                Decl::Struct(s) => { self.structs.insert(s.name.clone(), s.clone()); },
+                Decl::Function(f) => { self.functions.insert(f.name.clone(), f.clone()); },
+                Decl::Variant(v) => {
+                    for case in &v.cases {
+                        let type_name = v.name.clone();
+                        let case_name = case.name.clone();
+                        // Register all variant cases as constant values
+                        // Payload variants are constructed via pattern syntax: VariantName.CaseName(args)
+                        self.env.define(&format!("{}_{}", v.name, case.name),
+                            Value::Variant { type_name, case_name, payload: vec![] });
+                    }
+                },
+                Decl::Const(c) => {
+                    // Evaluate const value and define as immutable in env
+                    if let Ok(val) = self.expr(&c.value) {
+                        self.env.define(&c.name, val);
+                    }
+                },
+                Decl::Layer(l) => {
+                    // Register layer methods as named functions
+                    for method in &l.methods {
+                        let mangled = format!("{}_{}", l.name, method.name);
+                        self.functions.insert(mangled, method.clone());
+                    }
+                },
+                Decl::Panel(p) => {
+                    for method in &p.methods {
+                        let mangled = format!("{}_{}", p.name, method.name);
+                        self.functions.insert(mangled, method.clone());
+                    }
+                },
+                Decl::Extension(ext) => {
+                    for method in &ext.methods {
+                        let mangled = format!("{}_{}", ext.target, method.name);
+                        self.functions.insert(mangled, method.clone());
+                    }
+                },
+                _ => {}
+            }
         }
         if let Some(f) = self.functions.get("main").cloned() { self.call(&f, vec![]) } else { Ok(Value::Nil) }
     }
@@ -744,9 +795,41 @@ impl Interpreter {
                 if let Expr::Identifier(n, _) = c.as_ref() {
                     let vs: Vec<Value> = a.iter().map(|x| self.expr(x)).collect::<Result<_,_>>()?;
                     if let Some(Value::NativeAction(f)) = self.env.get(n) { return Ok(f(vs)); }
+                    if let Some(Value::Closure { params, body, env }) = self.env.get(n) {
+                        // Execute closure with captured environment
+                        let saved = self.env.scopes.clone();
+                        self.env.scopes = env;
+                        self.env.push();
+                        for (i, p) in params.iter().enumerate() {
+                            self.env.define(&p.name, vs.get(i).cloned().unwrap_or(Value::Nil));
+                        }
+                        let result = self.block(&body);
+                        self.env.scopes = saved;
+                        return result;
+                    }
                     if let Some(f) = self.functions.get(n).cloned() { return self.call(&f, vs); }
                 }
-                Err(RuntimeError::new("unknown function"))
+                // Handle calling a closure value from an expression (not just identifier)
+                let callee = self.expr(c)?;
+                match callee {
+                    Value::NativeAction(f) => {
+                        let vs: Vec<Value> = a.iter().map(|x| self.expr(x)).collect::<Result<_,_>>()?;
+                        Ok(f(vs))
+                    }
+                    Value::Closure { params, body, env } => {
+                        let vs: Vec<Value> = a.iter().map(|x| self.expr(x)).collect::<Result<_,_>>()?;
+                        let saved = self.env.scopes.clone();
+                        self.env.scopes = env;
+                        self.env.push();
+                        for (i, p) in params.iter().enumerate() {
+                            self.env.define(&p.name, vs.get(i).cloned().unwrap_or(Value::Nil));
+                        }
+                        let result = self.block(&body);
+                        self.env.scopes = saved;
+                        result
+                    }
+                    _ => Err(RuntimeError::new("not callable"))
+                }
             },
             Expr::Member(o, f, _) => { 
                 let ov = self.expr(o)?; 
@@ -908,6 +991,15 @@ impl Interpreter {
                     },
                     _ => Err(RuntimeError::new("range requires int bounds"))
                 }
+            },
+            Expr::Action(params, _return_type, body, _) => {
+                // Capture current environment for closure
+                let captured_env = self.env.scopes.clone();
+                Ok(Value::Closure {
+                    params: params.clone(),
+                    body: *body.clone(),
+                    env: captured_env,
+                })
             },
         }
     }

@@ -119,6 +119,15 @@ impl<'a> Parser<'a> {
             TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
             TokenKind::Import => self.parse_import_decl().map(Decl::Import),
             TokenKind::Extern => self.parse_extern_decl().map(Decl::Extern),
+            TokenKind::Variant => self.parse_variant_decl(false).map(Decl::Variant),
+            TokenKind::Protocol => self.parse_protocol_decl(false).map(Decl::Protocol),
+            TokenKind::Extension => self.parse_extension_decl().map(Decl::Extension),
+            TokenKind::Layer => self.parse_layer_decl(false).map(Decl::Layer),
+            TokenKind::Panel => self.parse_panel_decl(false).map(Decl::Panel),
+            TokenKind::Const => self.parse_const_decl(false).map(Decl::Const),
+            TokenKind::Typealias => self.parse_typealias_decl(false).map(Decl::Typealias),
+            TokenKind::Pub => self.parse_pub_decl(),
+            TokenKind::Static => self.parse_static_decl(),
             _ => Err(ParseError::new(
                 format!("expected declaration, found {:?}", self.peek_kind()),
                 self.peek().span,
@@ -127,6 +136,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_fn_decl(&mut self, is_async: bool) -> Result<FnDecl, ParseError> {
+        self.parse_fn_decl_with_modifiers(is_async, false, false)
+    }
+
+    fn parse_fn_decl_with_modifiers(&mut self, is_async: bool, is_pub: bool, is_static: bool) -> Result<FnDecl, ParseError> {
         let start_span = self.peek().span;
         self.consume(&TokenKind::Fn, "expected 'fn'")?;
 
@@ -150,6 +163,8 @@ impl<'a> Parser<'a> {
             return_type,
             body,
             is_async,
+            is_pub,
+            is_static,
             span: start_span,
         })
     }
@@ -323,6 +338,8 @@ impl<'a> Parser<'a> {
             TokenKind::Defer => self.parse_defer_stmt(),
             TokenKind::Try => self.parse_try_catch_stmt(),
             TokenKind::Throw => self.parse_throw_stmt(),
+            TokenKind::Emit => self.parse_emit_stmt(),
+            TokenKind::At => self.parse_bind_let_stmt(),
             _ => self.parse_expr_stmt(),
         }
     }
@@ -353,6 +370,7 @@ impl<'a> Parser<'a> {
             mutable,
             ty,
             init,
+            is_bind: false,
             span,
         }))
     }
@@ -936,6 +954,369 @@ impl<'a> Parser<'a> {
             )),
         }
     }
+
+    // === UI-Specific Declaration Parsing ===
+
+    /// Parse: variant Name { Case1, Case2(field: Type), ... }
+    fn parse_variant_decl(&mut self, is_pub: bool) -> Result<VariantDecl, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Variant, "expected 'variant'")?;
+        let name = self.parse_identifier()?;
+        self.consume(&TokenKind::LBrace, "expected '{' after variant name")?;
+
+        let mut cases = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            let case_span = self.peek().span;
+            let case_name = self.parse_identifier()?;
+
+            let fields = if self.match_token(&[TokenKind::LParen]) {
+                let mut f = Vec::new();
+                if !self.check(&TokenKind::RParen) {
+                    loop {
+                        f.push(self.parse_field()?);
+                        if !self.match_token(&[TokenKind::Comma]) {
+                            break;
+                        }
+                    }
+                }
+                self.consume(&TokenKind::RParen, "expected ')'")?;
+                f
+            } else {
+                Vec::new()
+            };
+
+            cases.push(VariantCase { name: case_name, fields, span: case_span });
+
+            if !self.match_token(&[TokenKind::Comma]) {
+                break;
+            }
+        }
+
+        self.consume(&TokenKind::RBrace, "expected '}'")?;
+        Ok(VariantDecl { name, cases, is_pub, span })
+    }
+
+    /// Parse: protocol Name { fn method(params) -> Type; ... }
+    fn parse_protocol_decl(&mut self, is_pub: bool) -> Result<ProtocolDecl, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Protocol, "expected 'protocol'")?;
+        let name = self.parse_identifier()?;
+        self.consume(&TokenKind::LBrace, "expected '{' after protocol name")?;
+
+        let mut methods = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            let method_span = self.peek().span;
+            self.consume(&TokenKind::Fn, "expected 'fn' in protocol body")?;
+            let method_name = self.parse_identifier()?;
+            self.consume(&TokenKind::LParen, "expected '('")?;
+            let params = self.parse_param_list()?;
+            self.consume(&TokenKind::RParen, "expected ')'")?;
+
+            let return_type = if self.match_token(&[TokenKind::Arrow]) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+
+            self.consume(&TokenKind::Semicolon, "expected ';' after protocol method")?;
+
+            methods.push(ProtocolMethod {
+                name: method_name,
+                params,
+                return_type,
+                span: method_span,
+            });
+        }
+
+        self.consume(&TokenKind::RBrace, "expected '}'")?;
+        Ok(ProtocolDecl { name, methods, is_pub, span })
+    }
+
+    /// Parse: extension TypeName [: Protocol1, Protocol2] { fn method() { ... } ... }
+    fn parse_extension_decl(&mut self) -> Result<ExtensionDecl, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Extension, "expected 'extension'")?;
+        let target = self.parse_identifier()?;
+
+        let protocols = if self.match_token(&[TokenKind::Colon]) {
+            let mut p = vec![self.parse_identifier()?];
+            while self.match_token(&[TokenKind::Comma]) {
+                p.push(self.parse_identifier()?);
+            }
+            p
+        } else {
+            Vec::new()
+        };
+
+        self.consume(&TokenKind::LBrace, "expected '{'")?;
+
+        let mut methods = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            let is_pub = self.match_token(&[TokenKind::Pub]);
+            let is_static = self.match_token(&[TokenKind::Static]);
+            methods.push(self.parse_fn_decl_with_modifiers(false, is_pub, is_static)?);
+        }
+
+        self.consume(&TokenKind::RBrace, "expected '}'")?;
+        Ok(ExtensionDecl { target, protocols, methods, span })
+    }
+
+    /// Parse: layer Name { fields, signals, fn body() -> View { ... } }
+    fn parse_layer_decl(&mut self, is_pub: bool) -> Result<LayerDecl, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Layer, "expected 'layer'")?;
+        let name = self.parse_identifier()?;
+        self.consume(&TokenKind::LBrace, "expected '{' after layer name")?;
+
+        let mut fields = Vec::new();
+        let mut signals = Vec::new();
+        let mut methods = Vec::new();
+
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Signal => {
+                    let sig_span = self.peek().span;
+                    self.advance(); // consume 'signal'
+                    let sig_name = self.parse_identifier()?;
+                    let payload_type = if self.match_token(&[TokenKind::Colon]) {
+                        Some(self.parse_type()?)
+                    } else {
+                        None
+                    };
+                    self.consume(&TokenKind::Semicolon, "expected ';' after signal")?;
+                    signals.push(SignalField { name: sig_name, payload_type, span: sig_span });
+                }
+                TokenKind::Fn | TokenKind::Pub | TokenKind::Static => {
+                    let is_pub = self.match_token(&[TokenKind::Pub]);
+                    let is_static = self.match_token(&[TokenKind::Static]);
+                    methods.push(self.parse_fn_decl_with_modifiers(false, is_pub, is_static)?);
+                }
+                TokenKind::Let | TokenKind::At => {
+                    // Fields declared with let or @Bind let
+                    let is_bind = self.match_token(&[TokenKind::At]);
+                    if is_bind {
+                        // Consume 'Bind' identifier after @
+                        if let TokenKind::Ident(id) = self.peek_kind().clone() {
+                            if id == "Bind" {
+                                self.advance();
+                            }
+                        }
+                    }
+                    self.consume(&TokenKind::Let, "expected 'let'")?;
+                    let _mutable = self.match_token(&[TokenKind::Mut]);
+                    let field_span = self.peek().span;
+                    let field_name = self.parse_identifier()?;
+                    self.consume(&TokenKind::Colon, "expected ':' after field name")?;
+                    let field_ty = self.parse_type()?;
+                    // Skip optional initializer
+                    if self.match_token(&[TokenKind::Eq]) {
+                        self.parse_expression()?;
+                    }
+                    self.consume(&TokenKind::Semicolon, "expected ';'")?;
+                    fields.push(Field { name: field_name, ty: field_ty, span: field_span });
+                }
+                _ => {
+                    // Try as a regular field: name: type
+                    let field = self.parse_field()?;
+                    fields.push(field);
+                    if !self.match_token(&[TokenKind::Comma]) {
+                        self.match_token(&[TokenKind::Semicolon]);
+                    }
+                }
+            }
+        }
+
+        self.consume(&TokenKind::RBrace, "expected '}'")?;
+        Ok(LayerDecl { name, fields, signals, methods, is_pub, span })
+    }
+
+    /// Parse: panel Name { title: "...", size: (w, h), fn root() -> View { ... } }
+    fn parse_panel_decl(&mut self, is_pub: bool) -> Result<PanelDecl, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Panel, "expected 'panel'")?;
+        let name = self.parse_identifier()?;
+        self.consume(&TokenKind::LBrace, "expected '{' after panel name")?;
+
+        let mut properties = Vec::new();
+        let mut methods = Vec::new();
+
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            match self.peek_kind() {
+                TokenKind::Fn => {
+                    methods.push(self.parse_fn_decl(false)?);
+                }
+                TokenKind::Ident(_) => {
+                    // Property: key: value
+                    let key = self.parse_identifier()?;
+                    self.consume(&TokenKind::Colon, "expected ':' after property name")?;
+                    let value = self.parse_expression()?;
+                    properties.push((key, value));
+                    // Optional comma or semicolon separator
+                    if !self.match_token(&[TokenKind::Comma]) {
+                        self.match_token(&[TokenKind::Semicolon]);
+                    }
+                }
+                _ => {
+                    return Err(ParseError::new(
+                        format!("unexpected token in panel body: {:?}", self.peek_kind()),
+                        self.peek().span,
+                    ));
+                }
+            }
+        }
+
+        self.consume(&TokenKind::RBrace, "expected '}'")?;
+        Ok(PanelDecl { name, properties, methods, is_pub, span })
+    }
+
+    /// Parse: const NAME: Type = value;
+    fn parse_const_decl(&mut self, is_pub: bool) -> Result<ConstDecl, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Const, "expected 'const'")?;
+        let name = self.parse_identifier()?;
+
+        let ty = if self.match_token(&[TokenKind::Colon]) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        self.consume(&TokenKind::Eq, "expected '=' after const name")?;
+        let value = self.parse_expression()?;
+        self.consume(&TokenKind::Semicolon, "expected ';' after const declaration")?;
+
+        Ok(ConstDecl { name, ty, value, is_pub, span })
+    }
+
+    /// Parse: typealias Name = TargetType;
+    fn parse_typealias_decl(&mut self, is_pub: bool) -> Result<TypealiasDecl, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Typealias, "expected 'typealias'")?;
+        let name = self.parse_identifier()?;
+        self.consume(&TokenKind::Eq, "expected '='")?;
+        let target = self.parse_type()?;
+        self.consume(&TokenKind::Semicolon, "expected ';'")?;
+
+        Ok(TypealiasDecl { name, target, is_pub, span })
+    }
+
+    /// Parse: pub <declaration>
+    fn parse_pub_decl(&mut self) -> Result<Decl, ParseError> {
+        self.advance(); // consume 'pub'
+        match self.peek_kind() {
+            TokenKind::Fn => self.parse_fn_decl_with_modifiers(false, true, false).map(Decl::Function),
+            TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
+            TokenKind::Variant => self.parse_variant_decl(true).map(Decl::Variant),
+            TokenKind::Protocol => self.parse_protocol_decl(true).map(Decl::Protocol),
+            TokenKind::Layer => self.parse_layer_decl(true).map(Decl::Layer),
+            TokenKind::Panel => self.parse_panel_decl(true).map(Decl::Panel),
+            TokenKind::Const => self.parse_const_decl(true).map(Decl::Const),
+            TokenKind::Typealias => self.parse_typealias_decl(true).map(Decl::Typealias),
+            TokenKind::Async => {
+                self.advance();
+                self.parse_fn_decl_with_modifiers(true, true, false).map(Decl::Function)
+            }
+            TokenKind::Static => {
+                self.advance();
+                if self.check(&TokenKind::Fn) {
+                    self.parse_fn_decl_with_modifiers(false, true, true).map(Decl::Function)
+                } else {
+                    Err(ParseError::new(
+                        "expected 'fn' after 'pub static'",
+                        self.peek().span,
+                    ))
+                }
+            }
+            _ => Err(ParseError::new(
+                format!("expected declaration after 'pub', found {:?}", self.peek_kind()),
+                self.peek().span,
+            )),
+        }
+    }
+
+    /// Parse: static fn ...
+    fn parse_static_decl(&mut self) -> Result<Decl, ParseError> {
+        self.advance(); // consume 'static'
+        match self.peek_kind() {
+            TokenKind::Fn => self.parse_fn_decl_with_modifiers(false, false, true).map(Decl::Function),
+            _ => Err(ParseError::new(
+                format!("expected 'fn' after 'static', found {:?}", self.peek_kind()),
+                self.peek().span,
+            )),
+        }
+    }
+
+    /// Parse: emit signal_name(value);
+    fn parse_emit_stmt(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Emit, "expected 'emit'")?;
+        let signal = self.parse_identifier()?;
+
+        let value = if self.match_token(&[TokenKind::LParen]) {
+            let v = Some(self.parse_expression()?);
+            self.consume(&TokenKind::RParen, "expected ')'")?;
+            v
+        } else {
+            None
+        };
+
+        self.consume(&TokenKind::Semicolon, "expected ';' after emit")?;
+        Ok(Stmt::Expr(Expr::Call(
+            Box::new(Expr::Identifier(format!("__emit_{}", signal), span)),
+            value.into_iter().collect(),
+            span,
+        )))
+    }
+
+    /// Parse: @Bind let name: Type = value;
+    fn parse_bind_let_stmt(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::At, "expected '@'")?;
+
+        // Expect 'Bind' identifier
+        if let TokenKind::Ident(id) = self.peek_kind().clone() {
+            if id == "Bind" {
+                self.advance();
+            } else {
+                return Err(ParseError::new(
+                    format!("expected 'Bind' after '@', found '{}'", id),
+                    self.peek().span,
+                ));
+            }
+        } else {
+            return Err(ParseError::new(
+                "expected 'Bind' after '@'",
+                self.peek().span,
+            ));
+        }
+
+        self.consume(&TokenKind::Let, "expected 'let' after '@Bind'")?;
+        let mutable = self.match_token(&[TokenKind::Mut]);
+        let name = self.parse_identifier()?;
+
+        let ty = if self.match_token(&[TokenKind::Colon]) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let init = if self.match_token(&[TokenKind::Eq]) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        self.consume(&TokenKind::Semicolon, "expected ';'")?;
+
+        Ok(Stmt::Let(LetStmt {
+            name,
+            mutable,
+            ty,
+            init,
+            is_bind: true,
+            span,
+        }))
+    }
 }
 
 /// Convenience type for backward compatibility
@@ -1316,6 +1697,165 @@ mod tests {
                 }
             }
             _ => panic!("expected async function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_variant_decl() {
+        let tokens = tokenize("variant Direction { Up, Down, Left, Right }").unwrap();
+        let ast = parse(&tokens);
+        assert_eq!(ast.declarations.len(), 1);
+        match &ast.declarations[0] {
+            Decl::Variant(v) => {
+                assert_eq!(v.name, "Direction");
+                assert_eq!(v.cases.len(), 4);
+                assert_eq!(v.cases[0].name, "Up");
+                assert_eq!(v.cases[3].name, "Right");
+            }
+            _ => panic!("expected variant declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_variant_with_fields() {
+        let tokens = tokenize("variant Shape { Circle(radius: float), Rect(w: int, h: int) }").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Variant(v) => {
+                assert_eq!(v.name, "Shape");
+                assert_eq!(v.cases.len(), 2);
+                assert_eq!(v.cases[0].name, "Circle");
+                assert_eq!(v.cases[0].fields.len(), 1);
+                assert_eq!(v.cases[1].name, "Rect");
+                assert_eq!(v.cases[1].fields.len(), 2);
+            }
+            _ => panic!("expected variant declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_protocol_decl() {
+        let tokens = tokenize("protocol Drawable { fn draw(canvas: int); fn size() -> int; }").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Protocol(p) => {
+                assert_eq!(p.name, "Drawable");
+                assert_eq!(p.methods.len(), 2);
+                assert_eq!(p.methods[0].name, "draw");
+                assert_eq!(p.methods[0].params.len(), 1);
+                assert_eq!(p.methods[1].name, "size");
+                assert_eq!(p.methods[1].return_type, Some(Type::Int));
+            }
+            _ => panic!("expected protocol declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_extension_decl() {
+        let tokens = tokenize("extension Color { fn lighten(amount: float) -> float { return amount; } }").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Extension(ext) => {
+                assert_eq!(ext.target, "Color");
+                assert_eq!(ext.methods.len(), 1);
+                assert_eq!(ext.methods[0].name, "lighten");
+            }
+            _ => panic!("expected extension declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_layer_decl() {
+        let tokens = tokenize("layer MyButton { signal on_click; fn body() { } }").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Layer(l) => {
+                assert_eq!(l.name, "MyButton");
+                assert_eq!(l.signals.len(), 1);
+                assert_eq!(l.signals[0].name, "on_click");
+                assert_eq!(l.methods.len(), 1);
+                assert_eq!(l.methods[0].name, "body");
+            }
+            _ => panic!("expected layer declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_panel_decl() {
+        let tokens = tokenize("panel MainWindow { fn root() { } }").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Panel(p) => {
+                assert_eq!(p.name, "MainWindow");
+                assert_eq!(p.methods.len(), 1);
+                assert_eq!(p.methods[0].name, "root");
+            }
+            _ => panic!("expected panel declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_const_decl() {
+        let tokens = tokenize("const MAX_SIZE: int = 100;").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Const(c) => {
+                assert_eq!(c.name, "MAX_SIZE");
+                assert_eq!(c.ty, Some(Type::Int));
+            }
+            _ => panic!("expected const declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_typealias_decl() {
+        let tokens = tokenize("typealias Color = int;").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Typealias(t) => {
+                assert_eq!(t.name, "Color");
+                assert_eq!(t.target, Type::Int);
+            }
+            _ => panic!("expected typealias declaration"),
+        }
+    }
+
+    #[test]
+    fn test_parse_pub_fn() {
+        let tokens = tokenize("pub fn render() { }").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Function(f) => {
+                assert_eq!(f.name, "render");
+                assert!(f.is_pub);
+            }
+            _ => panic!("expected pub function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_emit_stmt() {
+        let tokens = tokenize("fn main() { emit on_click(42); }").unwrap();
+        let ast = parse(&tokens);
+        match &ast.declarations[0] {
+            Decl::Function(f) => {
+                match &f.body.statements[0] {
+                    Stmt::Expr(e) => {
+                        // emit is lowered to a function call: __emit_on_click(42)
+                        match e {
+                            Expr::Call(callee, args, _) => {
+                                if let Expr::Identifier(name, _) = callee.as_ref() {
+                                    assert_eq!(name, "__emit_on_click");
+                                }
+                                assert_eq!(args.len(), 1);
+                            }
+                            _ => panic!("expected call expression from emit"),
+                        }
+                    }
+                    _ => panic!("expected expression statement"),
+                }
+            }
+            _ => panic!("expected function"),
         }
     }
 }

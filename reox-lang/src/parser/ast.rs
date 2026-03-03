@@ -18,6 +18,13 @@ pub enum Decl {
     Struct(StructDecl),
     Import(ImportDecl),
     Extern(ExternDecl),
+    Variant(VariantDecl),
+    Protocol(ProtocolDecl),
+    Extension(ExtensionDecl),
+    Layer(LayerDecl),
+    Panel(PanelDecl),
+    Const(ConstDecl),
+    Typealias(TypealiasDecl),
 }
 
 /// Function declaration
@@ -28,6 +35,8 @@ pub struct FnDecl {
     pub return_type: Option<Type>,
     pub body: Block,
     pub is_async: bool,
+    pub is_pub: bool,
+    pub is_static: bool,
     pub span: Span,
 }
 
@@ -82,6 +91,9 @@ pub enum Type {
     Void,
     Named(String),
     Array(Box<Type>),
+    Optional(Box<Type>),
+    Function(Vec<Type>, Box<Type>),
+    Tuple(Vec<Type>),
 }
 
 /// A block of statements
@@ -117,6 +129,7 @@ pub struct LetStmt {
     pub mutable: bool,
     pub ty: Option<Type>,
     pub init: Option<Expr>,
+    pub is_bind: bool,
     pub span: Span,
 }
 
@@ -211,6 +224,8 @@ pub enum Expr {
     Await(Box<Expr>, Span),                        // await expr
     // Range expressions
     Range(Box<Expr>, Box<Expr>, Span),             // start..end (inclusive)
+    // Closure/lambda expression
+    Action(Vec<Param>, Option<Box<Type>>, Box<Block>, Span), // action (params) -> Type { body }
 }
 
 /// Literal values
@@ -301,3 +316,104 @@ pub enum Pattern {
     Wildcard,
 }
 
+// === UI-specific AST Nodes ===
+
+/// Variant declaration (REOX enum type)
+#[derive(Debug, Clone)]
+pub struct VariantDecl {
+    pub name: String,
+    pub cases: Vec<VariantCase>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// A single variant case
+#[derive(Debug, Clone)]
+pub struct VariantCase {
+    pub name: String,
+    pub fields: Vec<Field>,
+    pub span: Span,
+}
+
+/// Protocol declaration (trait/interface)
+#[derive(Debug, Clone)]
+pub struct ProtocolDecl {
+    pub name: String,
+    pub methods: Vec<ProtocolMethod>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Protocol method signature (no body)
+#[derive(Debug, Clone)]
+pub struct ProtocolMethod {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: Option<Type>,
+    pub span: Span,
+}
+
+/// Extension declaration (add methods to existing type)
+#[derive(Debug, Clone)]
+pub struct ExtensionDecl {
+    pub target: String,
+    pub protocols: Vec<String>,
+    pub methods: Vec<FnDecl>,
+    pub span: Span,
+}
+
+/// Layer declaration (UI view component)
+#[derive(Debug, Clone)]
+pub struct LayerDecl {
+    pub name: String,
+    pub fields: Vec<Field>,
+    pub signals: Vec<SignalField>,
+    pub methods: Vec<FnDecl>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Signal declaration inside a layer
+#[derive(Debug, Clone)]
+pub struct SignalField {
+    pub name: String,
+    pub payload_type: Option<Type>,
+    pub span: Span,
+}
+
+/// Panel declaration (top-level window)
+#[derive(Debug, Clone)]
+pub struct PanelDecl {
+    pub name: String,
+    pub properties: Vec<(String, Expr)>,
+    pub methods: Vec<FnDecl>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Const declaration
+#[derive(Debug, Clone)]
+pub struct ConstDecl {
+    pub name: String,
+    pub ty: Option<Type>,
+    pub value: Expr,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Typealias declaration
+#[derive(Debug, Clone)]
+pub struct TypealiasDecl {
+    pub name: String,
+    pub target: Type,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+/// Emit statement (fire a signal)
+#[derive(Debug, Clone)]
+pub struct EmitStmt {
+    pub signal: String,
+    pub value: Option<Expr>,
+    pub span: Span,
+}

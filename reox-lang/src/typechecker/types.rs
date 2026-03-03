@@ -40,6 +40,18 @@ impl ResolvedType {
             crate::parser::Type::Array(inner) => {
                 ResolvedType::Array(Box::new(Self::from_parser_type(inner)))
             }
+            crate::parser::Type::Optional(inner) => {
+                ResolvedType::Optional(Box::new(Self::from_parser_type(inner)))
+            }
+            crate::parser::Type::Function(params, ret) => {
+                ResolvedType::Function {
+                    params: params.iter().map(Self::from_parser_type).collect(),
+                    ret: Box::new(Self::from_parser_type(ret)),
+                }
+            }
+            crate::parser::Type::Tuple(elems) => {
+                ResolvedType::Tuple(elems.iter().map(Self::from_parser_type).collect())
+            }
         }
     }
 
@@ -49,6 +61,10 @@ impl ResolvedType {
             return true;
         }
         match (self, other) {
+            // Unknown accepts anything (used for builtins like print)
+            (ResolvedType::Unknown, _) | (_, ResolvedType::Unknown) => true,
+            // Error type never blocks compilation (already reported)
+            (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
             // Float can be assigned from Int (widening)
             (ResolvedType::Float, ResolvedType::Int) => true,
             // Optional<T> can be assigned from T

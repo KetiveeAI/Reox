@@ -45,7 +45,7 @@ pub enum TokenKind {
     False,
     
     // REOX-unique keywords (NeolyxOS System UI)
-    Kind,       // enum with variants (REOX term for enum)
+    Variant,    // enum with variants (REOX term for enum)
     Layer,      // UI container (like SwiftUI View, but REOX term)
     Panel,      // Top-level UI window
     Action,     // Closure/lambda
@@ -180,7 +180,7 @@ impl TokenKind {
                 | TokenKind::True
                 | TokenKind::False
                 // REOX-unique keywords
-                | TokenKind::Kind
+                | TokenKind::Variant
                 | TokenKind::Layer
                 | TokenKind::Panel
                 | TokenKind::Action
@@ -241,7 +241,7 @@ impl TokenKind {
             "bool" => Some(TokenKind::Bool),
             "void" => Some(TokenKind::Void),
             // REOX-unique keywords (NeolyxOS)
-            "kind" => Some(TokenKind::Kind),
+            "variant" => Some(TokenKind::Variant),
             "layer" => Some(TokenKind::Layer),
             "panel" => Some(TokenKind::Panel),
             "action" => Some(TokenKind::Action),
