@@ -1,7 +1,7 @@
 # REOX Language — Project Status & TODO
 
-> **Last updated**: 2026-03-03  
-> **Status**: Active Development — Compiler Core Working, UI Language Features In Progress
+> **Last updated**: 2026-03-13  
+> **Status**: Active Development — UI Language Features Complete, Stabilizing for Production
 
 ---
 
@@ -10,10 +10,10 @@
 | Component             | Status        | Notes                                                                                                                                               |
 | --------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Lexer**             | Complete      | All keywords tokenized (including UI keywords), full operator set, string/number literals, hex support, position tracking                           |
-| **Parser**            | Core Complete | Functions, structs, imports, extern, if/while/for, match, guard, defer, try/catch, throw, async/await, trailing closures, optional chaining, ranges |
-| **Type Checker**      | Core Complete | Type inference, function signatures, struct fields, binary/unary ops, member access, indexing                                                       |
-| **Code Generator**    | Core Complete | C transpilation for all parsed constructs, struct generation, extern declarations, control flow                                                     |
-| **Interpreter**       | Core Complete | Tree-walking evaluator, built-in functions (print, math, string, array, map), REPL mode                                                             |
+| **Parser**            | Complete      | Functions, structs, UI constructs (variant, protocol, layer, panel, const, typealias, action, @Bind, emit, gestures), control flow                  |
+| **Type Checker**      | Complete      | Type inference, explicit integer widths (`i8`-`usize`), function signatures, struct fields, binary/unary ops, type coercion                         |
+| **Code Generator**    | Complete      | C transpilation for all AST nodes, `<stdint.h>` type mapping, proper `setjmp`/`longjmp` error propagation, C/C++/Rust FFI                           |
+| **Interpreter**       | Complete      | Tree-walking evaluator, native built-ins (math, string, array, map, file IO, AI ops), UI struct evaluation, closure and environment capture         |
 | **C Runtime**         | Extensive     | 50+ files: UI widgets, animation system, transitions, themes, color system, SDL backend, FFI, accessibility, display, desktop integration           |
 | **Stdlib (.rx)**      | Extensive     | 649-line prelude with extern declarations for UI (views, widgets, forms, shapes, effects, media, state management, timers, platform API)            |
 | **CLI**               | Complete      | `reoxc compile`, `reoxc run`, `reoxc init`, `reoxc new`, `reoxc pkg`, project templates                                                             |
@@ -31,27 +31,44 @@ The lexer already tokenizes these keywords, but the parser does **not yet consum
 
 | Keyword            | Purpose                                                 | Priority | Status      |
 | ------------------ | ------------------------------------------------------- | -------- | ----------- |
-| `variant`          | Enum type with named variants (like Swift enum)         | **P0**   | Not started |
-| `protocol`         | Trait/interface declarations                            | **P0**   | Not started |
-| `extension`        | Add methods to existing types                           | **P0**   | Not started |
-| `layer`            | UI view component (like SwiftUI View)                   | **P0**   | Not started |
-| `panel`            | Top-level window definition                             | **P0**   | Not started |
-| `@Bind`            | Reactive state variable annotation                      | **P1**   | Not started |
-| `signal` / `emit`  | Reactive event system                                   | **P1**   | Not started |
-| `const`            | Compile-time constants                                  | **P1**   | Not started |
-| `static`           | Static members                                          | **P1**   | Not started |
-| `typealias`        | Type aliases                                            | **P2**   | Not started |
-| `pub`              | Visibility modifier                                     | **P2**   | Not started |
-| `action`           | First-class closure/lambda                              | **P2**   | Not started |
-| `gesture` keywords | `on_tap`, `on_pan`, `on_swipe`, `on_pinch`, `on_rotate` | **P2**   | Not started |
+| `variant`          | Enum type with named variants (like Swift enum)         | **P0**   | ✅ Done      |
+| `protocol`         | Trait/interface declarations                            | **P0**   | ✅ Done      |
+| `extension`        | Add methods to existing types                           | **P0**   | ✅ Done      |
+| `layer`            | UI view component (like SwiftUI View)                   | **P0**   | ✅ Done      |
+| `panel`            | Top-level window definition                             | **P0**   | ✅ Done      |
+| `@Bind`            | Reactive state variable annotation                      | **P1**   | ✅ Done      |
+| `signal` / `emit`  | Reactive event system                                   | **P1**   | ✅ Done      |
+| `const`            | Compile-time constants                                  | **P1**   | ✅ Done      |
+| `static`           | Static members                                          | **P1**   | ✅ Done      |
+| `typealias`        | Type aliases                                            | **P2**   | ✅ Done      |
+| `pub`              | Visibility modifier                                     | **P2**   | ✅ Done      |
+| `action`           | First-class closure/lambda                              | **P2**   | ✅ Done      |
+| `gesture` keywords | `on_tap`, `on_pan`, `on_swipe`, `on_pinch`, `on_rotate` | **P2**   | ✅ Done      |
 
-### Type System Additions Needed
+### Type System Additions (v1.2.0)
 
-- `Optional` type (`int?`, `string?`)
-- `Function` type (`fn(int) -> bool`)
-- `Tuple` type (`(int, string)`)
-- Protocol conformance checking
-- `variant` constructor type inference
+- ✅ Explicit integer widths: `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `usize`
+- `Optional` type (`int?`, `string?`) — parsed, needs interpreter expansion
+- `Function` type (`fn(int) -> bool`) — parsed, codegen done
+- `Tuple` type (`(int, string)`) — parsed, codegen done
+- Protocol conformance checking — future
+- `variant` constructor type inference — future
+
+---
+
+## Future Tasks & Roadmap
+
+- **Production Stabilization**: Harden the compiler pipeline and interpreter for production readiness. Address edge cases in parsing, type-checking, and code generation.
+- **Calculator App Revamp**: The current `calculator.app` feels like a dummy application. Since REOX now has robust math support in the core language (recursion, loops, arithmetic, math built-ins), the calculator app needs to be verified and rewritten in pure REOX to fully validate the language's capabilities.
+- **Protocol Conformance Checking**: Implement strict type checking for protocol conformance (`extension Type : Protocol`).
+- **Variant Constructor Type Inference**: Improve type inference for variant payloads and pattern matching.
+- **Advanced UI State Management**: Further refine `@Bind` and reactive data flow patterns.
+
+## Upcoming Bug Fixes
+
+- **Nested Scope Parsing**: Fix parser failing on `let` variable declarations inside nested block scopes (e.g., inside a `while` loop body, causing `expected identifier, found Let` error).
+- **Mutable Assignment in Loops**: Resolve scoping/parsing issues where `mut` variable assignments in nested loops occasionally trigger syntax errors.
+- **Interpreter Consistency**: Ensure all native interpreter functions (like `println`) have consistent behavior mirroring the generated C code output.
 
 ---
 

@@ -1,0 +1,147 @@
+// calculator.rx - Comprehensive REOX Calculator
+// Tests arithmetic, math builtins, control flow, and user functions
+
+fn add(a: int, b: int) -> int { return a + b; }
+fn sub(a: int, b: int) -> int { return a - b; }
+fn mul(a: int, b: int) -> int { return a * b; }
+fn div(a: int, b: int) -> int {
+    if b == 0 {
+        println("Error: division by zero");
+        return 0;
+    }
+    return a / b;
+}
+fn modulo(a: int, b: int) -> int { return a % b; }
+
+fn factorial(n: int) -> int {
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+
+fn fib(n: int) -> int {
+    if n <= 0 { return 0; }
+    if n == 1 { return 1; }
+    let mut a: int = 0;
+    let mut b: int = 1;
+    let mut i: int = 2;
+    while i <= n {
+        let tmp: int = b;
+        b = a + b;
+        a = tmp;
+        i = i + 1;
+    }
+    return b;
+}
+
+fn power(base: int, exp: int) -> int {
+    if exp == 0 { return 1; }
+    let mut result: int = 1;
+    let mut i: int = 0;
+    while i < exp {
+        result = result * base;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn is_even(n: int) -> bool { return n % 2 == 0; }
+fn is_prime(n: int) -> bool {
+    if n < 2 { return false; }
+    if n == 2 { return true; }
+    if n % 2 == 0 { return false; }
+    let mut i: int = 3;
+    while i * i <= n {
+        if n % i == 0 { return false; }
+        i = i + 2;
+    }
+    return true;
+}
+
+fn main() -> int {
+    println("=== REOX Calculator ===");
+
+    // Basic arithmetic
+    println("--- Arithmetic ---");
+    let a: int = 42;
+    let b: int = 13;
+    print("add(42, 13) = ");
+    println(add(a, b));
+    print("sub(42, 13) = ");
+    println(sub(a, b));
+    print("mul(42, 13) = ");
+    println(mul(a, b));
+    print("div(42, 13) = ");
+    println(div(a, b));
+    print("mod(42, 13) = ");
+    println(modulo(a, b));
+
+    // Recursive factorial
+    println("--- Factorial ---");
+    print("5! = ");
+    println(factorial(5));
+    print("10! = ");
+    println(factorial(10));
+
+    // Fibonacci
+    println("--- Fibonacci ---");
+    print("fib(10) = ");
+    println(fib(10));
+    print("fib(20) = ");
+    println(fib(20));
+
+    // Power
+    println("--- Power ---");
+    print("2^10 = ");
+    println(power(2, 10));
+    print("3^5 = ");
+    println(power(3, 5));
+
+    // Math builtins
+    println("--- Math Builtins ---");
+    print("abs(-42) = ");
+    println(abs(-42));
+    print("min(10, 20) = ");
+    println(min(10, 20));
+    print("max(10, 20) = ");
+    println(max(10, 20));
+    print("clamp(50, 0, 100) = ");
+    println(clamp(50, 0, 100));
+
+    // Predicates
+    println("--- Predicates ---");
+    print("is_even(42) = ");
+    println(is_even(42));
+    print("is_even(13) = ");
+    println(is_even(13));
+    print("is_prime(13) = ");
+    println(is_prime(13));
+    print("is_prime(42) = ");
+    println(is_prime(42));
+
+    // Compound ops
+    println("--- Compound Assignment ---");
+    let mut x: int = 10;
+    x += 5;
+    print("10 += 5 = ");
+    println(x);
+    x *= 3;
+    print("15 *= 3 = ");
+    println(x);
+    x -= 20;
+    print("45 -= 20 = ");
+    println(x);
+
+    // Bitwise
+    println("--- Bitwise ---");
+    let flags: int = 0b1010;
+    let mask: int = 0b1100;
+    print("0b1010 & 0b1100 = ");
+    println(flags & mask);
+    print("0b1010 | 0b1100 = ");
+    println(flags | mask);
+    print("0b1010 ^ 0b1100 = ");
+    println(flags ^ mask);
+
+    println("=== All tests passed ===");
+    return 0;
+}

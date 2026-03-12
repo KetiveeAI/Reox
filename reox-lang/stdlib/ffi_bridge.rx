@@ -1,0 +1,49 @@
+// REOX FFI Bridge - Standard Library Declarations
+// Demonstrates how to declare external C/C++/Rust functions in REOX
+
+// ============================================================================
+// C standard library bridge
+// ============================================================================
+
+extern fn c_malloc(size: u64) -> u64;
+extern fn c_free(ptr: u64);
+extern fn c_memcpy(dst: u64, src: u64, n: u64);
+extern fn c_memset(dst: u64, val: i32, n: u64);
+
+// ============================================================================
+// POSIX / NeolyxOS system calls
+// ============================================================================
+
+extern fn nx_open(path: string, flags: i32) -> i32;
+extern fn nx_close(fd: i32) -> i32;
+extern fn nx_read(fd: i32, buf: u64, count: u64) -> i64;
+extern fn nx_write(fd: i32, buf: u64, count: u64) -> i64;
+extern fn nx_mmap(addr: u64, length: u64, prot: i32, flags: i32, fd: i32, offset: i64) -> u64;
+
+// ============================================================================
+// Rust interop (Rust functions must use #[no_mangle] extern "C")
+// ============================================================================
+
+extern fn rust_process(data: u64, len: u64) -> i32;
+extern fn rust_hash(input: string) -> u64;
+extern fn rust_verify(hash: u64, input: string) -> bool;
+
+// ============================================================================
+// C++ interop (C++ functions must be wrapped in extern "C")
+// ============================================================================
+
+extern fn cpp_render_frame(width: i32, height: i32) -> i32;
+extern fn cpp_init_gpu(device_id: i32) -> bool;
+extern fn cpp_destroy_gpu();
+
+// ============================================================================
+// Example usage in REOX
+// ============================================================================
+//
+// fn main() {
+//     let ptr: u64 = c_malloc(1024);
+//     if ptr != 0 {
+//         let result: i32 = rust_process(ptr, 1024);
+//         c_free(ptr);
+//     }
+// }

@@ -11,6 +11,16 @@ pub enum ResolvedType {
     String,
     Bool,
     Void,
+    // Explicit integer widths
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    USize,
     Struct(String),
     Array(Box<ResolvedType>),
     Function {
@@ -36,6 +46,15 @@ impl ResolvedType {
             crate::parser::Type::String => ResolvedType::String,
             crate::parser::Type::Bool => ResolvedType::Bool,
             crate::parser::Type::Void => ResolvedType::Void,
+            crate::parser::Type::I8 => ResolvedType::I8,
+            crate::parser::Type::U8 => ResolvedType::U8,
+            crate::parser::Type::I16 => ResolvedType::I16,
+            crate::parser::Type::U16 => ResolvedType::U16,
+            crate::parser::Type::I32 => ResolvedType::I32,
+            crate::parser::Type::U32 => ResolvedType::U32,
+            crate::parser::Type::I64 => ResolvedType::I64,
+            crate::parser::Type::U64 => ResolvedType::U64,
+            crate::parser::Type::USize => ResolvedType::USize,
             crate::parser::Type::Named(name) => ResolvedType::Struct(name.clone()),
             crate::parser::Type::Array(inner) => {
                 ResolvedType::Array(Box::new(Self::from_parser_type(inner)))
@@ -55,6 +74,23 @@ impl ResolvedType {
         }
     }
 
+    /// Check if this is an integer type (including explicit widths)
+    pub fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            ResolvedType::Int
+                | ResolvedType::I8
+                | ResolvedType::U8
+                | ResolvedType::I16
+                | ResolvedType::U16
+                | ResolvedType::I32
+                | ResolvedType::U32
+                | ResolvedType::I64
+                | ResolvedType::U64
+                | ResolvedType::USize
+        )
+    }
+
     /// Check if types are compatible for assignment
     pub fn is_assignable_from(&self, other: &ResolvedType) -> bool {
         if *self == *other {
@@ -67,6 +103,8 @@ impl ResolvedType {
             (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
             // Float can be assigned from Int (widening)
             (ResolvedType::Float, ResolvedType::Int) => true,
+            // Integer width coercion (all integer types are mutually assignable)
+            (a, b) if a.is_integer() && b.is_integer() => true,
             // Optional<T> can be assigned from T
             (ResolvedType::Optional(inner), other) => inner.is_assignable_from(other),
             // Array<T> compatibility
@@ -91,6 +129,15 @@ impl ResolvedType {
             ResolvedType::String => "string".to_string(),
             ResolvedType::Bool => "bool".to_string(),
             ResolvedType::Void => "void".to_string(),
+            ResolvedType::I8 => "i8".to_string(),
+            ResolvedType::U8 => "u8".to_string(),
+            ResolvedType::I16 => "i16".to_string(),
+            ResolvedType::U16 => "u16".to_string(),
+            ResolvedType::I32 => "i32".to_string(),
+            ResolvedType::U32 => "u32".to_string(),
+            ResolvedType::I64 => "i64".to_string(),
+            ResolvedType::U64 => "u64".to_string(),
+            ResolvedType::USize => "usize".to_string(),
             ResolvedType::Struct(name) => name.clone(),
             ResolvedType::Array(inner) => format!("[{}]", inner.display_name()),
             ResolvedType::Function { params, ret } => {

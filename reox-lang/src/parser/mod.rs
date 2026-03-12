@@ -294,6 +294,15 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(Type::Void)
             }
+            TokenKind::I8 => { self.advance(); Ok(Type::I8) }
+            TokenKind::U8 => { self.advance(); Ok(Type::U8) }
+            TokenKind::I16 => { self.advance(); Ok(Type::I16) }
+            TokenKind::U16 => { self.advance(); Ok(Type::U16) }
+            TokenKind::I32 => { self.advance(); Ok(Type::I32) }
+            TokenKind::U32 => { self.advance(); Ok(Type::U32) }
+            TokenKind::I64 => { self.advance(); Ok(Type::I64) }
+            TokenKind::U64 => { self.advance(); Ok(Type::U64) }
+            TokenKind::USize => { self.advance(); Ok(Type::USize) }
             TokenKind::Ident(name) => {
                 self.advance();
                 Ok(Type::Named(name))

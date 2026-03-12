@@ -88,6 +88,16 @@ pub enum TokenKind {
     String,
     Bool,
     Void,
+    // Explicit integer widths (NeolyxOS 64-bit ABI)
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    USize,
 
     // Identifiers and Literals
     Ident(String),
@@ -240,6 +250,15 @@ impl TokenKind {
             "string" => Some(TokenKind::String),
             "bool" => Some(TokenKind::Bool),
             "void" => Some(TokenKind::Void),
+            "i8" => Some(TokenKind::I8),
+            "u8" => Some(TokenKind::U8),
+            "i16" => Some(TokenKind::I16),
+            "u16" => Some(TokenKind::U16),
+            "i32" => Some(TokenKind::I32),
+            "u32" => Some(TokenKind::U32),
+            "i64" => Some(TokenKind::I64),
+            "u64" => Some(TokenKind::U64),
+            "usize" => Some(TokenKind::USize),
             // REOX-unique keywords (NeolyxOS)
             "variant" => Some(TokenKind::Variant),
             "layer" => Some(TokenKind::Layer),

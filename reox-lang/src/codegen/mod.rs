@@ -69,6 +69,7 @@ impl CodeGen {
         self.emit_line("#include <stdint.h>");
         self.emit_line("#include <stdbool.h>");
         self.emit_line("#include <string.h>");
+        self.emit_line("#include <setjmp.h>");
         self.emit_line("#include \"reox_runtime.h\"");
         self.emit_line("#include \"reox_nxrender_bridge.h\"");  // NXRender integration
         self.emit_line("");
@@ -557,30 +558,32 @@ impl CodeGen {
     }
     
     fn gen_try_catch(&mut self, t: &TryCatchStmt) {
-        // C doesn't have try/catch - emit as comments for now
-        self.emit_line("/* try block */");
         self.emit_line("{");
+        self.indent();
+        self.emit_line("jmp_buf __rx_jmp;");
+        self.emit_line("int __rx_err = setjmp(__rx_jmp);");
+        self.emit_indent();
+        self.emit("if (__rx_err == 0) {\n");
         self.indent();
         self.gen_block(&t.try_block);
         self.dedent();
-        self.emit_line("}");
-        self.emit_line("/* catch block */");
-        self.emit_line("{");
+        self.emit_line("} else {");
         self.indent();
         if let Some(var) = &t.catch_var {
-            self.emit_line(&format!("/* error in {} */", var));
+            self.emit_line(&format!("int {} = __rx_err;", var));
         }
         self.gen_block(&t.catch_block);
+        self.dedent();
+        self.emit_line("}");
         self.dedent();
         self.emit_line("}");
     }
     
     fn gen_throw(&mut self, t: &ThrowStmt) {
-        // C doesn't have throw - emit as comment + abort for now
         self.emit_indent();
-        self.emit("/* throw */ abort(); /* ");
+        self.emit("longjmp(__rx_jmp, (int)(");
         self.gen_expr(&t.value);
-        self.emit(" */\n");
+        self.emit("));\n");
     }
 
     fn gen_let(&mut self, l: &LetStmt) {
@@ -1037,6 +1040,15 @@ impl CodeGen {
             Type::String => "const char*".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Void => "void".to_string(),
+            Type::I8 => "int8_t".to_string(),
+            Type::U8 => "uint8_t".to_string(),
+            Type::I16 => "int16_t".to_string(),
+            Type::U16 => "uint16_t".to_string(),
+            Type::I32 => "int32_t".to_string(),
+            Type::U32 => "uint32_t".to_string(),
+            Type::I64 => "int64_t".to_string(),
+            Type::U64 => "uint64_t".to_string(),
+            Type::USize => "size_t".to_string(),
             Type::Named(name) => name.clone(),
             Type::Array(inner) => format!("{}*", self.type_to_c(inner)),
             Type::Optional(inner) => format!("{}*", self.type_to_c(inner)),
