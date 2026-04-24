@@ -17,7 +17,6 @@ struct Shadow { offset_x: float, offset_y: float, blur: float, color: Color }
 
 // Print
 extern fn println(s: string) -> void;
-extern fn print(s: string) -> void;
 extern fn int_to_string(i: int) -> string;
 extern fn float_to_string(f: float) -> string;
 extern fn string_concat(a: string, b: string) -> string;
@@ -115,20 +114,31 @@ fn set_op(op: string) -> void {
     set_new_entry(true);
 }
 
-fn on_add() -> void { set_op("+"); }
-fn on_sub() -> void { set_op("-"); }
-fn on_mul() -> void { set_op("*"); }
-fn on_div() -> void { set_op("/"); }
+extern fn string_to_float(s: string) -> float;
 
-fn on_eq() -> void {
-    set_new_entry(true);
-    set_display("Result"); 
+fn calculate_pending() -> void {
+    let op: string = get_pending_op();
+    if string_eq(op, "") { return; }
+    
+    let current_val: float = string_to_float(get_display());
+    let acc: float = get_accumulator();
+    let result: float = 0.0;
+    
+    if string_eq(op, "+") { result = acc + current_val; }
+    if string_eq(op, "-") { result = acc - current_val; }
+    if string_eq(op, "*") { result = acc * current_val; }
+    if string_eq(op, "/") { 
+        if current_val == 0.0 {
+            set_display("Error");
+            update_ui();
+            return;
+        }
+        result = acc / current_val; 
+    }
+    
+    set_accumulator(result);
+    set_display(float_to_string(result));
     update_ui();
-    save_history("Calculation performed");
-}
-
-fn on_clear() -> void {
-    clear_all();
 }
 
 fn clear_all() -> void {
@@ -139,16 +149,73 @@ fn clear_all() -> void {
     update_ui();
 }
 
-fn append_digit(digit: string) -> void {
-    // Basic append without check for now to allow compilation
-    let current: string = get_display();
-    set_display(string_concat(current, digit));
-    update_ui();
-}
-
-// Handler wrappers for digits (ID mapping would happen here in a real runtime)
 fn on_click_handler(id: int) -> void {
-    println("Button clicked!");
+    if id >= 100 {
+        if id <= 109 {
+            // Digit
+            let digit_str: string = int_to_string(id - 100);
+            if get_new_entry() {
+                set_display(digit_str);
+                set_new_entry(false);
+            } else {
+                let current: string = get_display();
+                if string_eq(current, "0") {
+                    set_display(digit_str);
+                } else {
+                    set_display(string_concat(current, digit_str));
+                }
+            }
+            update_ui();
+        }
+    }
+    if id == 110 {
+        // Decimal
+        if get_new_entry() {
+            set_display("0.");
+            set_new_entry(false);
+        } else {
+            set_display(string_concat(get_display(), "."));
+        }
+        update_ui();
+    }
+    if id == 201 { clear_all(); }
+    if id == 202 {
+        let val: float = string_to_float(get_display());
+        val = 0.0 - val;
+        set_display(float_to_string(val));
+        update_ui();
+    }
+    if id == 203 {
+        let val: float = string_to_float(get_display());
+        val = val / 100.0;
+        set_display(float_to_string(val));
+        update_ui();
+    }
+    if id == 204 {
+        calculate_pending();
+        set_accumulator(string_to_float(get_display()));
+        set_op("/");
+    }
+    if id == 205 {
+        calculate_pending();
+        set_accumulator(string_to_float(get_display()));
+        set_op("*");
+    }
+    if id == 206 {
+        calculate_pending();
+        set_accumulator(string_to_float(get_display()));
+        set_op("-");
+    }
+    if id == 207 {
+        calculate_pending();
+        set_accumulator(string_to_float(get_display()));
+        set_op("+");
+    }
+    if id == 208 {
+        calculate_pending();
+        set_pending_op("");
+        set_new_entry(true);
+    }
 }
 
 extern fn get_button_color_wrapper(is_op: bool, is_action: bool, state: int) -> Color;

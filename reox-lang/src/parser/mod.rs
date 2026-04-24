@@ -830,19 +830,36 @@ impl<'a> Parser<'a> {
 
                 // Check for struct literal
                 if self.check(&TokenKind::LBrace) {
-                    self.advance();
-                    let mut fields = Vec::new();
-                    while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
-                        let field_name = self.parse_identifier()?;
-                        self.consume(&TokenKind::Colon, "expected ':'")?;
-                        let value = self.parse_expression()?;
-                        fields.push((field_name, value));
-                        if !self.match_token(&[TokenKind::Comma]) {
-                            break;
+                    // Look ahead to confirm it's actually a struct literal and not a block
+                    let is_struct_literal = {
+                        let mut lookahead = self.current;
+                        lookahead += 1; // point to token after LBrace
+                        let next1 = self.tokens.get(lookahead).map(|t| &t.kind);
+                        match next1 {
+                            Some(TokenKind::Ident(_)) => {
+                                let next2 = self.tokens.get(lookahead + 1).map(|t| &t.kind);
+                                matches!(next2, Some(TokenKind::Colon))
+                            },
+                            Some(TokenKind::RBrace) => true,
+                            _ => false,
                         }
+                    };
+
+                    if is_struct_literal {
+                        self.advance(); // consume LBrace
+                        let mut fields = Vec::new();
+                        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+                            let field_name = self.parse_identifier()?;
+                            self.consume(&TokenKind::Colon, "expected ':'")?;
+                            let value = self.parse_expression()?;
+                            fields.push((field_name, value));
+                            if !self.match_token(&[TokenKind::Comma]) {
+                                break;
+                            }
+                        }
+                        self.consume(&TokenKind::RBrace, "expected '}'")?;
+                        return Ok(Expr::StructLit(name, fields, token.span));
                     }
-                    self.consume(&TokenKind::RBrace, "expected '}'")?;
-                    return Ok(Expr::StructLit(name, fields, token.span));
                 }
 
                 Ok(Expr::Identifier(name, token.span))

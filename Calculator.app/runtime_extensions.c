@@ -91,3 +91,7 @@ ReoxColor get_button_color_wrapper(bool is_op, bool is_action, int state) {
     }
     return c;
 }
+
+double string_to_float(string s) {
+    return atof(s);
+}

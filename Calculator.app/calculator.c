@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <setjmp.h>
 #include "reox_runtime.h"
 #include "reox_nxrender_bridge.h"
 
@@ -50,7 +51,6 @@ struct Shadow {
 };
 
 extern void println(const char* s);
-extern void print(const char* s);
 extern const char* int_to_string(int64_t i);
 extern const char* float_to_string(double f);
 extern const char* string_concat(const char* a, const char* b);
@@ -103,19 +103,14 @@ extern int64_t get_display_label_handle(void);
 extern void set_display_label_handle(int64_t h);
 extern int64_t get_root_view_handle(void);
 extern void set_root_view_handle(int64_t h);
+extern double string_to_float(const char* s);
 extern Color get_button_color_wrapper(bool is_op, bool is_action, int64_t state);
 
 void update_ui(void);
 void save_history(const char* entry);
 void set_op(const char* op);
-void on_add(void);
-void on_sub(void);
-void on_mul(void);
-void on_div(void);
-void on_eq(void);
-void on_clear(void);
+void calculate_pending(void);
 void clear_all(void);
-void append_digit(const char* digit);
 void on_click_handler(int64_t id);
 View create_button(const char* label, bool is_op, bool is_action, int64_t id);
 View create_keypad(void);
@@ -140,31 +135,34 @@ void set_op(const char* op) {
     set_new_entry(true);
 }
 
-void on_add(void) {
-    set_op("+");
-}
-
-void on_sub(void) {
-    set_op("-");
-}
-
-void on_mul(void) {
-    set_op("*");
-}
-
-void on_div(void) {
-    set_op("/");
-}
-
-void on_eq(void) {
-    set_new_entry(true);
-    set_display("Result");
+void calculate_pending(void) {
+    const char* op = get_pending_op();
+    if (string_eq(op, "")) {
+        return;
+    }
+    double current_val = string_to_float(get_display());
+    double acc = get_accumulator();
+    double result = 0.000000000000000;
+    if (string_eq(op, "+")) {
+        result = (acc + current_val);
+    }
+    if (string_eq(op, "-")) {
+        result = (acc - current_val);
+    }
+    if (string_eq(op, "*")) {
+        result = (acc * current_val);
+    }
+    if (string_eq(op, "/")) {
+        if ((current_val == 0.000000000000000)) {
+            set_display("Error");
+            update_ui();
+            return;
+        }
+        result = (acc / current_val);
+    }
+    set_accumulator(result);
+    set_display(float_to_string(result));
     update_ui();
-    save_history("Calculation performed");
-}
-
-void on_clear(void) {
-    clear_all();
 }
 
 void clear_all(void) {
@@ -175,14 +173,73 @@ void clear_all(void) {
     update_ui();
 }
 
-void append_digit(const char* digit) {
-    const char* current = get_display();
-    set_display(string_concat(current, digit));
-    update_ui();
-}
-
 void on_click_handler(int64_t id) {
-    println("Button clicked!");
+    if ((id >= 100)) {
+        if ((id <= 109)) {
+            const char* digit_str = int_to_string((id - 100));
+            if (get_new_entry()) {
+                set_display(digit_str);
+                set_new_entry(false);
+            } else {
+                const char* current = get_display();
+                if (string_eq(current, "0")) {
+                    set_display(digit_str);
+                } else {
+                    set_display(string_concat(current, digit_str));
+                }
+            }
+            update_ui();
+        }
+    }
+    if ((id == 110)) {
+        if (get_new_entry()) {
+            set_display("0.");
+            set_new_entry(false);
+        } else {
+            set_display(string_concat(get_display(), "."));
+        }
+        update_ui();
+    }
+    if ((id == 201)) {
+        clear_all();
+    }
+    if ((id == 202)) {
+        double val = string_to_float(get_display());
+        val = (0.000000000000000 - val);
+        set_display(float_to_string(val));
+        update_ui();
+    }
+    if ((id == 203)) {
+        double val = string_to_float(get_display());
+        val = (val / 100.000000000000000);
+        set_display(float_to_string(val));
+        update_ui();
+    }
+    if ((id == 204)) {
+        calculate_pending();
+        set_accumulator(string_to_float(get_display()));
+        set_op("/");
+    }
+    if ((id == 205)) {
+        calculate_pending();
+        set_accumulator(string_to_float(get_display()));
+        set_op("*");
+    }
+    if ((id == 206)) {
+        calculate_pending();
+        set_accumulator(string_to_float(get_display()));
+        set_op("-");
+    }
+    if ((id == 207)) {
+        calculate_pending();
+        set_accumulator(string_to_float(get_display()));
+        set_op("+");
+    }
+    if ((id == 208)) {
+        calculate_pending();
+        set_pending_op("");
+        set_new_entry(true);
+    }
 }
 
 View create_button(const char* label, bool is_op, bool is_action, int64_t id) {

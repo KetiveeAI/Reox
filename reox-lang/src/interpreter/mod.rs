@@ -62,7 +62,11 @@ impl Environment {
     pub fn new() -> Self {
         let mut e = Self { scopes: vec![HashMap::new()] };
         // I/O
-        e.define("print", Value::NativeAction(|a| { for x in &a { print!("{} ", x); } println!(); Value::Nil }));
+        e.define("print", Value::NativeAction(|a| { 
+            for x in &a { print!("{}", x); } 
+            std::io::Write::flush(&mut std::io::stdout()).unwrap(); 
+            Value::Nil 
+        }));
         e.define("println", Value::NativeAction(|a| { for x in &a { println!("{}", x); } Value::Nil }));
         // Collections
         e.define("len", Value::NativeAction(|a| match a.first() { Some(Value::Array(v)) => Value::Int(v.len() as i64), Some(Value::String(s)) => Value::Int(s.len() as i64), Some(Value::Map(m)) => Value::Int(m.len() as i64), _ => Value::Int(0) }));

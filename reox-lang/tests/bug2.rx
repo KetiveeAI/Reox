@@ -1,0 +1,6 @@
+let mut display: string = "0";
+fn main() -> int {
+    display = "1";
+    println(display);
+    return 0;
+}
