@@ -148,11 +148,12 @@ impl<'a> Lexer<'a> {
         Token::new(kind, span)
     }
 
-    /// Scan a number literal (supports decimal and hex with 0x prefix)
+    /// Scan a number literal (supports decimal, hex 0x, and binary 0b)
     fn scan_number(&mut self, start_pos: usize, start_line: u32, start_col: u32) -> Result<Token, LexError> {
         let mut end_pos = start_pos;
         let mut is_float = false;
         let mut is_hex = false;
+        let mut is_bin = false;
 
         // Check for hex prefix (0x or 0X)
         if self.source[start_pos..].starts_with("0x") || self.source[start_pos..].starts_with("0X") {
@@ -160,15 +161,21 @@ impl<'a> Lexer<'a> {
             self.advance(); // consume 'x' or 'X'
             end_pos = self.current_pos;
             
-            // Parse hex digits
             while let Some(ch) = self.peek() {
                 if ch.is_ascii_hexdigit() {
-                    if let Some((pos, _)) = self.advance() {
-                        end_pos = pos;
-                    }
-                } else {
-                    break;
-                }
+                    if let Some((pos, _)) = self.advance() { end_pos = pos; }
+                } else { break; }
+            }
+        } else if self.source[start_pos..].starts_with("0b") || self.source[start_pos..].starts_with("0B") {
+            is_bin = true;
+            self.advance(); // consume 'b' or 'B'
+            end_pos = self.current_pos;
+            
+            while let Some(ch) = self.peek() {
+                if ch == '0' || ch == '1' || ch == '_' {
+                    if ch != '_' { if let Some((pos, _)) = self.advance() { end_pos = pos; } else { break; } }
+                    else { self.advance(); }
+                } else { break; }
             }
         } else {
             // Decimal number
@@ -178,22 +185,15 @@ impl<'a> Lexer<'a> {
                         end_pos = pos;
                     }
                 } else if ch == '.' && !is_float {
-                    // Check if next char is a digit (not a method call)
                     if let Some(next) = self.peek_next() {
                         if next.is_ascii_digit() {
                             is_float = true;
                             if let Some((pos, _)) = self.advance() {
                                 end_pos = pos;
                             }
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
+                        } else { break; }
+                    } else { break; }
+                } else { break; }
             }
         }
 
@@ -201,33 +201,26 @@ impl<'a> Lexer<'a> {
         let span = Span::new(start_line, start_col, start_pos, end_pos + 1);
 
         if is_hex {
-            // Parse hex literal (skip 0x prefix)
             let hex_digits = &text[2..];
             match i64::from_str_radix(hex_digits, 16) {
                 Ok(val) => Ok(Token::new(TokenKind::IntLit(val), span)),
-                Err(_) => Err(LexError::new(
-                    format!("invalid hex literal: {}", text),
-                    start_line,
-                    start_col,
-                )),
+                Err(_) => Err(LexError::new(format!("invalid hex literal: {}", text), start_line, start_col)),
+            }
+        } else if is_bin {
+            let bin_digits: String = text[2..].chars().filter(|c| *c != '_').collect();
+            match i64::from_str_radix(&bin_digits, 2) {
+                Ok(val) => Ok(Token::new(TokenKind::IntLit(val), span)),
+                Err(_) => Err(LexError::new(format!("invalid binary literal: {}", text), start_line, start_col)),
             }
         } else if is_float {
             match text.parse::<f64>() {
                 Ok(val) => Ok(Token::new(TokenKind::FloatLit(val), span)),
-                Err(_) => Err(LexError::new(
-                    format!("invalid float literal: {}", text),
-                    start_line,
-                    start_col,
-                )),
+                Err(_) => Err(LexError::new(format!("invalid float literal: {}", text), start_line, start_col)),
             }
         } else {
             match text.parse::<i64>() {
                 Ok(val) => Ok(Token::new(TokenKind::IntLit(val), span)),
-                Err(_) => Err(LexError::new(
-                    format!("invalid integer literal: {}", text),
-                    start_line,
-                    start_col,
-                )),
+                Err(_) => Err(LexError::new(format!("invalid integer literal: {}", text), start_line, start_col)),
             }
         }
     }
@@ -236,7 +229,7 @@ impl<'a> Lexer<'a> {
     /// Scan a string literal, detecting \(expr) interpolations
     fn scan_string(&mut self, start_pos: usize, start_line: u32, start_col: u32) -> Result<Token, LexError> {
         let mut current_lit = String::new();
-        let mut parts: Vec<crate::lexer::token::StringPart> = Vec::new();
+        let mut parts: Vec<token::StringPart> = Vec::new();
         let mut end_pos = start_pos;
         let mut has_interp = false;
 
@@ -278,7 +271,7 @@ impl<'a> Lexer<'a> {
                                     )),
                                 }
                             }
-                            parts.push(crate::lexer::token::StringPart::Expr(expr.trim().to_string()));
+                            parts.push(token::StringPart::Expr(expr.trim().to_string()));
                         }
                         _ => {
                             // Regular escape sequence

@@ -60,8 +60,14 @@
                             "match": "\\\\."
                         },
                         {
-                            "name": "variable.interpolation.reox",
-                            "match": "\\{[^}]+\\}"
+                            "name": "meta.interpolation.reox",
+                            "begin": "\\\\\\(",
+                            "end": "\\)",
+                            "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.reox" } },
+                            "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.reox" } },
+                            "patterns": [
+                                { "include": "source.reox" }
+                            ]
                         }
                     ]
                 },
@@ -106,7 +112,7 @@
                 },
                 {
                     "name": "keyword.declaration.reox",
-                    "match": "\\b(fn|let|struct|kind|layer|panel|action|signal|emit|extern|import|async|await|protocol|extension|typealias)\\b"
+                    "match": "\\b(fn|let|struct|variant|kind|layer|panel|action|signal|emit|extern|import|async|await|protocol|extension|typealias)\\b"
                 },
                 {
                     "name": "keyword.modifier.reox",

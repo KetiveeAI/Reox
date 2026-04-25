@@ -608,6 +608,19 @@ impl Environment {
             } else { Value::String(String::new()) }
         }));
         
+        // String operations for interpolation
+        e.define("string_concat", Value::NativeAction(|a| {
+            let s1 = if let Some(v) = a.get(0) { format!("{}", v) } else { String::new() };
+            let s2 = if let Some(v) = a.get(1) { format!("{}", v) } else { String::new() };
+            Value::String(format!("{}{}", s1, s2))
+        }));
+        e.define("int_to_string", Value::NativeAction(|a| {
+            if let Some(v) = a.first() { Value::String(format!("{}", v)) } else { Value::String(String::new()) }
+        }));
+        e.define("float_to_string", Value::NativeAction(|a| {
+            if let Some(v) = a.first() { Value::String(format!("{}", v)) } else { Value::String(String::new()) }
+        }));
+        
         e
     }
     pub fn push(&mut self) { self.scopes.push(HashMap::new()); }
@@ -674,6 +687,10 @@ impl Interpreter {
                         self.functions.insert(mangled, method.clone());
                     }
                 },
+                Decl::GlobalVar(g) => {
+                    let val = g.init.as_ref().map(|e| self.expr(e)).transpose()?.unwrap_or(Value::Nil);
+                    self.env.define(&g.name, val);
+                },
                 _ => {}
             }
         }
@@ -712,7 +729,12 @@ impl Interpreter {
             },
             Stmt::While(w) => { 
                 while self.expr(&w.condition)?.is_truthy() { 
-                    self.block(&w.body)?; 
+                    match self.block(&w.body) {
+                        Err(e) if e.message == "__break__" => break,
+                        Err(e) if e.message == "__continue__" => continue,
+                        Err(e) => return Err(e),
+                        Ok(_) => {}
+                    }
                 } 
                 Ok(Value::Nil) 
             },
@@ -721,15 +743,20 @@ impl Interpreter {
                     for i in a { 
                         self.env.push(); 
                         self.env.define(&f.var, i); 
-                        self.block(&f.body)?; 
+                        match self.block(&f.body) {
+                            Err(e) if e.message == "__break__" => { self.env.pop(); break; },
+                            Err(e) if e.message == "__continue__" => { self.env.pop(); continue; },
+                            Err(e) => { self.env.pop(); return Err(e); },
+                            Ok(_) => {}
+                        }
                         self.env.pop(); 
                     } 
                 } 
                 Ok(Value::Nil) 
             },
             Stmt::Block(b) => self.block(b),
-            Stmt::Break(_) => Ok(Value::Nil), // Loop control handled at loop level
-            Stmt::Continue(_) => Ok(Value::Nil),
+            Stmt::Break(_) => Err(RuntimeError::new("__break__")),
+            Stmt::Continue(_) => Err(RuntimeError::new("__continue__")),
             // Swift-style guard statement
             Stmt::Guard(g) => {
                 if !self.expr(&g.condition)?.is_truthy() {

@@ -962,10 +962,10 @@ impl<'a> Parser<'a> {
                 let mut exprs: Vec<Expr> = Vec::new();
                 for part in parts {
                     match part {
-                        crate::lexer::token::StringPart::Literal(s) => {
+                        crate::lexer::StringPart::Literal(s) => {
                             exprs.push(Expr::Literal(Literal::String(s, span)));
                         }
-                        crate::lexer::token::StringPart::Expr(code) => {
+                        crate::lexer::StringPart::Expr(code) => {
                             // Parse the embedded expression text
                             exprs.push(Expr::Call(
                                 Box::new(Expr::Identifier("str".to_string(), span)),

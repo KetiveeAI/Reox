@@ -1,2 +1,2 @@
-*.rx linguist-language=Rust
-*.reox linguist-language=Rust
+*.rx    linguist-language=REOX
+*.reox  linguist-language=REOX

@@ -1,3 +1,16 @@
+## [1.2.3] - 2026-04-25
+
+### Added
+- **String Interpolation**: `\(expr)` syntax highlighting inside strings
+- **Variant keyword**: `variant` now highlighted as a declaration keyword
+- **Binary literals**: `0b1010` syntax highlighted as numeric constants
+
+### Fixed
+- String interpolation now uses proper TextMate begin/end scope for `\(...)`
+- Grammar aligned with reoxc v1.1.1 compiler features
+
+---
+
 ## [1.2.1] - 2026-02-20
 
 ### Changes

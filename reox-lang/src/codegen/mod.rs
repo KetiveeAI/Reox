@@ -438,7 +438,13 @@ impl CodeGen {
             .map(|t| self.type_to_c(t))
             .unwrap_or_else(|| "int64_t".to_string());
 
-        let qualifier = if g.mutable { "static" } else { "static const" };
+        let qualifier = if g.mutable {
+            "static"
+        } else if c_type.starts_with("const ") {
+            "static" // type already has const
+        } else {
+            "static const"
+        };
         self.emit_indent();
         self.emit(&format!("{} {} {}", qualifier, c_type, g.name));
 
