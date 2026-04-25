@@ -1,0 +1,15 @@
+Origin: Reox
+Label: Reox
+Suite: stable
+Codename: stable
+Version: 1.1.1
+Architectures: amd64
+Components: main
+Description: Reox Language APT Repository
+Date: Sat, 25 Apr 2026 10:29:15 +0000
+MD5Sum:
+ d41d8cd98f00b204e9800998ecf8427e 0 main/binary-amd64/Packages
+ 8dbbffe196b5e1c0ce60b879e3aff464 29 main/binary-amd64/Packages.gz
+SHA256:
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 0 main/binary-amd64/Packages
+ 0395a9b3eb781fa2b4e287c879a12dd64402aab4c26ae3ba2caea7d299fa0f71 29 main/binary-amd64/Packages.gz
