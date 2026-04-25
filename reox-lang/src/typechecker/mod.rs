@@ -184,6 +184,20 @@ impl TypeChecker {
                         kind: SymbolKind::Struct,
                     });
                 }
+                Decl::GlobalVar(g) => {
+                    let declared_type = g.ty.as_ref()
+                        .map(|t| ResolvedType::from_parser_type(t));
+                    let inferred_type = g.init.as_ref().map(|e| self.infer_expr_type(e));
+                    let final_type = declared_type
+                        .or(inferred_type)
+                        .unwrap_or(ResolvedType::Unknown);
+                    let _ = self.symbols.define(Symbol {
+                        name: g.name.clone(),
+                        ty: final_type,
+                        mutable: g.mutable,
+                        kind: SymbolKind::Variable,
+                    });
+                }
             }
         }
 
@@ -612,6 +626,17 @@ impl TypeChecker {
             Expr::Assign(target, value, span) => {
                 let target_ty = self.infer_expr_type(target);
                 let value_ty = self.infer_expr_type(value);
+                // Mutability check: assignment to immutable variable is an error
+                if let Expr::Identifier(name, ident_span) = target.as_ref() {
+                    if let Some(sym) = self.symbols.lookup(name) {
+                        if !sym.mutable {
+                            self.errors.push(TypeError::new(
+                                format!("cannot assign to immutable variable '{}'; declare it with 'let mut'", name),
+                                ident_span,
+                            ));
+                        }
+                    }
+                }
                 if !target_ty.is_assignable_from(&value_ty) {
                     self.errors.push(TypeError::new(
                         format!(

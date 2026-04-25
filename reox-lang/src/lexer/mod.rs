@@ -6,7 +6,7 @@
 
 mod token;
 
-pub use token::{Token, TokenKind, Span};
+pub use token::{Token, TokenKind, Span, StringPart};
 
 /// Lexer error
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,10 +233,12 @@ impl<'a> Lexer<'a> {
     }
 
 
-    /// Scan a string literal
+    /// Scan a string literal, detecting \(expr) interpolations
     fn scan_string(&mut self, start_pos: usize, start_line: u32, start_col: u32) -> Result<Token, LexError> {
-        let mut value = String::new();
+        let mut current_lit = String::new();
+        let mut parts: Vec<crate::lexer::token::StringPart> = Vec::new();
         let mut end_pos = start_pos;
+        let mut has_interp = false;
 
         loop {
             match self.advance() {
@@ -245,53 +247,95 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 Some((_, '\\')) => {
-                    // Escape sequence
-                    match self.advance() {
-                        Some((_, 'n')) => value.push('\n'),
-                        Some((_, 't')) => value.push('\t'),
-                        Some((_, 'r')) => value.push('\r'),
-                        Some((_, '\\')) => value.push('\\'),
-                        Some((_, '"')) => value.push('"'),
-                        Some((_, '0')) => value.push('\0'),
-                        Some((_, ch)) => {
-                            return Err(LexError::new(
-                                format!("invalid escape sequence: \\{}", ch),
-                                self.line,
-                                self.column,
-                            ));
+                    match self.peek() {
+                        Some('(') => {
+                            // String interpolation \(expr)
+                            has_interp = true;
+                            self.advance(); // consume '('
+                            // Flush current literal part
+                            if !current_lit.is_empty() {
+                                parts.push(crate::lexer::StringPart::Literal(current_lit.clone()));
+                                current_lit.clear();
+                            }
+                            // Read identifier/expression until closing ')'
+                            let mut expr = String::new();
+                            let mut depth = 1;
+                            loop {
+                                match self.advance() {
+                                    Some((_, ')')) => {
+                                        depth -= 1;
+                                        if depth == 0 { break; }
+                                        expr.push(')');
+                                    }
+                                    Some((_, '(')) => {
+                                        depth += 1;
+                                        expr.push('(');
+                                    }
+                                    Some((_, ch)) => expr.push(ch),
+                                    None => return Err(LexError::new(
+                                        "unterminated string interpolation",
+                                        self.line, self.column,
+                                    )),
+                                }
+                            }
+                            parts.push(crate::lexer::token::StringPart::Expr(expr.trim().to_string()));
                         }
-                        None => {
-                            return Err(LexError::new(
-                                "unexpected end of file in escape sequence",
-                                self.line,
-                                self.column,
-                            ));
+                        _ => {
+                            // Regular escape sequence
+                            match self.advance() {
+                                Some((_, 'n')) => current_lit.push('\n'),
+                                Some((_, 't')) => current_lit.push('\t'),
+                                Some((_, 'r')) => current_lit.push('\r'),
+                                Some((_, '\\')) => current_lit.push('\\'),
+                                Some((_, '"')) => current_lit.push('"'),
+                                Some((_, '0')) => current_lit.push('\0'),
+                                Some((_, ch)) => {
+                                    return Err(LexError::new(
+                                        format!("invalid escape sequence: \\{}", ch),
+                                        self.line, self.column,
+                                    ));
+                                }
+                                None => {
+                                    return Err(LexError::new(
+                                        "unexpected end of file in escape sequence",
+                                        self.line, self.column,
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
                 Some((_, '\n')) => {
                     return Err(LexError::new(
                         "unterminated string literal",
-                        start_line,
-                        start_col,
+                        start_line, start_col,
                     ));
                 }
                 Some((_, ch)) => {
-                    value.push(ch);
+                    current_lit.push(ch);
                 }
                 None => {
                     return Err(LexError::new(
                         "unterminated string literal",
-                        start_line,
-                        start_col,
+                        start_line, start_col,
                     ));
                 }
             }
         }
 
         let span = Span::new(start_line, start_col, start_pos, end_pos + 1);
-        Ok(Token::new(TokenKind::StringLit(value), span))
+
+        if has_interp {
+            // Flush trailing literal
+            if !current_lit.is_empty() {
+                parts.push(crate::lexer::token::StringPart::Literal(current_lit));
+            }
+            Ok(Token::new(TokenKind::StringInterp(parts), span))
+        } else {
+            Ok(Token::new(TokenKind::StringLit(current_lit), span))
+        }
     }
+
 
     /// Get next token
     fn next_token(&mut self) -> Result<Token, LexError> {

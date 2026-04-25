@@ -128,11 +128,38 @@ impl<'a> Parser<'a> {
             TokenKind::Typealias => self.parse_typealias_decl(false).map(Decl::Typealias),
             TokenKind::Pub => self.parse_pub_decl(),
             TokenKind::Static => self.parse_static_decl(),
+            TokenKind::Let => self.parse_global_var_decl(),
             _ => Err(ParseError::new(
                 format!("expected declaration, found {:?}", self.peek_kind()),
                 self.peek().span,
             )),
         }
+    }
+
+    fn parse_global_var_decl(&mut self) -> Result<Decl, ParseError> {
+        let span = self.peek().span;
+        self.consume(&TokenKind::Let, "expected 'let'")?;
+        let mutable = self.match_token(&[TokenKind::Mut]);
+        let name = self.parse_identifier()?;
+        let ty = if self.match_token(&[TokenKind::Colon]) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let init = if self.match_token(&[TokenKind::Eq]) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        self.consume(&TokenKind::Semicolon, "expected ';' after global variable")?;
+        Ok(Decl::GlobalVar(LetStmt {
+            name,
+            mutable,
+            ty,
+            init,
+            is_bind: false,
+            span,
+        }))
     }
 
     fn parse_fn_decl(&mut self, is_async: bool) -> Result<FnDecl, ParseError> {
@@ -342,6 +369,18 @@ impl<'a> Parser<'a> {
             TokenKind::While => self.parse_while_stmt(),
             TokenKind::For => self.parse_for_stmt(),
             TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
+            TokenKind::Ident(name) if name == "break" => {
+                let span = self.peek().span;
+                self.advance();
+                self.consume(&TokenKind::Semicolon, "expected ';' after 'break'").ok();
+                Ok(Stmt::Break(span))
+            }
+            TokenKind::Ident(name) if name == "continue" => {
+                let span = self.peek().span;
+                self.advance();
+                self.consume(&TokenKind::Semicolon, "expected ';' after 'continue'").ok();
+                Ok(Stmt::Continue(span))
+            }
             // Swift/C++ style statements
             TokenKind::Guard => self.parse_guard_stmt(),
             TokenKind::Defer => self.parse_defer_stmt(),
@@ -407,7 +446,17 @@ impl<'a> Parser<'a> {
         let then_block = self.parse_block()?;
 
         let else_block = if self.match_token(&[TokenKind::Else]) {
-            Some(self.parse_block()?)
+            if self.check(&TokenKind::If) {
+                // else if chain: wrap the nested if into a block
+                let nested_if = self.parse_if_stmt()?;
+                let nested_span = span;
+                Some(Block {
+                    statements: vec![nested_if],
+                    span: nested_span,
+                })
+            } else {
+                Some(self.parse_block()?)
+            }
         } else {
             None
         };
@@ -901,6 +950,46 @@ impl<'a> Parser<'a> {
                 
                 self.consume(&TokenKind::RBrace, "expected '}' after match arms")?;
                 Ok(Expr::Match(Box::new(scrutinee), arms, token.span))
+            }
+            TokenKind::StringInterp(parts) => {
+                // Desugar: "Hello \(name)!" -> string_concat("Hello ", string_concat(name, "!"))
+                // We build the expression bottom-up from the parts list
+                let parts = parts.clone();
+                let span = token.span;
+                self.advance();
+
+                // Convert parts to expressions
+                let mut exprs: Vec<Expr> = Vec::new();
+                for part in parts {
+                    match part {
+                        crate::lexer::token::StringPart::Literal(s) => {
+                            exprs.push(Expr::Literal(Literal::String(s, span)));
+                        }
+                        crate::lexer::token::StringPart::Expr(code) => {
+                            // Parse the embedded expression text
+                            exprs.push(Expr::Call(
+                                Box::new(Expr::Identifier("str".to_string(), span)),
+                                vec![Expr::Identifier(code, span)],
+                                span,
+                            ));
+                        }
+                    }
+                }
+
+                if exprs.is_empty() {
+                    return Ok(Expr::Literal(Literal::String(String::new(), span)));
+                }
+
+                // Fold into string_concat chain
+                let mut result = exprs.remove(0);
+                for next in exprs {
+                    result = Expr::Call(
+                        Box::new(Expr::Identifier("string_concat".to_string(), span)),
+                        vec![result, next],
+                        span,
+                    );
+                }
+                Ok(result)
             }
             _ => Err(ParseError::new(
                 format!("expected expression, found {:?}", token.kind),

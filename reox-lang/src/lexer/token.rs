@@ -104,6 +104,9 @@ pub enum TokenKind {
     IntLit(i64),
     FloatLit(f64),
     StringLit(String),
+    /// String interpolation: alternating literal parts and expression-token-slices
+    /// Parts: Vec<StringPart> where StringPart is either raw text or a token stream
+    StringInterp(Vec<StringPart>),
 
     // Operators
     Plus,       // +
@@ -167,6 +170,15 @@ pub enum TokenKind {
 
     // Special
     Eof,
+}
+
+/// A part of a string interpolation
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringPart {
+    /// Raw string segment
+    Literal(String),
+    /// Identifier to interpolate (simple case)
+    Expr(String),
 }
 
 impl TokenKind {

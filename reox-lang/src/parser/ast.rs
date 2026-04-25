@@ -25,6 +25,7 @@ pub enum Decl {
     Panel(PanelDecl),
     Const(ConstDecl),
     Typealias(TypealiasDecl),
+    GlobalVar(LetStmt),
 }
 
 /// Function declaration

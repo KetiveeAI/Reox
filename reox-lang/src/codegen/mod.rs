@@ -99,6 +99,13 @@ impl CodeGen {
             }
         }
 
+        // Generate global variables (top-level let / let mut)
+        for decl in &ast.declarations {
+            if let Decl::GlobalVar(g) = decl {
+                self.gen_global_var(g);
+            }
+        }
+
         // Generate variant (tagged union)
         for decl in &ast.declarations {
             if let Decl::Variant(v) = decl {
@@ -426,6 +433,22 @@ impl CodeGen {
         self.emit(";\n");
     }
 
+    fn gen_global_var(&mut self, g: &LetStmt) {
+        let c_type = g.ty.as_ref()
+            .map(|t| self.type_to_c(t))
+            .unwrap_or_else(|| "int64_t".to_string());
+
+        let qualifier = if g.mutable { "static" } else { "static const" };
+        self.emit_indent();
+        self.emit(&format!("{} {} {}", qualifier, c_type, g.name));
+
+        if let Some(init) = &g.init {
+            self.emit(" = ");
+            self.gen_expr(init);
+        }
+        self.emit(";\n");
+    }
+
     fn gen_typealias(&mut self, t: &TypealiasDecl) {
         let target_c = self.type_to_c(&t.target);
         self.emit_line(&format!("typedef {} {};", target_c, t.name));
@@ -628,6 +651,26 @@ impl CodeGen {
         self.dedent();
 
         if let Some(else_block) = &i.else_block {
+            // Detect else-if: single If statement in the else block
+            if else_block.statements.len() == 1 {
+                if let Stmt::If(nested_if) = &else_block.statements[0] {
+                    self.emit_indent();
+                    self.emit("} else if (");
+                    self.gen_expr(&nested_if.condition);
+                    self.emit(") {\n");
+                    self.indent();
+                    self.gen_block(&nested_if.then_block);
+                    self.dedent();
+                    if let Some(final_else) = &nested_if.else_block {
+                        self.emit_line("} else {");
+                        self.indent();
+                        self.gen_block(final_else);
+                        self.dedent();
+                    }
+                    self.emit_line("}");
+                    return;
+                }
+            }
             self.emit_line("} else {");
             self.indent();
             self.gen_block(else_block);
