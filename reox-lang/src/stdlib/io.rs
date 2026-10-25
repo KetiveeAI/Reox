@@ -65,11 +65,8 @@ pub fn list_dir(path: &str) -> Result<Vec<String>, String> {
     let entries = fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut result = Vec::new();
     for entry in entries {
-        if let Ok(e) = entry {
-            if let Some(name) = e.file_name().to_str() {
-                result.push(name.to_string());
-            }
-        }
+        let e = entry.map_err(|e| e.to_string())?;
+        result.push(e.file_name().to_string_lossy().into_owned());
     }
     Ok(result)
 }
