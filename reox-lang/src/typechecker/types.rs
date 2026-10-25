@@ -227,7 +227,15 @@ impl SymbolTable {
 
     /// Define a symbol in current scope
     pub fn define(&mut self, symbol: Symbol) -> Result<(), String> {
-        let scope = self.scopes.last_mut().expect("no scope");
+        if self.scopes.is_empty() {
+            // The global scope is created in `new` and `pop_scope` never removes
+            // it, but recover rather than fail if the table was emptied anyway.
+            self.scopes.push(Scope::new());
+        }
+        let scope = match self.scopes.last_mut() {
+            Some(scope) => scope,
+            None => return Err("no scope available for symbol definition".to_string()),
+        };
         if scope.symbols.contains_key(&symbol.name) {
             return Err(format!(
                 "symbol '{}' already defined in this scope",
@@ -338,5 +346,19 @@ mod tests {
         assert!(ResolvedType::Int.is_assignable_from(&ResolvedType::Int));
         assert!(ResolvedType::Float.is_assignable_from(&ResolvedType::Int));
         assert!(!ResolvedType::Int.is_assignable_from(&ResolvedType::String));
+    }
+
+    #[test]
+    fn define_recovers_from_missing_scope() {
+        let mut table = SymbolTable::new();
+        table.scopes.clear();
+        let result = table.define(Symbol {
+            name: "x".into(),
+            ty: ResolvedType::Int,
+            mutable: false,
+            kind: SymbolKind::Variable,
+        });
+        assert!(result.is_ok());
+        assert!(table.lookup("x").is_some());
     }
 }

@@ -329,6 +329,15 @@ impl Token {
             span: Span::new(0, 0, pos, pos),
         }
     }
+
+    /// An EOF token that remembers where the input ended, so diagnostics
+    /// about a missing token can point at a real line and column.
+    pub fn eof_at(line: u32, column: u32, pos: usize) -> Self {
+        Self {
+            kind: TokenKind::Eof,
+            span: Span::new(line, column, pos, pos),
+        }
+    }
 }
 
 #[cfg(test)]

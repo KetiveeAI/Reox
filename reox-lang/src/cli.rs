@@ -2,11 +2,11 @@
 // Self-built, zero external dependencies
 // Supports full compilation pipeline with LTO + Project Templates
 
-#![allow(dead_code, unused_imports)]
-
 use std::env;
 use std::process::Command;
-use std::path::Path;
+
+use crate::diagnostic::{render_all, Diagnostic};
+use crate::parser::Ast;
 
 /// CLI Command
 #[derive(Debug, Clone)]
@@ -34,24 +34,20 @@ pub struct Args {
 }
 
 /// Output type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EmitType {
+    #[default]
     C,      // Generate C code only
     Obj,    // Compile to object file
-    Exe,    // Compile to executable (default)
-}
-
-impl Default for EmitType {
-    fn default() -> Self {
-        EmitType::C
-    }
+    Exe,    // Compile to executable
 }
 
 /// Optimization level
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OptLevel {
     O0,  // No optimization
     O1,  // Basic optimization
+    #[default]
     O2,  // Standard optimization
     O3,  // Aggressive optimization
     Os,  // Size optimization
@@ -66,12 +62,6 @@ impl OptLevel {
             OptLevel::O3 => "-O3",
             OptLevel::Os => "-Os",
         }
-    }
-}
-
-impl Default for OptLevel {
-    fn default() -> Self {
-        OptLevel::O2
     }
 }
 
@@ -371,6 +361,37 @@ pub fn print_usage() {
     println!("    .reox    REOX source file (full form)");
 }
 
+// === Pipeline drivers ===
+
+/// Run the front end (lexer, parser, type checker) over `source`.
+/// Every failure is returned as diagnostics; nothing is printed.
+pub fn check_source(source: &str) -> Result<Ast, Vec<Diagnostic>> {
+    let tokens = crate::lexer::tokenize(source).map_err(|e| vec![Diagnostic::from(e)])?;
+    let ast = crate::parser::parse(&tokens).map_err(|e| vec![Diagnostic::from(e)])?;
+    crate::typechecker::check(&ast)
+        .map_err(|errors| errors.into_iter().map(Diagnostic::from).collect())
+}
+
+/// Run the whole compiler over `source` and return the generated C code.
+pub fn compile_source(source: &str) -> Result<String, Vec<Diagnostic>> {
+    let ast = check_source(source)?;
+    crate::codegen::generate_string(&ast).map_err(|e| vec![Diagnostic::from(e)])
+}
+
+/// Print diagnostics to stderr as `file:line:col: severity: message`, each
+/// followed by the offending source line and a caret.
+pub fn report_diagnostics(file: &str, source: &str, diagnostics: &[Diagnostic]) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    eprintln!("{}", render_all(file, source, diagnostics));
+    let errors = diagnostics.iter().filter(|d| d.is_error()).count();
+    if errors > 0 {
+        eprintln!();
+        eprintln!("{} error{} generated", errors, if errors == 1 { "" } else { "s" });
+    }
+}
+
 /// Compile C to executable
 pub fn compile_c_to_exe(
     c_file: &str,
@@ -413,7 +434,7 @@ pub fn compile_c_to_exe(
         .map_err(|e| format!("failed to run gcc: {}", e))?;
     
     if !status.success() {
-        return Err("gcc compilation failed".to_string());
+        return Err(format!("gcc compilation failed with {}", status));
     }
     
     // Strip if requested
@@ -424,7 +445,7 @@ pub fn compile_c_to_exe(
             .map_err(|e| format!("failed to run strip: {}", e))?;
         
         if !status.success() {
-            eprintln!("warning: strip failed");
+            return Err(format!("strip failed with {}", status));
         }
     }
     
@@ -444,5 +465,42 @@ mod tests {
     fn test_opt_level_flags() {
         assert_eq!(OptLevel::O3.to_flag(), "-O3");
         assert_eq!(OptLevel::Os.to_flag(), "-Os");
+    }
+
+    #[test]
+    fn check_source_accepts_valid_program() {
+        let ast = check_source("fn main() -> int { return 1; }").expect("valid program");
+        assert_eq!(ast.declarations.len(), 1);
+    }
+
+    #[test]
+    fn check_source_reports_lex_error_with_span() {
+        let diags = check_source("fn main() { let s = \"open; }").expect_err("unterminated string");
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unterminated string"));
+        assert_eq!((diags[0].span.line, diags[0].span.column), (1, 21));
+    }
+
+    #[test]
+    fn check_source_reports_parse_error_with_hint() {
+        let diags = check_source("fn main() {").expect_err("unclosed block");
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("expected '}'"), "{}", diags[0].message);
+        assert!(diags[0].hint.is_some());
+    }
+
+    #[test]
+    fn check_source_reports_every_type_error() {
+        let diags = check_source("fn main() { let a: int = \"x\"; let b: bool = 1; }")
+            .expect_err("two type errors");
+        assert_eq!(diags.len(), 2);
+        assert!(diags.iter().all(|d| d.is_error()));
+    }
+
+    #[test]
+    fn compile_source_produces_c() {
+        let c = compile_source("fn main() -> int { return 42; }").expect("compiles");
+        assert!(c.contains("int64_t main(void)"));
+        assert!(c.contains("return 42;"));
     }
 }

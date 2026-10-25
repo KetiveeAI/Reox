@@ -1,21 +1,8 @@
 // REOX Compiler - Main Entry Point
-// Zero external dependencies
 
-#![allow(unused_imports)]
-
-mod lexer;
-mod parser;
-mod typechecker;
-mod codegen;
-mod cli;
-mod interpreter;
-mod stdlib;
-mod templates;
-mod pkg;
-
-use std::env;
 use std::process;
-use std::path::Path;
+
+use reoxc::{cli, pkg, templates};
 
 fn main() {
     let result = cli::parse_cli();
@@ -71,21 +58,22 @@ fn handle_command(cmd: cli::CliCommand) -> Result<(), String> {
 }
 
 fn init_project(template_name: &str, name: Option<&str>) -> Result<(), String> {
-    let template = templates::Template::from_str(template_name)
+    let template = templates::Template::from_name(template_name)
         .ok_or_else(|| format!(
             "unknown template: '{}'. Available: {:?}",
             template_name,
             templates::Template::list()
         ))?;
     
-    let project_name = name.unwrap_or_else(|| {
+    let project_name: String = match name {
+        Some(name) => name.to_string(),
         // Use current directory name
-        std::env::current_dir()
+        None => std::env::current_dir()
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "MyApp".to_string())
-            .leak()
-    });
+            .unwrap_or_else(|| "MyApp".to_string()),
+    };
+    let project_name = project_name.as_str();
     
     let config = templates::ProjectConfig::new(project_name);
     let base_path = std::env::current_dir()
@@ -93,7 +81,7 @@ fn init_project(template_name: &str, name: Option<&str>) -> Result<(), String> {
     
     templates::create_project(template, &config, &base_path)?;
     
-    println!("✓ Created {} project: {}", template_name, project_name);
+    println!("Created {} project: {}", template_name, project_name);
     println!();
     println!("  Next steps:");
     println!("    cd {}.app", project_name);
@@ -104,7 +92,7 @@ fn init_project(template_name: &str, name: Option<&str>) -> Result<(), String> {
 }
 
 fn new_project(name: &str, template_name: &str) -> Result<(), String> {
-    let template = templates::Template::from_str(template_name)
+    let template = templates::Template::from_name(template_name)
         .ok_or_else(|| format!(
             "unknown template: '{}'. Available: {:?}",
             template_name,
@@ -122,7 +110,7 @@ fn new_project(name: &str, template_name: &str) -> Result<(), String> {
         _ => name.to_string(),
     };
     
-    println!("✓ Created {} project: {}", template_name, name);
+    println!("Created {} project: {}", template_name, name);
     println!();
     println!("  Next steps:");
     println!("    cd {}", project_dir);
@@ -133,41 +121,29 @@ fn new_project(name: &str, template_name: &str) -> Result<(), String> {
 }
 
 fn run(args: &cli::Args) -> Result<(), String> {
-    // Read source file
     let source = std::fs::read_to_string(&args.input)
         .map_err(|e| format!("failed to read '{}': {}", args.input, e))?;
 
-    // Lexical analysis
-    let tokens = lexer::tokenize(&source)
-        .map_err(|e| e.display())?;
+    let ast = match cli::check_source(&source) {
+        Ok(ast) => ast,
+        Err(diagnostics) => {
+            cli::report_diagnostics(&args.input, &source, &diagnostics);
+            return Err("compilation failed".to_string());
+        }
+    };
 
-    // Parse
-    let ast = parser::parse(&tokens);
-
-    // Run interpreter
-    if let Err(e) = interpreter::eval(&ast) {
-        return Err(format!("runtime error: {}", e.message));
+    if let Err(e) = reoxc::interpreter::eval(&ast) {
+        cli::report_diagnostics(&args.input, &source, &[e.into()]);
+        return Err("program terminated with a runtime error".to_string());
     }
 
     Ok(())
 }
 
 fn compile(args: &cli::Args) -> Result<(), String> {
-    // Read source file
     let source = std::fs::read_to_string(&args.input)
         .map_err(|e| format!("failed to read '{}': {}", args.input, e))?;
 
-    // Lexical analysis
-    let tokens = lexer::tokenize(&source)
-        .map_err(|e| e.display())?;
-
-    // Parse
-    let ast = parser::parse(&tokens);
-
-    // Type check
-    let checked_ast = typechecker::check(&ast);
-
-    // Generate code
     let output_path = args.output.clone()
         .unwrap_or_else(|| {
             let stem = std::path::Path::new(&args.input)
@@ -177,8 +153,16 @@ fn compile(args: &cli::Args) -> Result<(), String> {
             format!("{}.c", stem)
         });
 
-    codegen::generate(&checked_ast, &output_path)
-        .map_err(|e| format!("code generation failed: {}", e))?;
+    let c_code = match cli::compile_source(&source) {
+        Ok(c_code) => c_code,
+        Err(diagnostics) => {
+            cli::report_diagnostics(&args.input, &source, &diagnostics);
+            return Err("compilation failed".to_string());
+        }
+    };
+
+    std::fs::write(&output_path, c_code)
+        .map_err(|e| format!("failed to write '{}': {}", output_path, e))?;
 
     println!("compiled: {} -> {}", args.input, output_path);
 

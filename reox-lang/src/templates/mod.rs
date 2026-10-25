@@ -13,8 +13,19 @@ pub enum Template {
     Library,
 }
 
+impl std::str::FromStr for Template {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Template, String> {
+        Template::from_name(s).ok_or_else(|| {
+            format!("unknown template: '{}'. Available: {:?}", s, Template::list())
+        })
+    }
+}
+
 impl Template {
-    pub fn from_str(s: &str) -> Option<Template> {
+    /// Look up a template by its CLI name.
+    pub fn from_name(s: &str) -> Option<Template> {
         match s.to_lowercase().as_str() {
             "neolyx-app" | "neolyx_app" | "app" => Some(Template::NeolyxApp),
             "cli" | "command" => Some(Template::Cli),
