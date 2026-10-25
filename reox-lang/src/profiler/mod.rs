@@ -83,7 +83,8 @@ impl FunctionStats {
         self.total_time += duration;
         self.min_time = self.min_time.min(duration);
         self.max_time = self.max_time.max(duration);
-        self.avg_time = self.total_time / self.call_count as u32;
+        let calls = u32::try_from(self.call_count).unwrap_or(u32::MAX).max(1);
+        self.avg_time = self.total_time / calls;
     }
 }
 
@@ -146,7 +147,7 @@ impl Profiler {
     /// Get profiling summary
     pub fn summary(&self) -> ProfilingSummary {
         let mut functions: Vec<_> = self.functions.values().cloned().collect();
-        functions.sort_by(|a, b| b.total_time.cmp(&a.total_time));
+        functions.sort_by_key(|f| std::cmp::Reverse(f.total_time));
 
         ProfilingSummary {
             total_time: self.start_time.elapsed(),

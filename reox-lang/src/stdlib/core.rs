@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn test_type_of() {
         assert_eq!(type_of(&Value::Int(42)), "int");
-        assert_eq!(type_of(&Value::Float(3.14)), "float");
+        assert_eq!(type_of(&Value::Float(2.5)), "float");
         assert_eq!(type_of(&Value::String("hi".to_string())), "string");
         assert_eq!(type_of(&Value::Bool(true)), "bool");
     }

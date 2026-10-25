@@ -1,7 +1,7 @@
 // REOX Compiler Smoke Tests
 // Verifies core lexer, parser, and interpreter functionality
 
-use reoxc::lexer::{tokenize, TokenKind};
+use reoxc::lexer::tokenize;
 use reoxc::parser::Parser;
 use reoxc::interpreter::{Interpreter, Value};
 

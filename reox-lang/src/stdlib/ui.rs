@@ -213,7 +213,8 @@ impl ViewModifier {
         self
     }
     
-    /// Add shadow
+    /// Add shadow. Mirrors the runtime's rx_shadow(x, y, blur, r, g, b, a) signature.
+    #[allow(clippy::too_many_arguments)]
     pub fn shadow(mut self, x: f64, y: f64, blur: f64, r: u8, g: u8, b: u8, a: u8) -> Self {
         self.shadow = Some(Shadow { x, y, blur, color: (r, g, b, a) });
         self
