@@ -15,7 +15,7 @@
 // TRANSITION TYPES
 // ============================================================================
 
-struct Transition { 
+pub struct Transition { 
     id: int,
     duration_ms: int,
     easing: int
@@ -134,7 +134,7 @@ extern fn view_animate_corner_radius(v: View, to: float, t: Transition) -> void;
 // KEYFRAME ANIMATIONS
 // ============================================================================
 
-struct Animation {
+pub struct Animation {
     id: int,
     duration_ms: int,
     loop_count: int
@@ -183,7 +183,7 @@ extern fn animation_on_complete(a: Animation, callback_id: int) -> void;
 // ANIMATION GROUPS & SEQUENCES
 // ============================================================================
 
-struct AnimationGroup { id: int }
+pub struct AnimationGroup { id: int }
 
 /// Create animation group (plays animations together)
 extern fn animation_group() -> AnimationGroup;
@@ -194,7 +194,7 @@ extern fn animation_group_add(g: AnimationGroup, a: Animation) -> void;
 /// Play all animations in group simultaneously
 extern fn animation_group_play(g: AnimationGroup, v: View) -> void;
 
-struct AnimationSequence { id: int }
+pub struct AnimationSequence { id: int }
 
 /// Create animation sequence (plays animations one after another)
 extern fn animation_sequence() -> AnimationSequence;
@@ -290,7 +290,7 @@ extern fn exit_zoom(v: View, duration_ms: int) -> void;
 // MOTION PATH
 // ============================================================================
 
-struct MotionPath { id: int }
+pub struct MotionPath { id: int }
 
 /// Create motion path for complex animations
 extern fn motion_path_new() -> MotionPath;

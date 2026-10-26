@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use reoxc::cli::check_source;
+use reoxc::cli::{check_file_with_source, check_source};
 use reoxc::diagnostic::Diagnostic;
 
 /// Directories scanned for `*.rx` and `*.reox`, relative to the crate root
@@ -77,19 +77,39 @@ fn run_front_end(source: &str) -> Outcome {
     match result {
         Ok(Ok(_)) => Outcome::Accepted,
         Ok(Err(diagnostics)) => Outcome::Diagnostics(diagnostics),
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                .unwrap_or_else(|| "non-string panic payload".to_string());
-            Outcome::Panicked(message)
-        }
+        Err(payload) => Outcome::Panicked(panic_message(payload)),
     }
 }
 
-fn check_no_panic(name: &str, source: &str) -> Vec<Diagnostic> {
-    match run_front_end(source) {
+/// Run the front end over a file on disk, resolving its imports relative
+/// to it (and to the standard library).
+fn run_front_end_on_file(path: &Path, source: &str) -> Outcome {
+    let source = source.to_string();
+    let path = path.to_path_buf();
+    let result = std::panic::catch_unwind(move || check_file_with_source(&path, &source));
+    match result {
+        Ok(Ok(_)) => Outcome::Accepted,
+        Ok(Err((diagnostics, _sources))) => Outcome::Diagnostics(diagnostics),
+        Err(payload) => Outcome::Panicked(panic_message(payload)),
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
+
+/// Like `check_no_panic`, resolving the file's imports.
+fn check_file_no_panic(path: &Path, source: &str) -> Vec<Diagnostic> {
+    check_no_panic_outcome(&path.display().to_string(), run_front_end_on_file(path, source))
+}
+
+fn check_no_panic_outcome(name: &str, outcome: Outcome) -> Vec<Diagnostic> {
+    match outcome {
         Outcome::Accepted => Vec::new(),
         Outcome::Diagnostics(d) => {
             assert!(!d.is_empty(), "{}: front end failed without diagnostics", name);
@@ -119,7 +139,7 @@ fn every_corpus_file_lexes_parses_and_typechecks_without_panicking() {
             Err(e) => panic!("cannot read corpus file {}: {}", path.display(), e),
         };
         let name = path.display().to_string();
-        let diagnostics = check_no_panic(&name, &source);
+        let diagnostics = check_file_no_panic(path, &source);
         if diagnostics.is_empty() {
             accepted += 1;
         } else {
@@ -159,7 +179,19 @@ fn neolyx_desktop_apps_are_in_the_corpus_when_present() {
     for path in files {
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
-        check_no_panic(&path.display().to_string(), &source);
+        check_file_no_panic(&path, &source);
+    }
+}
+
+#[test]
+fn imports_resolve_from_the_corpus_file_directory() {
+    // tests/modules/main.rx imports a sibling module and the stdlib prelude.
+    let path = crate_root().join("tests/modules/main.rx");
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
+    match run_front_end_on_file(&path, &source) {
+        Outcome::Accepted => {}
+        Outcome::Diagnostics(d) => panic!("{}: {:?}", path.display(), d),
+        Outcome::Panicked(m) => panic!("{}: {}", path.display(), m),
     }
 }
 

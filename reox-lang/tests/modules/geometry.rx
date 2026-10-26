@@ -1,0 +1,15 @@
+// Geometry module used by tests/modules/main.rx and the spec examples.
+
+pub struct Box2D { x: float, y: float, w: float, h: float }
+
+pub fn box2d(x: float, y: float, w: float, h: float) -> Box2D {
+    return Box2D { x: x, y: y, w: w, h: h };
+}
+
+pub fn box_area(b: Box2D) -> float {
+    return b.w * b.h;
+}
+
+fn private_helper() -> int {
+    return 1;
+}

@@ -6,7 +6,7 @@
 // Color Type
 // ============================================================================
 
-struct Color {
+pub struct Color {
     r: int,
     g: int,
     b: int,
@@ -33,24 +33,24 @@ extern fn color_text() -> Color;
 // Geometry Types
 // ============================================================================
 
-struct Point {
+pub struct Point {
     x: float,
     y: float
 }
 
-struct Size {
+pub struct Size {
     w: float,
     h: float
 }
 
-struct Rect {
+pub struct Rect {
     x: float,
     y: float,
     width: float,
     height: float
 }
 
-struct EdgeInsets {
+pub struct EdgeInsets {
     top: float,
     right: float,
     bottom: float,
@@ -69,7 +69,7 @@ extern fn insets_symmetric(v: float, h: float) -> EdgeInsets;
 // Border Type
 // ============================================================================
 
-struct Border {
+pub struct Border {
     width: float,
     color: Color,
     style: int  // 0=none, 1=solid, 2=dashed, 3=dotted
@@ -82,7 +82,7 @@ extern fn border_none() -> Border;
 // Shadow Type
 // ============================================================================
 
-struct Shadow {
+pub struct Shadow {
     offset_x: float,
     offset_y: float,
     blur: float,
@@ -96,7 +96,7 @@ extern fn shadow_none() -> Shadow;
 // Box Model (CSS-like)
 // ============================================================================
 
-struct Box {
+pub struct Box {
     width: float,
     height: float,
     padding: EdgeInsets,
@@ -115,7 +115,7 @@ extern fn box_with_size(w: float, h: float) -> Box;
 // ============================================================================
 
 // View handle (opaque pointer)
-struct View {
+pub struct View {
     handle: int
 }
 
@@ -186,11 +186,11 @@ extern fn scroll_set_direction(v: View, horizontal: bool, vertical: bool) -> voi
 // Window & Application
 // ============================================================================
 
-struct Window {
+pub struct Window {
     handle: int
 }
 
-struct App {
+pub struct App {
     handle: int
 }
 

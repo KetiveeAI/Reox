@@ -1,6 +1,6 @@
 # REOX Language — Project Status & TODO
 
-> **Last updated**: 2026-03-13  
+> **Last updated**: 2026-10-26  
 > **Status**: Active Development — UI Language Features Complete, Stabilizing for Production
 
 ---
@@ -10,10 +10,11 @@
 | Component             | Status        | Notes                                                                                                                                               |
 | --------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Lexer**             | Complete      | All keywords tokenized (including UI keywords), full operator set, string/number literals, hex support, position tracking                           |
-| **Parser**            | Complete      | Functions, structs, UI constructs (variant, protocol, layer, panel, const, typealias, action, @Bind, emit, gestures), control flow                  |
-| **Type Checker**      | Complete      | Type inference, explicit integer widths (`i8`-`usize`), function signatures, struct fields, binary/unary ops, type coercion                         |
-| **Code Generator**    | Complete      | C transpilation for all AST nodes, `<stdint.h>` type mapping, proper `setjmp`/`longjmp` error propagation, C/C++/Rust FFI                           |
-| **Interpreter**       | Complete      | Tree-walking evaluator, native built-ins (math, string, array, map, file IO, AI ops), UI struct evaluation, closure and environment capture         |
+| **Parser**            | Complete      | Functions, structs with methods, generics (`<T: P>`), variant payload patterns, UI constructs (protocol, layer, panel, const, typealias, action, @Bind, emit, gestures), `import a.b.c;` |
+| **Type Checker**      | Complete      | Type inference, methods and `self` (`mut fn`), monomorphised generics, match exhaustiveness, protocol conformance, module visibility (`pub`), lowering pass |
+| **Code Generator**    | Complete      | C11 transpilation, `TypeName_method(TypeName* self)`, tagged unions with constructors, `switch` on variant tags, generic instances in dependency order |
+| **Interpreter**       | Complete      | Tree-walking evaluator, native built-ins (math, string, array, map, file IO, AI ops), method dispatch with `self` write-back, variant patterns   |
+| **Modules**           | Complete      | `import a.b.c;` resolves `a/b/c.rx` next to the entry file, then `stdlib/`; cycles and private access are diagnostics; `reoxc compile/run` take multi-file programs |
 | **C Runtime**         | Extensive     | 50+ files: UI widgets, animation system, transitions, themes, color system, SDL backend, FFI, accessibility, display, desktop integration           |
 | **Stdlib (.rx)**      | Extensive     | 649-line prelude with extern declarations for UI (views, widgets, forms, shapes, effects, media, state management, timers, platform API)            |
 | **CLI**               | Complete      | `reoxc compile`, `reoxc run`, `reoxc init`, `reoxc new`, `reoxc pkg`, project templates                                                             |
@@ -23,11 +24,11 @@
 
 ---
 
-## What's In Progress
+## Language Constructs
 
-### Parser — UI-Specific Language Constructs
+### UI-Specific Language Constructs
 
-The lexer already tokenizes these keywords, but the parser does **not yet consume them**. These are the constructs needed to write REOX UI code natively:
+All of these are parsed; the ones a later stage has semantics for are marked in `reox-spec.md`:
 
 | Keyword            | Purpose                                                 | Priority | Status      |
 | ------------------ | ------------------------------------------------------- | -------- | ----------- |
@@ -51,8 +52,12 @@ The lexer already tokenizes these keywords, but the parser does **not yet consum
 - `Optional` type (`int?`, `string?`) — parsed, needs interpreter expansion
 - `Function` type (`fn(int) -> bool`) — parsed, codegen done
 - `Tuple` type (`(int, string)`) — parsed, codegen done
-- Protocol conformance checking — future
-- `variant` constructor type inference — future
+- ✅ Protocol conformance checking (`extension Type : Protocol`, static dispatch through generic bounds)
+- ✅ `variant` constructor type inference (`Ok(1)`, `None` from the expected type) and payload destructuring with exhaustiveness
+- ✅ Methods with implicit `self`, `mut fn`, `static fn` on struct/extension/layer/panel
+- ✅ Generics by monomorphisation (`fn swap<T>`, `struct Box<T>`, `Option<T>`/`Result<T, E>` in the prelude)
+- ✅ Modules: `import a.b.c;`, `pub` visibility across files, cycle detection
+- Protocols as runtime types (vtables, existential values) — future
 
 ---
 
@@ -60,8 +65,8 @@ The lexer already tokenizes these keywords, but the parser does **not yet consum
 
 - **Production Stabilization**: Harden the compiler pipeline and interpreter for production readiness. Address edge cases in parsing, type-checking, and code generation.
 - **Calculator App Revamp**: The current `calculator.app` feels like a dummy application. Since REOX now has robust math support in the core language (recursion, loops, arithmetic, math built-ins), the calculator app needs to be verified and rewritten in pure REOX to fully validate the language's capabilities.
-- **Protocol Conformance Checking**: Implement strict type checking for protocol conformance (`extension Type : Protocol`).
-- **Variant Constructor Type Inference**: Improve type inference for variant payloads and pattern matching.
+- **Protocol Existentials**: Allow a protocol as a value type (vtable-based dispatch); today protocols are generic bounds only.
+- **Match on Tuples and Strings in C**: string patterns compile to `rx_strcmp`; tuple patterns are not supported yet.
 - **Advanced UI State Management**: Further refine `@Bind` and reactive data flow patterns.
 
 ## Upcoming Bug Fixes
