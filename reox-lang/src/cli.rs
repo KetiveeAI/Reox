@@ -5,7 +5,10 @@
 use std::env;
 use std::process::Command;
 
+use std::path::Path;
+
 use crate::diagnostic::{render_all, Diagnostic};
+use crate::modules::{self, SourceMap};
 use crate::parser::Ast;
 
 /// CLI Command
@@ -82,6 +85,14 @@ pub fn parse_cli() -> Result<CliCommand, String> {
         "fmt" => return Ok(CliCommand::Fmt(args[2..].to_vec())),
         "help" | "--help" | "-h" => return Ok(CliCommand::Help),
         "version" | "--version" | "-V" => return Ok(CliCommand::Version),
+        // `reoxc compile <file>` and `reoxc run <file>` spell out the mode.
+        "compile" => return parse_compile_args(&args[2..]).map(CliCommand::Compile),
+        "run" => {
+            return parse_compile_args(&args[2..]).map(|mut a| {
+                a.run = true;
+                CliCommand::Compile(a)
+            })
+        }
         _ => {}
     }
 
@@ -325,6 +336,8 @@ pub fn print_usage() {
     println!("    reoxc [OPTIONS] <INPUT>");
     println!();
     println!("COMMANDS:");
+    println!("    compile <file> Compile a program (and its imports) to C");
+    println!("    run <file>     Run a program in the interpreter");
     println!("    init          Initialize a new project in current directory");
     println!("    new <name>    Create a new named project");
     println!("    pkg           Package manager (add, remove, list)");
@@ -379,6 +392,50 @@ pub fn check_source(source: &str) -> Result<Ast, Vec<Diagnostic>> {
 pub fn compile_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let ast = check_source(source)?;
     crate::codegen::generate_string(&ast).map_err(|e| vec![Diagnostic::from(e)])
+}
+
+/// Load the program rooted at `path` (resolving every `import`) and run the
+/// front end over it. Both outcomes carry the source map, so diagnostics can
+/// be rendered against the file they belong to.
+pub fn check_file(path: &Path) -> Result<(Ast, SourceMap), (Vec<Diagnostic>, SourceMap)> {
+    let program = modules::load_program(path).map_err(|e| (e.diagnostics, e.sources))?;
+    check_program(program)
+}
+
+/// Like `check_file`, with the entry file's contents given instead of read.
+pub fn check_file_with_source(path: &Path, source: &str) -> Result<(Ast, SourceMap), (Vec<Diagnostic>, SourceMap)> {
+    let program = modules::load_program_from_source(path, source).map_err(|e| (e.diagnostics, e.sources))?;
+    check_program(program)
+}
+
+fn check_program(program: modules::Program) -> Result<(Ast, SourceMap), (Vec<Diagnostic>, SourceMap)> {
+    match crate::typechecker::check_modules(&program.ast, &program.modules) {
+        Ok(ast) => Ok((ast, program.sources)),
+        Err(errors) => Err((errors.into_iter().map(Diagnostic::from).collect(), program.sources)),
+    }
+}
+
+/// Compile the program rooted at `path` and its imports to C.
+pub fn compile_file(path: &Path) -> Result<(String, SourceMap), (Vec<Diagnostic>, SourceMap)> {
+    let (ast, sources) = check_file(path)?;
+    match crate::codegen::generate_string(&ast) {
+        Ok(c) => Ok((c, sources)),
+        Err(e) => Err((vec![Diagnostic::from(e)], sources)),
+    }
+}
+
+/// Print diagnostics of a multi-file program to stderr, each rendered
+/// against its own file.
+pub fn report_program_diagnostics(sources: &SourceMap, diagnostics: &[Diagnostic]) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    eprintln!("{}", sources.render(diagnostics));
+    let errors = diagnostics.iter().filter(|d| d.is_error()).count();
+    if errors > 0 {
+        eprintln!();
+        eprintln!("{} error{} generated", errors, if errors == 1 { "" } else { "s" });
+    }
 }
 
 /// Print diagnostics to stderr as `file:line:col: severity: message`, each

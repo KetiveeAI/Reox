@@ -1,0 +1,39 @@
+// reox-spec.md, "Variant Types": payload destructuring in match.
+extern fn print_int(n: int);
+extern fn println(s: string);
+
+variant Direction {
+    Up,
+    Down,
+    Left,
+    Right
+}
+
+variant Result {
+    Ok(value: int),
+    Err(message: string)
+}
+
+fn describe(result: Result) {
+    match result {
+        Ok(v) => print_int(v),
+        Err(msg) => println(msg)
+    }
+}
+
+fn turn(d: Direction) -> int {
+    return match d {
+        Up => 1,
+        Down => 2,
+        Left => 3,
+        Right => 4
+    };
+}
+
+fn main() {
+    describe(Ok(42));
+    println("");
+    describe(Err("failed"));
+    print_int(turn(Left));
+    println("");
+}

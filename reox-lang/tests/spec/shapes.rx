@@ -1,0 +1,7 @@
+// Geometry used by the protocol example (reox-spec.md, "Protocol - Interface").
+pub struct Rect { x: float, y: float, w: float, h: float }
+pub struct View { handle: int }
+
+pub fn rect(x: float, y: float, w: float, h: float) -> Rect {
+    return Rect { x: x, y: y, w: w, h: h };
+}

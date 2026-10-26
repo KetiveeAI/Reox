@@ -4,49 +4,49 @@
 
 // === Gesture Event Structures ===
 
-struct Point {
+pub struct Point {
     x: float,
     y: float
 }
 
-struct TapEvent {
+pub struct TapEvent {
     location: Point,
     tap_count: int
 }
 
-struct PanEvent {
+pub struct PanEvent {
     location: Point,
     translation: Point,
     velocity: Point
 }
 
-struct SwipeEvent {
+pub struct SwipeEvent {
     direction: SwipeDirection,
     velocity: Point
 }
 
-struct PinchEvent {
+pub struct PinchEvent {
     center: Point,
     scale: float
 }
 
-struct RotateEvent {
+pub struct RotateEvent {
     center: Point,
     rotation: float
 }
 
-struct LongPressEvent {
+pub struct LongPressEvent {
     location: Point,
     duration: float
 }
 
-struct ScrollEvent {
+pub struct ScrollEvent {
     location: Point,
     delta_x: float,
     delta_y: float
 }
 
-struct HoverEvent {
+pub struct HoverEvent {
     location: Point,
     entered: bool
 }

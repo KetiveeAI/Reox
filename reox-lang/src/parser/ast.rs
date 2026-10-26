@@ -28,16 +28,29 @@ pub enum Decl {
     GlobalVar(LetStmt),
 }
 
+/// A generic type parameter: `T` or `T: Protocol + Other`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+    pub span: Span,
+}
+
 /// Function declaration
 #[derive(Debug, Clone)]
 pub struct FnDecl {
     pub name: String,
+    /// Generic parameters (`fn swap<T>(...)`); empty for ordinary functions.
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Block,
     pub is_async: bool,
     pub is_pub: bool,
     pub is_static: bool,
+    /// `mut fn`: the method may assign through `self`. Only meaningful for
+    /// methods declared inside a struct, extension, layer or panel body.
+    pub is_mut: bool,
     pub span: Span,
 }
 
@@ -53,7 +66,13 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: String,
+    /// Generic parameters (`struct Box<T>`); empty for ordinary structs.
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<Field>,
+    /// Methods declared inside the struct body. Each takes an implicit `self`
+    /// unless it is `static`.
+    pub methods: Vec<FnDecl>,
+    pub is_pub: bool,
     pub span: Span,
 }
 
@@ -101,6 +120,8 @@ pub enum Type {
     U64,
     USize,
     Named(String),
+    /// A generic type applied to arguments: `Box<int>`, `Result<T, E>`.
+    Generic(String, Vec<Type>),
     Array(Box<Type>),
     Optional(Box<Type>),
     Function(Vec<Type>, Box<Type>),
@@ -237,6 +258,18 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>, Span),             // start..end (inclusive)
     // Closure/lambda expression
     Action(Vec<Param>, Option<Box<Type>>, Box<Block>, Span), // action (params) -> Type { body }
+    /// `self` inside a method body
+    SelfRef(Span),
+    /// `{ statements }` used as an expression (match arm bodies). Its value is
+    /// the last expression statement, or nothing.
+    Block(Block, Span),
+    /// Type ascription inserted by the type checker where codegen needs the
+    /// type of a sub-expression (match scrutinee and result). Never parsed.
+    Typed(Box<Expr>, Type, Span),
+    /// Statically dispatched method call, produced by the type checker from
+    /// `receiver.method(args)`: (receiver, type name, method name, args, span).
+    /// Codegen emits `TypeName_method(&receiver, args)`.
+    MethodCall(Box<Expr>, String, String, Vec<Expr>, Span),
 }
 
 impl Expr {
@@ -265,7 +298,11 @@ impl Expr {
             | Expr::Nil(s)
             | Expr::Await(_, s)
             | Expr::Range(_, _, s)
-            | Expr::Action(_, _, _, s) => *s,
+            | Expr::Action(_, _, _, s)
+            | Expr::SelfRef(s)
+            | Expr::Block(_, s)
+            | Expr::Typed(_, _, s)
+            | Expr::MethodCall(_, _, _, _, s) => *s,
         }
     }
 }
@@ -300,7 +337,7 @@ impl Literal {
 }
 
 /// Literal values
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Int(i64, Span),
     Float(f64, Span),
@@ -380,11 +417,32 @@ pub struct MatchArm {
 }
 
 /// Match patterns
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Literal(Literal),
+    /// A binding, or a payload-less variant case once the checker has resolved it.
     Identifier(String),
     Wildcard,
+    /// `Case(p1, p2)` or `Type.Case(p1, p2)`; `Type.Case` without parentheses
+    /// has no args.
+    Variant(VariantPattern),
+}
+
+impl Pattern {
+    /// Whether the pattern matches every value (a wildcard or a plain binding).
+    pub fn is_irrefutable(&self) -> bool {
+        matches!(self, Pattern::Wildcard | Pattern::Identifier(_))
+    }
+}
+
+/// Variant case pattern. `type_name` is `None` for a bare `Case(...)` until
+/// the type checker resolves it from the scrutinee type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantPattern {
+    pub type_name: Option<String>,
+    pub case: String,
+    pub args: Vec<Pattern>,
+    pub span: Span,
 }
 
 // === UI-specific AST Nodes ===
@@ -393,12 +451,15 @@ pub enum Pattern {
 #[derive(Debug, Clone)]
 pub struct VariantDecl {
     pub name: String,
+    /// Generic parameters (`variant Option<T>`); empty for ordinary variants.
+    pub type_params: Vec<TypeParam>,
     pub cases: Vec<VariantCase>,
     pub is_pub: bool,
     pub span: Span,
 }
 
-/// A single variant case
+/// A single variant case. Positional payloads (`Some(T)`) get the field
+/// names `_0`, `_1`, ...; named payloads (`Err(message: string)`) keep theirs.
 #[derive(Debug, Clone)]
 pub struct VariantCase {
     pub name: String,
@@ -415,12 +476,14 @@ pub struct ProtocolDecl {
     pub span: Span,
 }
 
-/// Protocol method signature (no body)
+/// Protocol method signature (no body): `[static] [mut] fn name(params) [-> Type];`
 #[derive(Debug, Clone)]
 pub struct ProtocolMethod {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
+    pub is_mut: bool,
+    pub is_static: bool,
     pub span: Span,
 }
 
@@ -428,6 +491,8 @@ pub struct ProtocolMethod {
 #[derive(Debug, Clone)]
 pub struct ExtensionDecl {
     pub target: String,
+    /// Type parameters when extending a generic type: `extension Box<T> { ... }`.
+    pub type_params: Vec<TypeParam>,
     pub protocols: Vec<String>,
     pub methods: Vec<FnDecl>,
     pub span: Span,

@@ -54,7 +54,7 @@ pub const MAX_NESTING_DEPTH: usize = 128;
 /// Token returned when the parser is asked to look past the end of its input.
 static END_OF_INPUT: Token = Token {
     kind: TokenKind::Eof,
-    span: Span { line: 0, column: 0, start: 0, end: 0 },
+    span: Span { line: 0, column: 0, start: 0, end: 0, file: 0 },
 };
 
 /// REOX Parser
@@ -62,11 +62,80 @@ pub struct Parser<'a> {
     tokens: &'a [Token],
     current: usize,
     depth: usize,
+    /// Set when a `>>` token closed one generic argument list and its second
+    /// `>` is still owed to the enclosing list (`Box<Box<int>>`).
+    pending_gt: bool,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, current: 0, depth: 0 }
+        Self { tokens, current: 0, depth: 0, pending_gt: false }
+    }
+
+    /// Consume the `>` that closes a generic parameter or argument list,
+    /// splitting a `>>` token when two lists close at once.
+    fn consume_gt(&mut self, msg: &str) -> Result<(), ParseError> {
+        if self.pending_gt {
+            self.pending_gt = false;
+            return Ok(());
+        }
+        if self.check(&TokenKind::Gt) {
+            self.advance();
+            return Ok(());
+        }
+        if self.check(&TokenKind::ShiftRight) {
+            self.advance();
+            self.pending_gt = true;
+            return Ok(());
+        }
+        Err(self.error_here(msg))
+    }
+
+    /// Optional `<T, U: Bound + Other>` after a declaration name.
+    fn parse_type_params(&mut self) -> Result<Vec<TypeParam>, ParseError> {
+        if !self.check(&TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+        self.advance();
+        let mut params = Vec::new();
+        loop {
+            let span = self.peek().span;
+            let name = self.parse_identifier()?;
+            let mut bounds = Vec::new();
+            if self.match_token(&[TokenKind::Colon]) {
+                bounds.push(self.parse_identifier()?);
+                while self.match_token(&[TokenKind::Plus]) {
+                    bounds.push(self.parse_identifier()?);
+                }
+            }
+            if params.iter().any(|p: &TypeParam| p.name == name) {
+                return Err(ParseError::new(format!("type parameter '{}' is declared twice", name), span));
+            }
+            params.push(TypeParam { name, bounds, span });
+            // A `>>` closed a nested list and already owes this one its `>`.
+            if self.pending_gt || !self.match_token(&[TokenKind::Comma]) {
+                break;
+            }
+        }
+        self.consume_gt("expected '>' after type parameters")?;
+        if params.is_empty() {
+            return Err(self.error_here("expected at least one type parameter"));
+        }
+        Ok(params)
+    }
+
+    /// `<Type, Type>` after a type name.
+    fn parse_type_args(&mut self) -> Result<Vec<Type>, ParseError> {
+        self.consume(&TokenKind::Lt, "expected '<'")?;
+        let mut args = Vec::new();
+        loop {
+            args.push(self.parse_type()?);
+            if self.pending_gt || !self.match_token(&[TokenKind::Comma]) {
+                break;
+            }
+        }
+        self.consume_gt("expected '>' after type arguments")?;
+        Ok(args)
     }
 
     // === Utility Methods ===
@@ -206,7 +275,7 @@ impl<'a> Parser<'a> {
                     ))
                 }
             }
-            TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
+            TokenKind::Struct => self.parse_struct_decl(false).map(Decl::Struct),
             TokenKind::Import => self.parse_import_decl().map(Decl::Import),
             TokenKind::Extern => self.parse_extern_decl().map(Decl::Extern),
             TokenKind::Variant => self.parse_variant_decl(false).map(Decl::Variant),
@@ -219,6 +288,8 @@ impl<'a> Parser<'a> {
             TokenKind::Pub => self.parse_pub_decl(),
             TokenKind::Static => self.parse_static_decl(),
             TokenKind::Let => self.parse_global_var_decl(),
+            TokenKind::Mut => Err(ParseError::new("'mut fn' is only allowed inside a struct, extension, layer or panel body", self.peek().span)
+                .with_hint("a free function has no 'self' to mutate; drop 'mut'")),
             _ => Err(self
                 .error_here("expected declaration")
                 .with_hint("top-level items are fn, struct, variant, protocol, extension, layer, panel, const, typealias, import, extern or let")),
@@ -256,10 +327,32 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_fn_decl_with_modifiers(&mut self, is_async: bool, is_pub: bool, is_static: bool) -> Result<FnDecl, ParseError> {
+        self.parse_fn_decl_full(is_async, is_pub, is_static, false)
+    }
+
+    /// Parse a method inside a struct, extension, layer or panel body:
+    /// `[pub] [static] [mut] fn name(params) [-> Type] { body }`.
+    fn parse_method_decl(&mut self) -> Result<FnDecl, ParseError> {
+        let is_pub = self.match_token(&[TokenKind::Pub]);
+        let is_static = self.match_token(&[TokenKind::Static]);
+        let mut_span = self.peek().span;
+        let is_mut = self.match_token(&[TokenKind::Mut]);
+        if is_mut && is_static {
+            return Err(ParseError::new("a static method cannot be 'mut'", mut_span)
+                .with_hint("static methods have no 'self' to mutate; remove 'mut' or 'static'"));
+        }
+        if !self.check(&TokenKind::Fn) {
+            return Err(self.error_here("expected 'fn' to start a method"));
+        }
+        self.parse_fn_decl_full(false, is_pub, is_static, is_mut)
+    }
+
+    fn parse_fn_decl_full(&mut self, is_async: bool, is_pub: bool, is_static: bool, is_mut: bool) -> Result<FnDecl, ParseError> {
         let start_span = self.peek().span;
         self.consume(&TokenKind::Fn, "expected 'fn'")?;
 
         let name = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
         self.consume(&TokenKind::LParen, "expected '(' after function name")?;
 
         let params = self.parse_param_list()?;
@@ -275,12 +368,14 @@ impl<'a> Parser<'a> {
 
         Ok(FnDecl {
             name,
+            type_params,
             params,
             return_type,
             body,
             is_async,
             is_pub,
             is_static,
+            is_mut,
             span: start_span,
         })
     }
@@ -309,18 +404,33 @@ impl<'a> Parser<'a> {
         Ok(Param { name, ty, span })
     }
 
-    fn parse_struct_decl(&mut self) -> Result<StructDecl, ParseError> {
+    /// Parse: struct Name { field: Type, ... [pub] [static] [mut] fn method() { ... } ... }
+    fn parse_struct_decl(&mut self, is_pub: bool) -> Result<StructDecl, ParseError> {
         let start_span = self.peek().span;
         self.consume(&TokenKind::Struct, "expected 'struct'")?;
 
         let name = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
         self.consume(&TokenKind::LBrace, "expected '{'")?;
 
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            if self.starts_method() {
+                methods.push(self.parse_method_decl()?);
+                continue;
+            }
+            if !methods.is_empty() {
+                return Err(self
+                    .error_here("expected a method or '}' after struct methods")
+                    .with_hint("declare every field before the first method"));
+            }
             fields.push(self.parse_field()?);
             if !self.match_token(&[TokenKind::Comma]) {
-                break;
+                // The field list may end without a trailing comma before methods or '}'.
+                if !self.check(&TokenKind::RBrace) && !self.starts_method() {
+                    return Err(self.error_here("expected ',' or '}' after struct field"));
+                }
             }
         }
 
@@ -328,9 +438,20 @@ impl<'a> Parser<'a> {
 
         Ok(StructDecl {
             name,
+            type_params,
             fields,
+            methods,
+            is_pub,
             span: start_span,
         })
+    }
+
+    /// Whether the current token begins a method declaration inside a type body.
+    fn starts_method(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            TokenKind::Fn | TokenKind::Pub | TokenKind::Static | TokenKind::Mut
+        )
     }
 
     fn parse_field(&mut self) -> Result<Field, ParseError> {
@@ -346,10 +467,17 @@ impl<'a> Parser<'a> {
         let span = self.peek().span;
         self.consume(&TokenKind::Import, "expected 'import'")?;
 
+        // `import a.b.c;` resolves a/b/c.rx; `a::b::c` is accepted as well.
         let mut path = vec![self.parse_identifier()?];
-        while self.match_token(&[TokenKind::Colon]) {
-            self.consume(&TokenKind::Colon, "expected '::'")?;
-            path.push(self.parse_identifier()?);
+        loop {
+            if self.match_token(&[TokenKind::Dot]) {
+                path.push(self.parse_identifier()?);
+            } else if self.match_token(&[TokenKind::Colon]) {
+                self.consume(&TokenKind::Colon, "expected '::'")?;
+                path.push(self.parse_identifier()?);
+            } else {
+                break;
+            }
         }
 
         self.consume(&TokenKind::Semicolon, "expected ';' after import")?;
@@ -425,6 +553,10 @@ impl<'a> Parser<'a> {
             TokenKind::USize => { self.advance(); Ok(Type::USize) }
             TokenKind::Ident(name) => {
                 self.advance();
+                if self.check(&TokenKind::Lt) {
+                    let args = self.parse_type_args()?;
+                    return Ok(Type::Generic(name, args));
+                }
                 Ok(Type::Named(name))
             }
             TokenKind::LBracket => {
@@ -604,6 +736,11 @@ impl<'a> Parser<'a> {
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, ParseError> {
         let expr = self.parse_expression()?;
+        // A match used as a statement may end with its closing brace, and the
+        // last expression of a block may omit its ';' (the block's value).
+        if !self.check(&TokenKind::Semicolon) && (matches!(expr, Expr::Match(..)) || self.check(&TokenKind::RBrace)) {
+            return Ok(Stmt::Expr(expr));
+        }
         self.consume(&TokenKind::Semicolon, "expected ';' after expression")?;
         Ok(Stmt::Expr(expr))
     }
@@ -1075,6 +1212,10 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(Expr::Nil(token.span))
             }
+            TokenKind::Self_ => {
+                self.advance();
+                Ok(Expr::SelfRef(token.span))
+            }
             TokenKind::Match => {
                 self.advance();
                 let scrutinee = self.parse_expression()?;
@@ -1150,15 +1291,12 @@ impl<'a> Parser<'a> {
         let pattern = self.parse_pattern()?;
         self.consume(&TokenKind::FatArrow, "expected '=>' after pattern")?;
         
-        // Body can be a single expression or a block
+        // Body can be a single expression or a block whose last expression
+        // statement is its value
         let body = if self.check(&TokenKind::LBrace) {
-            // Block body - parse statements and use last as value
+            let block_span = self.peek().span;
             let block = self.parse_block()?;
-            if let Some(Stmt::Expr(expr)) = block.statements.last() {
-                expr.clone()
-            } else {
-                Expr::Nil(span)
-            }
+            Expr::Block(block, block_span)
         } else {
             self.parse_expression()?
         };
@@ -1192,13 +1330,39 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.advance();
                 if name == "_" {
-                    Ok(Pattern::Wildcard)
-                } else {
-                    Ok(Pattern::Identifier(name))
+                    return Ok(Pattern::Wildcard);
                 }
+                // Type.Case or Type.Case(args)
+                if self.match_token(&[TokenKind::Dot]) {
+                    let case = self.parse_identifier()?;
+                    let args = if self.check(&TokenKind::LParen) { self.parse_pattern_args()? } else { Vec::new() };
+                    return Ok(Pattern::Variant(VariantPattern { type_name: Some(name), case, args, span: token.span }));
+                }
+                // Case(args)
+                if self.check(&TokenKind::LParen) {
+                    let args = self.parse_pattern_args()?;
+                    return Ok(Pattern::Variant(VariantPattern { type_name: None, case: name, args, span: token.span }));
+                }
+                Ok(Pattern::Identifier(name))
             }
             _ => Err(self.error_here("expected pattern")),
         }
+    }
+
+    /// `( pattern, pattern, ... )` after a variant case name.
+    fn parse_pattern_args(&mut self) -> Result<Vec<Pattern>, ParseError> {
+        self.consume(&TokenKind::LParen, "expected '(' after case name")?;
+        let mut args = Vec::new();
+        if !self.check(&TokenKind::RParen) {
+            loop {
+                args.push(self.nested("pattern", |p| p.parse_pattern())?);
+                if !self.match_token(&[TokenKind::Comma]) {
+                    break;
+                }
+            }
+        }
+        self.consume(&TokenKind::RParen, "expected ')' after case patterns")?;
+        Ok(args)
     }
 
     // === UI-Specific Declaration Parsing ===
@@ -1208,6 +1372,7 @@ impl<'a> Parser<'a> {
         let span = self.peek().span;
         self.consume(&TokenKind::Variant, "expected 'variant'")?;
         let name = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
         self.consume(&TokenKind::LBrace, "expected '{' after variant name")?;
 
         let mut cases = Vec::new();
@@ -1219,7 +1384,7 @@ impl<'a> Parser<'a> {
                 let mut f = Vec::new();
                 if !self.check(&TokenKind::RParen) {
                     loop {
-                        f.push(self.parse_field()?);
+                        f.push(self.parse_variant_field(f.len())?);
                         if !self.match_token(&[TokenKind::Comma]) {
                             break;
                         }
@@ -1239,7 +1404,19 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(&TokenKind::RBrace, "expected '}'")?;
-        Ok(VariantDecl { name, cases, is_pub, span })
+        Ok(VariantDecl { name, type_params, cases, is_pub, span })
+    }
+
+    /// A variant payload field: `name: Type`, or a bare `Type` named `_<index>`.
+    fn parse_variant_field(&mut self, index: usize) -> Result<Field, ParseError> {
+        let span = self.peek().span;
+        let named = matches!(self.peek_kind(), TokenKind::Ident(_))
+            && matches!(self.tokens.get(self.current + 1).map(|t| &t.kind), Some(TokenKind::Colon));
+        if named {
+            return self.parse_field();
+        }
+        let ty = self.parse_type()?;
+        Ok(Field { name: format!("_{}", index), ty, span })
     }
 
     /// Parse: protocol Name { fn method(params) -> Type; ... }
@@ -1252,6 +1429,12 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
             let method_span = self.peek().span;
+            let is_static = self.match_token(&[TokenKind::Static]);
+            let is_mut = self.match_token(&[TokenKind::Mut]);
+            if is_mut && is_static {
+                return Err(ParseError::new("a static method cannot be 'mut'", method_span)
+                    .with_hint("static methods have no 'self' to mutate; remove 'mut' or 'static'"));
+            }
             self.consume(&TokenKind::Fn, "expected 'fn' in protocol body")?;
             let method_name = self.parse_identifier()?;
             self.consume(&TokenKind::LParen, "expected '('")?;
@@ -1266,10 +1449,18 @@ impl<'a> Parser<'a> {
 
             self.consume(&TokenKind::Semicolon, "expected ';' after protocol method")?;
 
+            if methods.iter().any(|m: &ProtocolMethod| m.name == method_name) {
+                return Err(ParseError::new(
+                    format!("protocol '{}' declares method '{}' twice", name, method_name),
+                    method_span,
+                ));
+            }
             methods.push(ProtocolMethod {
                 name: method_name,
                 params,
                 return_type,
+                is_mut,
+                is_static,
                 span: method_span,
             });
         }
@@ -1283,6 +1474,7 @@ impl<'a> Parser<'a> {
         let span = self.peek().span;
         self.consume(&TokenKind::Extension, "expected 'extension'")?;
         let target = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
 
         let protocols = if self.match_token(&[TokenKind::Colon]) {
             let mut p = vec![self.parse_identifier()?];
@@ -1298,13 +1490,15 @@ impl<'a> Parser<'a> {
 
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
-            let is_pub = self.match_token(&[TokenKind::Pub]);
-            let is_static = self.match_token(&[TokenKind::Static]);
-            methods.push(self.parse_fn_decl_with_modifiers(false, is_pub, is_static)?);
+            if !self.starts_method() {
+                return Err(self.error_here("expected a method in extension body")
+                    .with_hint("extensions may only contain '[pub] [static] [mut] fn' declarations"));
+            }
+            methods.push(self.parse_method_decl()?);
         }
 
         self.consume(&TokenKind::RBrace, "expected '}'")?;
-        Ok(ExtensionDecl { target, protocols, methods, span })
+        Ok(ExtensionDecl { target, type_params, protocols, methods, span })
     }
 
     /// Parse: layer Name { fields, signals, fn body() -> View { ... } }
@@ -1368,10 +1562,8 @@ impl<'a> Parser<'a> {
 
                     gestures.push(GestureHandler { kind, params, body, span: gesture_span });
                 }
-                TokenKind::Fn | TokenKind::Pub | TokenKind::Static => {
-                    let is_pub = self.match_token(&[TokenKind::Pub]);
-                    let is_static = self.match_token(&[TokenKind::Static]);
-                    methods.push(self.parse_fn_decl_with_modifiers(false, is_pub, is_static)?);
+                TokenKind::Fn | TokenKind::Pub | TokenKind::Static | TokenKind::Mut => {
+                    methods.push(self.parse_method_decl()?);
                 }
                 TokenKind::Let | TokenKind::At => {
                     // Fields declared with let or @Bind let
@@ -1424,8 +1616,8 @@ impl<'a> Parser<'a> {
 
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
             match self.peek_kind() {
-                TokenKind::Fn => {
-                    methods.push(self.parse_fn_decl(false)?);
+                TokenKind::Fn | TokenKind::Pub | TokenKind::Static | TokenKind::Mut => {
+                    methods.push(self.parse_method_decl()?);
                 }
                 TokenKind::Ident(_) => {
                     // Property: key: value
@@ -1484,7 +1676,7 @@ impl<'a> Parser<'a> {
         self.advance(); // consume 'pub'
         match self.peek_kind() {
             TokenKind::Fn => self.parse_fn_decl_with_modifiers(false, true, false).map(Decl::Function),
-            TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
+            TokenKind::Struct => self.parse_struct_decl(true).map(Decl::Struct),
             TokenKind::Variant => self.parse_variant_decl(true).map(Decl::Variant),
             TokenKind::Protocol => self.parse_protocol_decl(true).map(Decl::Protocol),
             TokenKind::Layer => self.parse_layer_decl(true).map(Decl::Layer),
@@ -2327,5 +2519,184 @@ mod tests {
         let mut parser = Parser::new(&tokens);
         assert_eq!(parser.match_map(&[(TokenKind::Plus, 1), (TokenKind::Minus, 2)]), None);
         assert_eq!(parser.current, 0);
+    }
+
+    // === Methods and self ===
+
+    #[test]
+    fn struct_body_holds_fields_then_methods() {
+        let tokens = tokenize("struct P { x: int, y: int fn len() -> int { return self.x; } mut fn reset() { self.x = 0; } static fn zero() -> P { return P { x: 0, y: 0 }; } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        match &ast.declarations[0] {
+            Decl::Struct(s) => {
+                assert_eq!(s.fields.len(), 2);
+                assert_eq!(s.methods.len(), 3);
+                assert!(!s.methods[0].is_mut && !s.methods[0].is_static);
+                assert!(s.methods[1].is_mut);
+                assert!(s.methods[2].is_static);
+                match &s.methods[0].body.statements[0] {
+                    Stmt::Return(r) => assert!(matches!(r.value, Some(Expr::Member(ref obj, ref f, _)) if matches!(**obj, Expr::SelfRef(_)) && f == "x")),
+                    other => panic!("expected return, got {:?}", other),
+                }
+            }
+            other => panic!("expected struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn field_after_method_is_rejected_with_hint() {
+        let tokens = tokenize("struct P { fn f() { } x: int }").unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("expected a method or '}'"), "{}", err.message);
+        assert!(err.hint.is_some());
+    }
+
+    #[test]
+    fn mut_fn_is_only_valid_inside_type_bodies() {
+        let tokens = tokenize("mut fn f() { }").unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("'mut fn' is only allowed inside"), "{}", err.message);
+        let tokens = tokenize("struct P { static mut fn f() { } }").unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("static method cannot be 'mut'"), "{}", err.message);
+    }
+
+    #[test]
+    fn extension_layer_and_panel_methods_accept_mut() {
+        let tokens = tokenize("extension P { mut fn f() { } } layer L { mut fn g() { } } panel W { mut fn h() { } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        assert!(matches!(&ast.declarations[0], Decl::Extension(e) if e.methods[0].is_mut));
+        assert!(matches!(&ast.declarations[1], Decl::Layer(l) if l.methods[0].is_mut));
+        assert!(matches!(&ast.declarations[2], Decl::Panel(p) if p.methods[0].is_mut));
+        let tokens = tokenize("extension P { let x = 1; }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("expected a method in extension body"));
+    }
+
+    // === Variant patterns ===
+
+    #[test]
+    fn variant_patterns_parse_bare_qualified_and_nested() {
+        let tokens = tokenize("fn f() { match r { Ok(v) => v, Result.Err(msg) => 0, Maybe.Nothing => 1, Some(Ok(x)) => x, _ => 2 } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let f = match &ast.declarations[0] { Decl::Function(f) => f, other => panic!("{:?}", other) };
+        let arms = match &f.body.statements[0] { Stmt::Expr(Expr::Match(_, arms, _)) => arms, other => panic!("{:?}", other) };
+        assert_eq!(arms.len(), 5);
+        match &arms[0].pattern {
+            Pattern::Variant(vp) => { assert_eq!(vp.type_name, None); assert_eq!(vp.case, "Ok"); assert_eq!(vp.args, vec![Pattern::Identifier("v".into())]); }
+            other => panic!("{:?}", other),
+        }
+        match &arms[1].pattern {
+            Pattern::Variant(vp) => { assert_eq!(vp.type_name.as_deref(), Some("Result")); assert_eq!(vp.case, "Err"); }
+            other => panic!("{:?}", other),
+        }
+        match &arms[2].pattern {
+            Pattern::Variant(vp) => { assert_eq!(vp.type_name.as_deref(), Some("Maybe")); assert!(vp.args.is_empty()); }
+            other => panic!("{:?}", other),
+        }
+        match &arms[3].pattern {
+            Pattern::Variant(vp) => assert!(matches!(&vp.args[0], Pattern::Variant(inner) if inner.case == "Ok")),
+            other => panic!("{:?}", other),
+        }
+        assert_eq!(arms[4].pattern, Pattern::Wildcard);
+    }
+
+    #[test]
+    fn match_statement_and_block_arm_bodies() {
+        let tokens = tokenize("fn f() { match x { 1 => { println(\"a\"); 10 } _ => 0 } let y = 1; }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let f = match &ast.declarations[0] { Decl::Function(f) => f, other => panic!("{:?}", other) };
+        assert_eq!(f.body.statements.len(), 2);
+        let arms = match &f.body.statements[0] { Stmt::Expr(Expr::Match(_, arms, _)) => arms, other => panic!("{:?}", other) };
+        match &arms[0].body {
+            Expr::Block(block, _) => {
+                assert_eq!(block.statements.len(), 2);
+                assert!(matches!(block.statements[1], Stmt::Expr(Expr::Literal(Literal::Int(10, _)))));
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn variant_payloads_may_be_positional_or_named() {
+        let tokens = tokenize("variant Result { Ok(int), Err(message: string), Pair(int, bool) }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let v = match &ast.declarations[0] { Decl::Variant(v) => v, other => panic!("{:?}", other) };
+        assert_eq!(v.cases[0].fields[0].name, "_0");
+        assert_eq!(v.cases[0].fields[0].ty, Type::Int);
+        assert_eq!(v.cases[1].fields[0].name, "message");
+        assert_eq!(v.cases[2].fields[1].name, "_1");
+        assert_eq!(v.cases[2].fields[1].ty, Type::Bool);
+    }
+
+    #[test]
+    fn unclosed_pattern_args_are_reported() {
+        let tokens = tokenize("fn f() { match r { Ok(v => 1 } }").unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("expected ')' after case patterns"), "{}", err.message);
+    }
+
+    // === Generics ===
+
+    #[test]
+    fn type_parameters_and_generic_types_parse() {
+        let tokens = tokenize("fn swap<T>(a: T, b: T) -> T { return b; } struct Box<T: Drawable + Eq> { value: T } variant Result<T, E> { Ok(T), Err(E) } extension Box<T> : P { fn f() { } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        match &ast.declarations[0] {
+            Decl::Function(f) => { assert_eq!(f.type_params.len(), 1); assert_eq!(f.type_params[0].name, "T"); assert_eq!(f.params[0].ty, Type::Named("T".into())); }
+            other => panic!("{:?}", other),
+        }
+        match &ast.declarations[1] {
+            Decl::Struct(s) => assert_eq!(s.type_params[0].bounds, vec!["Drawable".to_string(), "Eq".to_string()]),
+            other => panic!("{:?}", other),
+        }
+        match &ast.declarations[2] {
+            Decl::Variant(v) => assert_eq!(v.type_params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["T", "E"]),
+            other => panic!("{:?}", other),
+        }
+        match &ast.declarations[3] {
+            Decl::Extension(e) => { assert_eq!(e.type_params.len(), 1); assert_eq!(e.protocols, vec!["P".to_string()]); }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn nested_generic_type_arguments_split_the_shift_token() {
+        let tokens = tokenize("fn f(a: Option<Box<int>>, b: Result<Option<Box<string>>, int>) { }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let f = match &ast.declarations[0] { Decl::Function(f) => f, other => panic!("{:?}", other) };
+        assert_eq!(f.params[0].ty, Type::Generic("Option".into(), vec![Type::Generic("Box".into(), vec![Type::Int])]));
+        assert_eq!(
+            f.params[1].ty,
+            Type::Generic("Result".into(), vec![
+                Type::Generic("Option".into(), vec![Type::Generic("Box".into(), vec![Type::String])]),
+                Type::Int,
+            ])
+        );
+    }
+
+    #[test]
+    fn generic_syntax_errors_are_reported() {
+        let tokens = tokenize("fn f<T, T>() { }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("type parameter 'T' is declared twice"));
+        let tokens = tokenize("fn f<>() { }").unwrap();
+        assert!(parse(&tokens).is_err());
+        let tokens = tokenize("fn f(a: Box<int) { }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("expected '>' after type arguments"));
+    }
+
+    // === Protocols ===
+
+    #[test]
+    fn protocol_methods_take_static_and_mut_modifiers() {
+        let tokens = tokenize("protocol P { fn a(); mut fn b(x: int); static fn c() -> int; }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let p = match &ast.declarations[0] { Decl::Protocol(p) => p, other => panic!("{:?}", other) };
+        assert!(!p.methods[0].is_mut && !p.methods[0].is_static);
+        assert!(p.methods[1].is_mut);
+        assert!(p.methods[2].is_static);
+        let tokens = tokenize("protocol P { fn a(); fn a(); }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("declares method 'a' twice"));
+        let tokens = tokenize("protocol P { static mut fn a(); }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("static method cannot be 'mut'"));
     }
 }

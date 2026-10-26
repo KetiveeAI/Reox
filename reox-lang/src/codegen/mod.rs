@@ -3,7 +3,7 @@
 // Zero external dependencies
 
 use crate::parser::{
-    Ast, Decl, Stmt, Expr, Literal, BinOp, UnaryOp, CompoundOp,
+    Ast, Decl, Stmt, Expr, Literal, BinOp, UnaryOp, CompoundOp, MatchArm, Pattern,
     FnDecl, StructDecl, ExternDecl, Block, Type, LetStmt,
     ReturnStmt, IfStmt, WhileStmt, ForStmt, GuardStmt, DeferStmt,
     TryCatchStmt, ThrowStmt,
@@ -11,6 +11,7 @@ use crate::parser::{
     ConstDecl, TypealiasDecl,
 };
 use crate::lexer::Span;
+use std::collections::HashMap;
 use std::io::Write;
 
 /// Code generation error, located by a source span when one is known
@@ -50,6 +51,14 @@ pub struct CodeGen {
     closure_counter: usize,
     closure_defs: String,
     expr_depth: usize,
+    /// Counter for the temporaries a match expression introduces.
+    match_counter: usize,
+    /// Payload field names of every variant case, by (variant, case), in
+    /// declaration order. Patterns are positional; the C union is not.
+    variant_fields: HashMap<(String, String), Vec<String>>,
+    /// Functions the program declares itself (fn or extern). The built-in
+    /// widget and color rewrites never apply to these.
+    declared_fns: std::collections::HashSet<String>,
 }
 
 impl CodeGen {
@@ -61,6 +70,9 @@ impl CodeGen {
             closure_counter: 0,
             closure_defs: String::new(),
             expr_depth: 0,
+            match_counter: 0,
+            variant_fields: HashMap::new(),
+            declared_fns: std::collections::HashSet::new(),
         }
     }
 
@@ -106,12 +118,48 @@ impl CodeGen {
         self.emit_line("#include \"reox_nxrender_bridge.h\"");  // NXRender integration
         self.emit_line("");
 
+        // Generic declarations only exist as instances; the checker produces them.
+        for decl in &ast.declarations {
+            let generic = match decl {
+                Decl::Function(f) if !f.type_params.is_empty() => Some((&f.name, f.span)),
+                Decl::Struct(s) if !s.type_params.is_empty() => Some((&s.name, s.span)),
+                Decl::Variant(v) if !v.type_params.is_empty() => Some((&v.name, v.span)),
+                Decl::Extension(e) if !e.type_params.is_empty() => Some((&e.target, e.span)),
+                _ => None,
+            };
+            if let Some((name, span)) = generic {
+                return Err(CodegenError::new(
+                    format!("generic declaration '{}' must be instantiated by the type checker before code generation", name),
+                    span,
+                ));
+            }
+        }
+
+        for decl in &ast.declarations {
+            match decl {
+                Decl::Function(f) => { self.declared_fns.insert(f.name.clone()); }
+                Decl::Extern(e) => { self.declared_fns.insert(e.name.clone()); }
+                _ => {}
+            }
+        }
+
+        // Payload layout of every variant, needed to destructure patterns.
+        for decl in &ast.declarations {
+            if let Decl::Variant(v) = decl {
+                for case in &v.cases {
+                    let names = case.fields.iter().map(|f| f.name.clone()).collect();
+                    self.variant_fields.insert((v.name.clone(), case.name.clone()), names);
+                }
+            }
+        }
+
         // Forward declarations for structs and variants
         for decl in &ast.declarations {
             match decl {
                 Decl::Struct(s) => self.emit_line(&format!("typedef struct {} {};", s.name, s.name)),
                 Decl::Variant(v) => self.emit_line(&format!("typedef struct {0} {0};", v.name)),
                 Decl::Layer(l) => self.emit_line(&format!("typedef struct {0} {0};", l.name)),
+                Decl::Panel(p) => self.emit_line(&format!("typedef struct {0} {0};", p.name)),
                 _ => {}
             }
         }
@@ -138,19 +186,19 @@ impl CodeGen {
             }
         }
 
-        // Generate variant (tagged union)
-        for decl in &ast.declarations {
-            if let Decl::Variant(v) = decl {
-                self.gen_variant(v);
-                self.emit_line("");
-            }
-        }
-
-        // Generate struct definitions
-        for decl in &ast.declarations {
-            if let Decl::Struct(s) = decl {
-                self.gen_struct(s);
-                self.emit_line("");
+        // Generate variant and struct definitions, each after the types it
+        // holds by value (generic instances may be declared after their users).
+        for decl in self.ordered_type_decls(ast)? {
+            match decl {
+                Decl::Variant(v) => {
+                    self.gen_variant(v);
+                    self.emit_line("");
+                }
+                Decl::Struct(s) => {
+                    self.gen_struct(s);
+                    self.emit_line("");
+                }
+                _ => {}
             }
         }
 
@@ -162,11 +210,18 @@ impl CodeGen {
             }
         }
 
-        // Generate layer structs
+        // Generate layer and panel structs
         for decl in &ast.declarations {
-            if let Decl::Layer(l) = decl {
-                self.gen_layer_struct(l);
-                self.emit_line("");
+            match decl {
+                Decl::Layer(l) => {
+                    self.gen_layer_struct(l);
+                    self.emit_line("");
+                }
+                Decl::Panel(p) => {
+                    self.gen_panel_struct(p);
+                    self.emit_line("");
+                }
+                _ => {}
             }
         }
 
@@ -180,26 +235,28 @@ impl CodeGen {
             self.emit_line("");
         }
 
-        // Generate function prototypes (including extension methods)
+        // Generate function prototypes (including methods)
         for decl in &ast.declarations {
             match decl {
                 Decl::Function(f) => self.gen_fn_prototype(f),
+                Decl::Struct(s) => {
+                    for method in &s.methods {
+                        self.gen_method_prototype(&s.name, method);
+                    }
+                }
                 Decl::Extension(ext) => {
                     for method in &ext.methods {
-                        let mangled_name = format!("{}_{}", ext.target, method.name);
-                        self.gen_fn_prototype_named(&mangled_name, method);
+                        self.gen_method_prototype(&ext.target, method);
                     }
                 }
                 Decl::Layer(l) => {
                     for method in &l.methods {
-                        let mangled_name = format!("{}_{}", l.name, method.name);
-                        self.gen_fn_prototype_named(&mangled_name, method);
+                        self.gen_method_prototype(&l.name, method);
                     }
                 }
                 Decl::Panel(p) => {
                     for method in &p.methods {
-                        let mangled_name = format!("{}_{}", p.name, method.name);
-                        self.gen_fn_prototype_named(&mangled_name, method);
+                        self.gen_method_prototype(&p.name, method);
                     }
                 }
                 _ => {}
@@ -220,6 +277,12 @@ impl CodeGen {
                     self.gen_function(f)?;
                     self.emit_line("");
                 }
+                Decl::Struct(s) => {
+                    for method in &s.methods {
+                        self.gen_method(&s.name, method)?;
+                        self.emit_line("");
+                    }
+                }
                 Decl::Extension(ext) => {
                     self.gen_extension(ext)?;
                 }
@@ -235,6 +298,82 @@ impl CodeGen {
         }
 
         Ok(self.output.clone())
+    }
+
+    /// Struct and variant declarations ordered so that every type appears
+    /// after the types its fields hold by value.
+    fn ordered_type_decls<'d>(&self, ast: &'d Ast) -> Result<Vec<&'d Decl>, CodegenError> {
+        let mut by_name: HashMap<String, &'d Decl> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        for decl in &ast.declarations {
+            let name = match decl {
+                Decl::Struct(s) => s.name.clone(),
+                Decl::Variant(v) => v.name.clone(),
+                _ => continue,
+            };
+            if by_name.insert(name.clone(), decl).is_none() {
+                names.push(name);
+            }
+        }
+
+        fn by_value_deps(decl: &Decl) -> Vec<String> {
+            // Arrays, optionals and functions are pointers in C: no ordering needed.
+            fn named(ty: &Type) -> Option<String> {
+                match ty {
+                    Type::Named(n) => Some(n.clone()),
+                    Type::Generic(_, _) => Some(crate::typechecker::ResolvedType::from_parser_type(ty).display_name()),
+                    _ => None,
+                }
+            }
+            match decl {
+                Decl::Struct(s) => s.fields.iter().filter_map(|f| named(&f.ty)).collect(),
+                Decl::Variant(v) => v.cases.iter().flat_map(|c| c.fields.iter().filter_map(|f| named(&f.ty))).collect(),
+                _ => Vec::new(),
+            }
+        }
+
+        fn visit<'d>(
+            name: &str,
+            by_name: &HashMap<String, &'d Decl>,
+            path: &mut Vec<String>,
+            done: &mut Vec<String>,
+            ordered: &mut Vec<&'d Decl>,
+        ) -> Result<(), CodegenError> {
+            if done.iter().any(|d| d == name) {
+                return Ok(());
+            }
+            let decl: &'d Decl = match by_name.get(name) {
+                Some(d) => d,
+                None => return Ok(()), // an extern or runtime type
+            };
+            if path.iter().any(|p| p == name) {
+                let span = match decl {
+                    Decl::Struct(s) => s.span,
+                    Decl::Variant(v) => v.span,
+                    _ => Span::default(),
+                };
+                path.push(name.to_string());
+                return Err(CodegenError::new(
+                    format!("type '{}' contains itself by value through {}", name, path.join(" -> ")),
+                    span,
+                ));
+            }
+            path.push(name.to_string());
+            for dep in by_value_deps(decl) {
+                visit(&dep, by_name, path, done, ordered)?;
+            }
+            path.pop();
+            done.push(name.to_string());
+            ordered.push(decl);
+            Ok(())
+        }
+
+        let mut done: Vec<String> = Vec::new();
+        let mut ordered: Vec<&'d Decl> = Vec::new();
+        for name in &names {
+            visit(name, &by_name, &mut Vec::new(), &mut done, &mut ordered)?;
+        }
+        Ok(ordered)
     }
 
     fn gen_struct(&mut self, s: &StructDecl) {
@@ -266,10 +405,15 @@ impl CodeGen {
         self.emit_line(&format!("extern {} {}({});", ret_type, e.name, params_str));
     }
 
+    /// A REOX `main` without a return type is the C entry point `int main`.
+    fn is_void_main(f: &FnDecl) -> bool {
+        f.name == "main" && f.return_type.is_none()
+    }
+
     fn gen_fn_prototype(&mut self, f: &FnDecl) {
         let ret_type = f.return_type.as_ref()
             .map(|t| self.type_to_c(t))
-            .unwrap_or_else(|| "void".to_string());
+            .unwrap_or_else(|| if Self::is_void_main(f) { "int".to_string() } else { "void".to_string() });
 
         let params: Vec<String> = f.params.iter()
             .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
@@ -284,14 +428,22 @@ impl CodeGen {
         self.emit_line(&format!("{} {}({});", ret_type, f.name, params_str));
     }
 
-    fn gen_fn_prototype_named(&mut self, name: &str, f: &FnDecl) {
+    /// C name of a method: `TypeName_method`.
+    fn mangle_method(type_name: &str, method: &str) -> String {
+        format!("{}_{}", type_name, method)
+    }
+
+    /// `ret TypeName_method(TypeName* self, params)`; static methods take no `self`.
+    fn method_signature(&self, type_name: &str, f: &FnDecl) -> String {
         let ret_type = f.return_type.as_ref()
             .map(|t| self.type_to_c(t))
             .unwrap_or_else(|| "void".to_string());
 
-        let params: Vec<String> = f.params.iter()
-            .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
-            .collect();
+        let mut params: Vec<String> = Vec::new();
+        if !f.is_static {
+            params.push(format!("{}* self", type_name));
+        }
+        params.extend(f.params.iter().map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name)));
 
         let params_str = if params.is_empty() {
             "void".to_string()
@@ -299,7 +451,28 @@ impl CodeGen {
             params.join(", ")
         };
 
-        self.emit_line(&format!("{} {}({});", ret_type, name, params_str));
+        format!("{} {}({})", ret_type, Self::mangle_method(type_name, &f.name), params_str)
+    }
+
+    fn gen_method_prototype(&mut self, type_name: &str, f: &FnDecl) {
+        let signature = self.method_signature(type_name, f);
+        self.emit_line(&format!("{};", signature));
+    }
+
+    fn gen_method(&mut self, type_name: &str, f: &FnDecl) -> Result<(), CodegenError> {
+        self.defer_stack.clear();
+        let signature = self.method_signature(type_name, f);
+        self.emit_line(&format!("{} {{", signature));
+        self.indent();
+        self.gen_block(&f.body)?;
+
+        if !self.defer_stack.is_empty() {
+            self.emit_deferred_cleanup()?;
+        }
+
+        self.dedent();
+        self.emit_line("}");
+        Ok(())
     }
 
     fn gen_variant(&mut self, v: &VariantDecl) {
@@ -308,7 +481,7 @@ impl CodeGen {
         self.indent();
         for (i, case) in v.cases.iter().enumerate() {
             let suffix = if i < v.cases.len() - 1 { "," } else { "" };
-            self.emit_line(&format!("{}_{}{}", v.name.to_uppercase(), case.name.to_uppercase(), suffix));
+            self.emit_line(&format!("{}{}", Self::variant_tag(&v.name, &case.name), suffix));
         }
         self.dedent();
         self.emit_line(&format!("}} {}_Tag;", v.name));
@@ -333,7 +506,7 @@ impl CodeGen {
                         self.emit_line(&format!("{} {};", c_type, field.name));
                     }
                     self.dedent();
-                    self.emit_line(&format!("}} {};", case.name.to_lowercase()));
+                    self.emit_line(&format!("}} {};", Self::case_member(&case.name)));
                 }
             }
             self.dedent();
@@ -342,6 +515,39 @@ impl CodeGen {
 
         self.dedent();
         self.emit_line("};");
+
+        // Constructors: a function per case with a payload, a constant otherwise.
+        for case in &v.cases {
+            let ctor = format!("{}_{}", v.name, case.name);
+            let tag = Self::variant_tag(&v.name, &case.name);
+            if case.fields.is_empty() {
+                self.emit_line(&format!("static const {} {} = {{ .tag = {} }};", v.name, ctor, tag));
+                continue;
+            }
+            let params: Vec<String> = case.fields.iter()
+                .map(|f| format!("{} {}", self.type_to_c(&f.ty), f.name))
+                .collect();
+            self.emit_line(&format!("static inline {} {}({}) {{", v.name, ctor, params.join(", ")));
+            self.indent();
+            self.emit_line(&format!("{} _rx_v;", v.name));
+            self.emit_line(&format!("_rx_v.tag = {};", tag));
+            for field in &case.fields {
+                self.emit_line(&format!("_rx_v.data.{}.{} = {};", Self::case_member(&case.name), field.name, field.name));
+            }
+            self.emit_line("return _rx_v;");
+            self.dedent();
+            self.emit_line("}");
+        }
+    }
+
+    /// C enumerator of a variant case tag.
+    fn variant_tag(variant: &str, case: &str) -> String {
+        format!("{}_{}", variant.to_uppercase(), case.to_uppercase())
+    }
+
+    /// Name of the union member that holds a case's payload.
+    fn case_member(case: &str) -> String {
+        case.to_lowercase()
     }
 
     fn gen_protocol(&mut self, p: &ProtocolDecl) {
@@ -366,11 +572,20 @@ impl CodeGen {
 
     fn gen_extension(&mut self, ext: &ExtensionDecl) -> Result<(), CodegenError> {
         for method in &ext.methods {
-            let mangled_name = format!("{}_{}", ext.target, method.name);
-            self.gen_function_named(&mangled_name, method)?;
+            self.gen_method(&ext.target, method)?;
             self.emit_line("");
         }
         Ok(())
+    }
+
+    /// A panel has no fields of its own; its struct exists so that panel
+    /// methods can take `self` like every other method.
+    fn gen_panel_struct(&mut self, p: &PanelDecl) {
+        self.emit_line(&format!("struct {} {{", p.name));
+        self.indent();
+        self.emit_line("rx_app_t* app;");
+        self.dedent();
+        self.emit_line("};");
     }
 
     fn gen_layer_struct(&mut self, l: &LayerDecl) {
@@ -390,8 +605,7 @@ impl CodeGen {
 
     fn gen_layer_methods(&mut self, l: &LayerDecl) -> Result<(), CodegenError> {
         for method in &l.methods {
-            let mangled_name = format!("{}_{}", l.name, method.name);
-            self.gen_function_named(&mangled_name, method)?;
+            self.gen_method(&l.name, method)?;
             self.emit_line("");
         }
 
@@ -420,8 +634,7 @@ impl CodeGen {
     fn gen_panel(&mut self, p: &PanelDecl) -> Result<(), CodegenError> {
         // Generate panel methods
         for method in &p.methods {
-            let mangled_name = format!("{}_{}", p.name, method.name);
-            self.gen_function_named(&mangled_name, method)?;
+            self.gen_method(&p.name, method)?;
             self.emit_line("");
         }
 
@@ -496,43 +709,13 @@ impl CodeGen {
         self.emit_line(&format!("typedef {} {};", target_c, t.name));
     }
 
-    fn gen_function_named(&mut self, name: &str, f: &FnDecl) -> Result<(), CodegenError> {
-        self.defer_stack.clear();
-
-        let ret_type = f.return_type.as_ref()
-            .map(|t| self.type_to_c(t))
-            .unwrap_or_else(|| "void".to_string());
-
-        let params: Vec<String> = f.params.iter()
-            .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
-            .collect();
-
-        let params_str = if params.is_empty() {
-            "void".to_string()
-        } else {
-            params.join(", ")
-        };
-
-        self.emit_line(&format!("{} {}({}) {{", ret_type, name, params_str));
-        self.indent();
-        self.gen_block(&f.body)?;
-
-        if !self.defer_stack.is_empty() {
-            self.emit_deferred_cleanup()?;
-        }
-
-        self.dedent();
-        self.emit_line("}");
-        Ok(())
-    }
-
     fn gen_function(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
         // Clear defer stack for new function
         self.defer_stack.clear();
         
         let ret_type = f.return_type.as_ref()
             .map(|t| self.type_to_c(t))
-            .unwrap_or_else(|| "void".to_string());
+            .unwrap_or_else(|| if Self::is_void_main(f) { "int".to_string() } else { "void".to_string() });
 
         let params: Vec<String> = f.params.iter()
             .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
@@ -551,6 +734,9 @@ impl CodeGen {
         // Emit any remaining deferred cleanup at function end (for void functions)
         if !self.defer_stack.is_empty() {
             self.emit_deferred_cleanup()?;
+        }
+        if Self::is_void_main(f) {
+            self.emit_line("return 0;");
         }
         
         self.dedent();
@@ -814,8 +1000,21 @@ impl CodeGen {
                 self.gen_expr(operand)?;
             }
             Expr::Call(callee, args, _) => {
-                // Check for UI widget function calls
+                // Built-in UI widget and theme color calls, unless the program
+                // declares a function of that name itself.
                 if let Expr::Identifier(name, _) = callee.as_ref() {
+                    if self.declared_fns.contains(name) {
+                        self.gen_expr(callee)?;
+                        self.emit("(");
+                        for (i, arg) in args.iter().enumerate() {
+                            if i > 0 {
+                                self.emit(", ");
+                            }
+                            self.gen_expr(arg)?;
+                        }
+                        self.emit(")");
+                        return Ok(());
+                    }
                     match name.as_str() {
                         // UI Widget constructors -> emit reox FFI calls
                         "button" => {
@@ -918,7 +1117,13 @@ impl CodeGen {
             }
             Expr::Member(obj, field, _) => {
                 self.gen_expr(obj)?;
-                self.emit(&format!(".{}", field));
+                // `self` is a pointer inside methods; every other receiver is a value.
+                let accessor = if matches!(obj.as_ref(), Expr::SelfRef(_)) { "->" } else { "." };
+                self.emit(&format!("{}{}", accessor, field));
+            }
+            Expr::SelfRef(_) => self.emit("self"),
+            Expr::MethodCall(receiver, type_name, method, args, _) => {
+                self.gen_method_call(receiver, type_name, method, args)?;
             }
             Expr::Index(arr, idx, _) => {
                 self.gen_expr(arr)?;
@@ -952,60 +1157,16 @@ impl CodeGen {
                 }
                 self.emit("}");
             }
-            Expr::Match(scrutinee, arms, _) => {
-                // Generate match as a series of if-else chains
-                // For simple integer patterns, could use switch but if-else is more general
+            Expr::Match(scrutinee, arms, span) => self.gen_match(scrutinee, arms, None, *span)?,
+            Expr::Typed(inner, ty, span) => match inner.as_ref() {
+                Expr::Match(scrutinee, arms, _) => self.gen_match(scrutinee, arms, Some(ty), *span)?,
+                other => self.gen_expr(other)?,
+            },
+            Expr::Block(block, _) => {
+                // A block used as a value: GNU statement expression.
                 self.emit("({\n");
                 self.indent();
-                
-                // Store scrutinee in temporary variable
-                self.emit_indent();
-                self.emit("__auto_type _match_val = ");
-                self.gen_expr(scrutinee)?;
-                self.emit(";\n");
-                
-                // Default result variable
-                self.emit_line("typeof(_match_val) _match_result = 0;");
-                
-                for (i, arm) in arms.iter().enumerate() {
-                    self.emit_indent();
-                    if i == 0 {
-                        self.emit("if (");
-                    } else {
-                        self.emit("} else if (");
-                    }
-                    
-                    // Generate pattern condition
-                    match &arm.pattern {
-                        crate::parser::Pattern::Literal(lit) => {
-                            self.emit("_match_val == ");
-                            self.gen_literal(lit);
-                        }
-                        crate::parser::Pattern::Identifier(name) => {
-                            // Binding pattern - always matches
-                            self.emit("1 /* bind ");
-                            self.emit(name);
-                            self.emit(" */");
-                        }
-                        crate::parser::Pattern::Wildcard => {
-                            self.emit("1 /* wildcard */");
-                        }
-                    }
-                    
-                    self.emit(") {\n");
-                    self.indent();
-                    self.emit_indent();
-                    self.emit("_match_result = ");
-                    self.gen_expr(&arm.body)?;
-                    self.emit(";\n");
-                    self.dedent();
-                }
-                
-                if !arms.is_empty() {
-                    self.emit_line("}");
-                }
-                
-                self.emit_line("_match_result;");
+                self.gen_block(block)?;
                 self.dedent();
                 self.emit_indent();
                 self.emit("})");
@@ -1109,6 +1270,241 @@ impl CodeGen {
         }
         Ok(())
     }
+    /// Emit a match expression. `result_ty` is the type the checker inferred
+    /// for the arms (`None` for an unchecked AST, where only literal patterns
+    /// are supported). Flat variant matches become a `switch` on the tag;
+    /// nested or literal patterns become an if-else chain.
+    fn gen_match(&mut self, scrutinee: &Expr, arms: &[MatchArm], result_ty: Option<&Type>, span: Span) -> Result<(), CodegenError> {
+        let id = self.match_counter;
+        self.match_counter += 1;
+        let m = format!("_rx_m{}", id);
+        let r = format!("_rx_r{}", id);
+
+        let (scrutinee, scrutinee_ty) = match scrutinee {
+            Expr::Typed(inner, ty, _) => (inner.as_ref(), Some(ty)),
+            other => (other, None),
+        };
+        let uses_variants = arms.iter().any(|a| matches!(a.pattern, Pattern::Variant(_)));
+        if uses_variants && (scrutinee_ty.is_none() || result_ty.is_none()) {
+            return Err(CodegenError::new(
+                "match on a variant needs type information; run the type checker before code generation",
+                span,
+            ));
+        }
+        let scrutinee_c = scrutinee_ty.map(|t| self.type_to_c(t)).unwrap_or_else(|| "__auto_type".to_string());
+        let is_string = matches!(scrutinee_ty, Some(Type::String));
+        // Void (or unknown) result: the match is a statement, nothing is produced.
+        let value_mode = match result_ty {
+            Some(Type::Void) => false,
+            Some(_) => true,
+            None => true,
+        };
+        let result_var = if value_mode { Some(r.as_str()) } else { None };
+
+        self.emit("({\n");
+        self.indent();
+        self.emit_indent();
+        self.emit(&format!("{} {} = ", scrutinee_c, m));
+        self.gen_expr(scrutinee)?;
+        self.emit(";\n");
+        if value_mode {
+            match result_ty {
+                Some(ty) => {
+                    let c = self.type_to_c(ty);
+                    self.emit_line(&format!("{} {};", c, r));
+                }
+                None => self.emit_line(&format!("__typeof__({}) {} = 0;", m, r)),
+            }
+        }
+
+        let flat = arms.iter().all(|a| Self::is_flat_pattern(&a.pattern));
+        let mut seen_cases: Vec<&str> = Vec::new();
+        let unique_cases = arms.iter().all(|a| match &a.pattern {
+            Pattern::Variant(vp) => {
+                if seen_cases.contains(&vp.case.as_str()) { false } else { seen_cases.push(&vp.case); true }
+            }
+            _ => true,
+        });
+
+        if uses_variants && flat && unique_cases {
+            self.emit_line(&format!("switch ({}.tag) {{", m));
+            let mut has_default = false;
+            for arm in arms {
+                match &arm.pattern {
+                    Pattern::Variant(vp) => {
+                        let type_name = vp.type_name.clone().unwrap_or_default();
+                        self.emit_line(&format!("case {}: {{", Self::variant_tag(&type_name, &vp.case)));
+                        self.indent();
+                        let (_, binds) = self.pattern_test(&arm.pattern, &m, is_string)?;
+                        for b in binds { self.emit_line(&b); }
+                        self.gen_arm_body(&arm.body, result_var)?;
+                        self.emit_line("break;");
+                        self.dedent();
+                        self.emit_line("}");
+                    }
+                    other => {
+                        if has_default { break; }
+                        has_default = true;
+                        self.emit_line("default: {");
+                        self.indent();
+                        let (_, binds) = self.pattern_test(other, &m, is_string)?;
+                        for b in binds { self.emit_line(&b); }
+                        self.gen_arm_body(&arm.body, result_var)?;
+                        self.emit_line("break;");
+                        self.dedent();
+                        self.emit_line("}");
+                    }
+                }
+            }
+            if !has_default {
+                self.emit_line("default: break;");
+            }
+            self.emit_line("}");
+        } else {
+            for (i, arm) in arms.iter().enumerate() {
+                let (conds, binds) = self.pattern_test(&arm.pattern, &m, is_string)?;
+                let cond = if conds.is_empty() { "1".to_string() } else { conds.join(" && ") };
+                self.emit_indent();
+                if i == 0 {
+                    self.emit(&format!("if ({}) {{\n", cond));
+                } else {
+                    self.emit(&format!("}} else if ({}) {{\n", cond));
+                }
+                self.indent();
+                for b in binds { self.emit_line(&b); }
+                self.gen_arm_body(&arm.body, result_var)?;
+                self.dedent();
+            }
+            if !arms.is_empty() {
+                self.emit_line("}");
+            }
+        }
+
+        if value_mode {
+            self.emit_line(&format!("{};", r));
+        }
+        self.dedent();
+        self.emit_indent();
+        self.emit("})");
+        Ok(())
+    }
+
+    /// A pattern a `switch` can dispatch on: a variant case whose payload is
+    /// only bound or ignored, a wildcard, or a binding.
+    fn is_flat_pattern(p: &Pattern) -> bool {
+        match p {
+            Pattern::Wildcard | Pattern::Identifier(_) => true,
+            Pattern::Variant(vp) => vp.args.iter().all(|a| a.is_irrefutable()),
+            Pattern::Literal(_) => false,
+        }
+    }
+
+    /// Conditions that must hold for `access` to match `pattern`, and the
+    /// binding declarations to emit once it does.
+    fn pattern_test(&mut self, pattern: &Pattern, access: &str, is_string: bool) -> Result<(Vec<String>, Vec<String>), CodegenError> {
+        let mut conds = Vec::new();
+        let mut binds = Vec::new();
+        match pattern {
+            Pattern::Wildcard => {}
+            Pattern::Identifier(name) => binds.push(format!("__auto_type {} = {};", name, access)),
+            Pattern::Literal(lit) => {
+                let mut lit_gen = CodeGen::new();
+                lit_gen.gen_literal(lit);
+                if is_string || matches!(lit, Literal::String(..)) {
+                    conds.push(format!("(rx_strcmp({}, {}) == 0)", access, lit_gen.output));
+                } else {
+                    conds.push(format!("({} == {})", access, lit_gen.output));
+                }
+            }
+            Pattern::Variant(vp) => {
+                let type_name = vp.type_name.clone().ok_or_else(|| CodegenError::new(
+                    format!("pattern '{}(..)' was not resolved to a variant; run the type checker before code generation", vp.case),
+                    vp.span,
+                ))?;
+                conds.push(format!("({}.tag == {})", access, Self::variant_tag(&type_name, &vp.case)));
+                let fields = self.variant_fields.get(&(type_name.clone(), vp.case.clone())).cloned()
+                    .ok_or_else(|| CodegenError::new(
+                        format!("variant '{}' has no case '{}'", type_name, vp.case),
+                        vp.span,
+                    ))?;
+                for (i, arg) in vp.args.iter().enumerate() {
+                    let field = fields.get(i).ok_or_else(|| CodegenError::new(
+                        format!("case '{}' of '{}' has {} field(s), pattern has {}", vp.case, type_name, fields.len(), vp.args.len()),
+                        vp.span,
+                    ))?;
+                    let sub_access = format!("{}.data.{}.{}", access, Self::case_member(&vp.case), field);
+                    let (c, b) = self.pattern_test(arg, &sub_access, false)?;
+                    conds.extend(c);
+                    binds.extend(b);
+                }
+            }
+        }
+        Ok((conds, binds))
+    }
+
+    /// Emit a match arm body, storing its value in `result_var` when the match
+    /// produces one. Block bodies run their statements first.
+    fn gen_arm_body(&mut self, body: &Expr, result_var: Option<&str>) -> Result<(), CodegenError> {
+        let (stmts, value): (&[Stmt], Option<&Expr>) = match body {
+            Expr::Block(block, _) => match block.statements.split_last() {
+                Some((Stmt::Expr(last), rest)) => (rest, Some(last)),
+                _ => (&block.statements, None),
+            },
+            other => (&[], Some(other)),
+        };
+        for stmt in stmts {
+            self.gen_statement(stmt)?;
+        }
+        if let Some(value) = value {
+            self.emit_indent();
+            if let Some(var) = result_var {
+                self.emit(&format!("{} = ", var));
+            }
+            self.gen_expr(value)?;
+            self.emit(";\n");
+        }
+        Ok(())
+    }
+
+    /// `TypeName_method(&receiver, args)`. `self` is already a pointer; a
+    /// temporary receiver is materialised first so its address can be taken.
+    fn gen_method_call(&mut self, receiver: &Expr, type_name: &str, method: &str, args: &[Expr]) -> Result<(), CodegenError> {
+        let callee = Self::mangle_method(type_name, method);
+        let is_temporary = !Self::is_place(receiver);
+        if is_temporary {
+            self.emit(&format!("({{ {} _rx_recv = ", type_name));
+            self.gen_expr(receiver)?;
+            self.emit(&format!("; {}(&_rx_recv", callee));
+        } else {
+            self.emit(&format!("{}(", callee));
+            if matches!(receiver, Expr::SelfRef(_)) {
+                self.emit("self");
+            } else {
+                self.emit("&(");
+                self.gen_expr(receiver)?;
+                self.emit(")");
+            }
+        }
+        for arg in args {
+            self.emit(", ");
+            self.gen_expr(arg)?;
+        }
+        self.emit(")");
+        if is_temporary {
+            self.emit("; })");
+        }
+        Ok(())
+    }
+
+    /// Whether `expr` denotes a C lvalue whose address can be taken.
+    fn is_place(expr: &Expr) -> bool {
+        match expr {
+            Expr::Identifier(_, _) | Expr::SelfRef(_) => true,
+            Expr::Member(obj, _, _) | Expr::Index(obj, _, _) => Self::is_place(obj),
+            _ => false,
+        }
+    }
+
     fn compound_op_to_c(&self, op: &CompoundOp) -> &'static str {
         match op {
             CompoundOp::AddEq => "+=",
@@ -1161,6 +1557,12 @@ impl CodeGen {
             Type::U64 => "uint64_t".to_string(),
             Type::USize => "size_t".to_string(),
             Type::Named(name) => name.clone(),
+            Type::Generic(_, _) => {
+                // Instances are named by the checker (`Box__int`); the fallback
+                // mangling here covers ASTs that bypassed it.
+                let resolved = crate::typechecker::ResolvedType::from_parser_type(ty);
+                resolved.display_name()
+            }
             Type::Array(inner) => format!("{}*", self.type_to_c(inner)),
             Type::Optional(inner) => format!("{}*", self.type_to_c(inner)),
             Type::Function(params, ret) => {
@@ -1265,8 +1667,9 @@ mod tests {
         let mut codegen = CodeGen::new();
         let output = codegen.generate(&ast).unwrap();
 
-        assert!(output.contains("void main(void)"));
+        assert!(output.contains("int main(void)"), "{}", output);
         assert!(output.contains("int64_t x = 42"));
+        assert!(output.contains("    return 0;\n}"), "{}", output);
         assert!(output.contains("return 0"));
     }
 
@@ -1371,16 +1774,176 @@ mod tests {
         let ast = Ast {
             declarations: vec![Decl::Function(FnDecl {
                 name: "main".into(),
+                type_params: vec![],
                 params: vec![],
                 return_type: None,
                 body: Block { statements: vec![Stmt::Expr(expr)], span },
                 is_async: false,
                 is_pub: false,
                 is_static: false,
+                is_mut: false,
                 span,
             })],
         };
         let err = generate_string(&ast).unwrap_err();
         assert!(err.message.contains("nested deeper than"), "{}", err.message);
+    }
+
+    // === Methods and self ===
+
+    fn compile(source: &str) -> String {
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(&tokens).unwrap();
+        let checked = crate::typechecker::check(&ast).unwrap_or_else(|e| panic!("{:?}", e));
+        CodeGen::new().generate(&checked).unwrap()
+    }
+
+    #[test]
+    fn methods_take_self_as_a_pointer() {
+        let c = compile(r#"
+            struct Counter {
+                count: int
+                fn value() -> int { return self.count; }
+                mut fn bump(by: int) { self.count = self.count + by; }
+                static fn make() -> Counter { return Counter { count: 0 }; }
+            }
+            extension Counter { mut fn twice() { self.bump(1); self.bump(1); } }
+            fn main() { let mut c = Counter.make(); c.bump(2); c.twice(); let v = c.value(); let w = Counter.make().value(); }
+        "#);
+        assert!(c.contains("int64_t Counter_value(Counter* self);"), "{}", c);
+        assert!(c.contains("void Counter_bump(Counter* self, int64_t by)"), "{}", c);
+        assert!(c.contains("Counter Counter_make(void)"), "{}", c);
+        assert!(c.contains("return self->count;"), "{}", c);
+        assert!(c.contains("self->count = (self->count + by);"), "{}", c);
+        assert!(c.contains("Counter_bump(self, 1);"), "{}", c);
+        assert!(c.contains("Counter c = Counter_make();"), "{}", c);
+        assert!(c.contains("Counter_bump(&(c), 2);"), "{}", c);
+        assert!(c.contains("int64_t v = Counter_value(&(c));"), "{}", c);
+        assert!(c.contains("({ Counter _rx_recv = Counter_make(); Counter_value(&_rx_recv); })"), "{}", c);
+    }
+
+    #[test]
+    fn layer_and_panel_methods_take_self() {
+        let c = compile(r#"
+            layer Button { let label: string; fn title() -> string { return self.label; } }
+            panel Main { title: "x", fn root() -> int { return 1; } }
+        "#);
+        assert!(c.contains("const char* Button_title(Button* self)"), "{}", c);
+        assert!(c.contains("typedef struct Main Main;"), "{}", c);
+        assert!(c.contains("int64_t Main_root(Main* self)"), "{}", c);
+    }
+
+    // === Variant patterns ===
+
+    const RESULT: &str = r#"
+        variant Result { Ok(int), Err(message: string) }
+        variant Maybe { Some(Result), Nothing }
+    "#;
+
+    #[test]
+    fn variants_get_constructors() {
+        let c = compile(RESULT);
+        assert!(c.contains("static inline Result Result_Ok(int64_t _0) {"), "{}", c);
+        assert!(c.contains("_rx_v.tag = RESULT_OK;"), "{}", c);
+        assert!(c.contains("_rx_v.data.ok._0 = _0;"), "{}", c);
+        assert!(c.contains("static inline Result Result_Err(const char* message) {"), "{}", c);
+        assert!(c.contains("static const Maybe Maybe_Nothing = { .tag = MAYBE_NOTHING };"), "{}", c);
+    }
+
+    #[test]
+    fn flat_variant_match_is_a_switch_on_the_tag() {
+        let c = compile(&format!("{}\nfn f(r: Result) -> int {{ return match r {{ Ok(v) => v * 2, Err(m) => {{ println(m); -1 }} }}; }}", RESULT));
+        assert!(c.contains("Result _rx_m0 = r;"), "{}", c);
+        assert!(c.contains("int64_t _rx_r0;"), "{}", c);
+        assert!(c.contains("switch (_rx_m0.tag) {"), "{}", c);
+        assert!(c.contains("case RESULT_OK: {"), "{}", c);
+        assert!(c.contains("__auto_type v = _rx_m0.data.ok._0;"), "{}", c);
+        assert!(c.contains("_rx_r0 = (v * 2);"), "{}", c);
+        assert!(c.contains("__auto_type m = _rx_m0.data.err.message;"), "{}", c);
+        assert!(c.contains("println(m);"), "{}", c);
+        assert!(c.contains("_rx_r0 = -1;"), "{}", c);
+        assert!(c.contains("default: break;"), "{}", c);
+    }
+
+    #[test]
+    fn nested_patterns_become_an_if_chain_with_tag_tests() {
+        let c = compile(&format!("{}\nfn f(m: Maybe) -> int {{ return match m {{ Some(Ok(v)) => v, Some(Err(_)) => -1, Nothing => 0 }}; }}", RESULT));
+        assert!(c.contains("if ((_rx_m0.tag == MAYBE_SOME) && (_rx_m0.data.some._0.tag == RESULT_OK)) {"), "{}", c);
+        assert!(c.contains("__auto_type v = _rx_m0.data.some._0.data.ok._0;"), "{}", c);
+        assert!(c.contains("} else if ((_rx_m0.tag == MAYBE_NOTHING)) {"), "{}", c);
+    }
+
+    #[test]
+    fn string_patterns_compare_with_rx_strcmp_and_void_matches_are_statements() {
+        let c = compile(r#"fn f(s: string) -> int { return match s { "save" => 1, _ => 0 }; }"#);
+        assert!(c.contains("const char* _rx_m0 = s;"), "{}", c);
+        assert!(c.contains("if ((rx_strcmp(_rx_m0, \"save\") == 0)) {"), "{}", c);
+        let c = compile(&format!("{}\nfn f(m: Maybe) {{ match m {{ Some(_) => println(\"s\"), Nothing => println(\"n\") }} }}", RESULT));
+        assert!(!c.contains("_rx_r0"), "{}", c);
+        assert!(c.contains("case MAYBE_SOME: {"), "{}", c);
+        assert!(c.contains("println(\"s\");"), "{}", c);
+    }
+
+    #[test]
+    fn variant_match_without_type_info_is_a_codegen_error() {
+        let tokens = tokenize(&format!("{}\nfn f(r: Result) -> int {{ return match r {{ Ok(v) => v, Err(_) => 0 }}; }}", RESULT)).unwrap();
+        let ast = parse(&tokens).unwrap();
+        let err = CodeGen::new().generate(&ast).unwrap_err();
+        assert!(err.message.contains("run the type checker"), "{}", err.message);
+    }
+
+    // === Generics ===
+
+    const GENERICS: &str = r#"
+        variant Option<T> { Some(T), None }
+        struct Box<T> { value: T  fn get() -> T { return self.value; } }
+        fn swap<T>(a: T, b: T) -> T { return b; }
+    "#;
+
+    #[test]
+    fn instances_are_emitted_in_dependency_order_with_mangled_names() {
+        let c = compile(&format!("{}\nstruct Pair {{ left: Option<Box<int>>, right: Box<string> }}\nfn main() {{ let p = Pair {{ left: Some(Box {{ value: 1 }}), right: Box {{ value: \"s\" }} }}; let x = swap(1, 2); let s = swap(\"a\", \"b\"); }}", GENERICS));
+        let pos = |needle: &str| c.find(needle).unwrap_or_else(|| panic!("missing {} in {}", needle, c));
+        assert!(pos("struct Box__int {") < pos("struct Option__Box__int {"));
+        assert!(pos("struct Option__Box__int {") < pos("struct Pair {"));
+        assert!(pos("struct Box__string {") < pos("struct Pair {"));
+        assert!(c.contains("int64_t Box__int_get(Box__int* self)"), "{}", c);
+        assert!(c.contains("const char* Box__string_get(Box__string* self)"), "{}", c);
+        assert!(c.contains("int64_t swap__int(int64_t a, int64_t b)"), "{}", c);
+        assert!(c.contains("const char* swap__string(const char* a, const char* b)"), "{}", c);
+        assert!(c.contains("Option__Box__int_Some((Box__int){.value = 1})"), "{}", c);
+        assert!(!c.contains("struct Box {"), "{}", c);
+    }
+
+    #[test]
+    fn recursive_by_value_types_are_a_codegen_error() {
+        let tokens = tokenize("struct A { b: B } struct B { a: A }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let err = CodeGen::new().generate(&ast).unwrap_err();
+        assert!(err.message.contains("contains itself by value through A -> B -> A"), "{}", err.message);
+    }
+
+    #[test]
+    fn uninstantiated_templates_are_rejected() {
+        let tokens = tokenize("fn swap<T>(a: T, b: T) -> T { return b; }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let err = CodeGen::new().generate(&ast).unwrap_err();
+        assert!(err.message.contains("generic declaration 'swap' must be instantiated"), "{}", err.message);
+    }
+
+    // === Protocol conformance ===
+
+    #[test]
+    fn bounded_generic_calls_dispatch_statically() {
+        let c = compile(r#"
+            protocol Drawable { fn draw() -> string; }
+            struct Circle { r: int }
+            extension Circle : Drawable { fn draw() -> string { return "o"; } }
+            fn show<T: Drawable>(x: T) -> string { return x.draw(); }
+            fn main() { let s = show(Circle { r: 1 }); }
+        "#);
+        assert!(c.contains("const char* show__Circle(Circle x)"), "{}", c);
+        assert!(c.contains("return Circle_draw(&(x));"), "{}", c);
+        assert!(c.contains("const char* s = show__Circle((Circle){.r = 1});"), "{}", c);
     }
 }
