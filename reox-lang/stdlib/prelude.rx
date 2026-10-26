@@ -23,6 +23,16 @@
  */
 
 // ============================================================================
+// CORE: Errors
+// ============================================================================
+
+/// Every thrown value conforms to Error. Error types are `ref struct`s that
+/// declare conformance with `extension MyError: Error { }`; see reox-spec.md
+/// "Error Model". The compiler knows this protocol even when the prelude is
+/// not imported.
+protocol Error {}
+
+// ============================================================================
 // CORE: Print Functions
 // ============================================================================
 
