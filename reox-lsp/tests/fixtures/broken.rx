@@ -1,0 +1,4 @@
+fn main() {
+    let s: int = "text";
+    let t: bool = 1;
+}

@@ -1,0 +1,38 @@
+// Fixture: every declaration kind the language server indexes.
+
+/// A 2D point.
+struct Point {
+    x: int,
+    y: int
+}
+
+variant Shape {
+    Circle(radius: float),
+    Square
+}
+
+protocol Drawable {
+    fn draw() -> void;
+}
+
+/// Adds two integers.
+fn add(a: int, b: int) -> int {
+    let total = a + b;
+    return total;
+}
+
+layer Button {
+    signal clicked;
+    let label: string = "ok";
+    fn body() -> int {
+        return 1;
+    }
+}
+
+panel Main {
+    fn root() {
+        let p = Point { x: 1, y: 2 };
+        let n = add(p.x, 2);
+        println("done");
+    }
+}

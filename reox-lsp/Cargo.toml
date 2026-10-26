@@ -1,0 +1,21 @@
+[package]
+name = "reox-lsp"
+version = "0.1.0"
+edition = "2021"
+description = "REOX language server (LSP over stdio) for NeolyxOS"
+authors = ["NeolyxOS Team"]
+license = "Proprietary"
+
+# JSON-RPC and LSP framing are implemented by hand; serde_json is the only
+# external dependency (allowed by the roadmap for tooling crates).
+[dependencies]
+reoxc = { path = "../reox-lang" }
+serde_json = "1.0"
+
+[[bin]]
+name = "reox-lsp"
+path = "src/main.rs"
+
+[lib]
+name = "reox_lsp"
+path = "src/lib.rs"
