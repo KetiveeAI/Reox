@@ -74,6 +74,42 @@ impl ResolvedType {
         }
     }
 
+    /// Convert back to a parser type, for annotations the checker fills in
+    /// (for example the type of an untyped `let`). Types that have no source
+    /// spelling (maps, colors, unknown, error) yield `None`.
+    pub fn to_parser_type(&self) -> Option<crate::parser::Type> {
+        use crate::parser::Type as P;
+        Some(match self {
+            ResolvedType::Int => P::Int,
+            ResolvedType::Float => P::Float,
+            ResolvedType::String => P::String,
+            ResolvedType::Bool => P::Bool,
+            ResolvedType::Void => P::Void,
+            ResolvedType::I8 => P::I8,
+            ResolvedType::U8 => P::U8,
+            ResolvedType::I16 => P::I16,
+            ResolvedType::U16 => P::U16,
+            ResolvedType::I32 => P::I32,
+            ResolvedType::U32 => P::U32,
+            ResolvedType::I64 => P::I64,
+            ResolvedType::U64 => P::U64,
+            ResolvedType::USize => P::USize,
+            ResolvedType::Struct(name) => P::Named(name.clone()),
+            ResolvedType::Array(inner) => P::Array(Box::new(inner.to_parser_type()?)),
+            ResolvedType::Optional(inner) => P::Optional(Box::new(inner.to_parser_type()?)),
+            ResolvedType::Function { params, ret } => P::Function(
+                params.iter().map(|p| p.to_parser_type()).collect::<Option<Vec<_>>>()?,
+                Box::new(ret.to_parser_type()?),
+            ),
+            ResolvedType::Tuple(elems) => {
+                P::Tuple(elems.iter().map(|e| e.to_parser_type()).collect::<Option<Vec<_>>>()?)
+            }
+            ResolvedType::Map(_, _) | ResolvedType::Color | ResolvedType::Unknown | ResolvedType::Error => {
+                return None
+            }
+        })
+    }
+
     /// Check if this is an integer type (including explicit widths)
     pub fn is_integer(&self) -> bool {
         matches!(
@@ -180,6 +216,53 @@ pub enum SymbolKind {
 pub struct StructInfo {
     pub name: String,
     pub fields: HashMap<String, ResolvedType>,
+}
+
+/// Which declaration form introduced a nominal type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeKind {
+    Struct,
+    Variant,
+    Layer,
+    Panel,
+    Protocol,
+}
+
+impl TypeKind {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            TypeKind::Struct => "struct",
+            TypeKind::Variant => "variant",
+            TypeKind::Layer => "layer",
+            TypeKind::Panel => "panel",
+            TypeKind::Protocol => "protocol",
+        }
+    }
+}
+
+/// Signature of a method attached to a nominal type. `params` excludes the
+/// implicit `self`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodInfo {
+    pub name: String,
+    pub params: Vec<ResolvedType>,
+    pub ret: ResolvedType,
+    pub is_mut: bool,
+    pub is_static: bool,
+    pub span: crate::lexer::Span,
+}
+
+impl MethodInfo {
+    /// `name(int, string) -> bool` for diagnostics.
+    pub fn signature(&self) -> String {
+        let params: Vec<String> = self.params.iter().map(|p| p.display_name()).collect();
+        let prefix = if self.is_static { "static " } else if self.is_mut { "mut " } else { "" };
+        if self.ret == ResolvedType::Void {
+            format!("{}{}({})", prefix, self.name, params.join(", "))
+        } else {
+            format!("{}{}({}) -> {}", prefix, self.name, params.join(", "), self.ret.display_name())
+        }
+    }
 }
 
 /// Scope in the symbol table

@@ -112,6 +112,7 @@ impl CodeGen {
                 Decl::Struct(s) => self.emit_line(&format!("typedef struct {} {};", s.name, s.name)),
                 Decl::Variant(v) => self.emit_line(&format!("typedef struct {0} {0};", v.name)),
                 Decl::Layer(l) => self.emit_line(&format!("typedef struct {0} {0};", l.name)),
+                Decl::Panel(p) => self.emit_line(&format!("typedef struct {0} {0};", p.name)),
                 _ => {}
             }
         }
@@ -162,11 +163,18 @@ impl CodeGen {
             }
         }
 
-        // Generate layer structs
+        // Generate layer and panel structs
         for decl in &ast.declarations {
-            if let Decl::Layer(l) = decl {
-                self.gen_layer_struct(l);
-                self.emit_line("");
+            match decl {
+                Decl::Layer(l) => {
+                    self.gen_layer_struct(l);
+                    self.emit_line("");
+                }
+                Decl::Panel(p) => {
+                    self.gen_panel_struct(p);
+                    self.emit_line("");
+                }
+                _ => {}
             }
         }
 
@@ -180,26 +188,28 @@ impl CodeGen {
             self.emit_line("");
         }
 
-        // Generate function prototypes (including extension methods)
+        // Generate function prototypes (including methods)
         for decl in &ast.declarations {
             match decl {
                 Decl::Function(f) => self.gen_fn_prototype(f),
+                Decl::Struct(s) => {
+                    for method in &s.methods {
+                        self.gen_method_prototype(&s.name, method);
+                    }
+                }
                 Decl::Extension(ext) => {
                     for method in &ext.methods {
-                        let mangled_name = format!("{}_{}", ext.target, method.name);
-                        self.gen_fn_prototype_named(&mangled_name, method);
+                        self.gen_method_prototype(&ext.target, method);
                     }
                 }
                 Decl::Layer(l) => {
                     for method in &l.methods {
-                        let mangled_name = format!("{}_{}", l.name, method.name);
-                        self.gen_fn_prototype_named(&mangled_name, method);
+                        self.gen_method_prototype(&l.name, method);
                     }
                 }
                 Decl::Panel(p) => {
                     for method in &p.methods {
-                        let mangled_name = format!("{}_{}", p.name, method.name);
-                        self.gen_fn_prototype_named(&mangled_name, method);
+                        self.gen_method_prototype(&p.name, method);
                     }
                 }
                 _ => {}
@@ -219,6 +229,12 @@ impl CodeGen {
                 Decl::Function(f) => {
                     self.gen_function(f)?;
                     self.emit_line("");
+                }
+                Decl::Struct(s) => {
+                    for method in &s.methods {
+                        self.gen_method(&s.name, method)?;
+                        self.emit_line("");
+                    }
                 }
                 Decl::Extension(ext) => {
                     self.gen_extension(ext)?;
@@ -284,14 +300,22 @@ impl CodeGen {
         self.emit_line(&format!("{} {}({});", ret_type, f.name, params_str));
     }
 
-    fn gen_fn_prototype_named(&mut self, name: &str, f: &FnDecl) {
+    /// C name of a method: `TypeName_method`.
+    fn mangle_method(type_name: &str, method: &str) -> String {
+        format!("{}_{}", type_name, method)
+    }
+
+    /// `ret TypeName_method(TypeName* self, params)`; static methods take no `self`.
+    fn method_signature(&self, type_name: &str, f: &FnDecl) -> String {
         let ret_type = f.return_type.as_ref()
             .map(|t| self.type_to_c(t))
             .unwrap_or_else(|| "void".to_string());
 
-        let params: Vec<String> = f.params.iter()
-            .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
-            .collect();
+        let mut params: Vec<String> = Vec::new();
+        if !f.is_static {
+            params.push(format!("{}* self", type_name));
+        }
+        params.extend(f.params.iter().map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name)));
 
         let params_str = if params.is_empty() {
             "void".to_string()
@@ -299,7 +323,28 @@ impl CodeGen {
             params.join(", ")
         };
 
-        self.emit_line(&format!("{} {}({});", ret_type, name, params_str));
+        format!("{} {}({})", ret_type, Self::mangle_method(type_name, &f.name), params_str)
+    }
+
+    fn gen_method_prototype(&mut self, type_name: &str, f: &FnDecl) {
+        let signature = self.method_signature(type_name, f);
+        self.emit_line(&format!("{};", signature));
+    }
+
+    fn gen_method(&mut self, type_name: &str, f: &FnDecl) -> Result<(), CodegenError> {
+        self.defer_stack.clear();
+        let signature = self.method_signature(type_name, f);
+        self.emit_line(&format!("{} {{", signature));
+        self.indent();
+        self.gen_block(&f.body)?;
+
+        if !self.defer_stack.is_empty() {
+            self.emit_deferred_cleanup()?;
+        }
+
+        self.dedent();
+        self.emit_line("}");
+        Ok(())
     }
 
     fn gen_variant(&mut self, v: &VariantDecl) {
@@ -366,11 +411,20 @@ impl CodeGen {
 
     fn gen_extension(&mut self, ext: &ExtensionDecl) -> Result<(), CodegenError> {
         for method in &ext.methods {
-            let mangled_name = format!("{}_{}", ext.target, method.name);
-            self.gen_function_named(&mangled_name, method)?;
+            self.gen_method(&ext.target, method)?;
             self.emit_line("");
         }
         Ok(())
+    }
+
+    /// A panel has no fields of its own; its struct exists so that panel
+    /// methods can take `self` like every other method.
+    fn gen_panel_struct(&mut self, p: &PanelDecl) {
+        self.emit_line(&format!("struct {} {{", p.name));
+        self.indent();
+        self.emit_line("rx_app_t* app;");
+        self.dedent();
+        self.emit_line("};");
     }
 
     fn gen_layer_struct(&mut self, l: &LayerDecl) {
@@ -390,8 +444,7 @@ impl CodeGen {
 
     fn gen_layer_methods(&mut self, l: &LayerDecl) -> Result<(), CodegenError> {
         for method in &l.methods {
-            let mangled_name = format!("{}_{}", l.name, method.name);
-            self.gen_function_named(&mangled_name, method)?;
+            self.gen_method(&l.name, method)?;
             self.emit_line("");
         }
 
@@ -420,8 +473,7 @@ impl CodeGen {
     fn gen_panel(&mut self, p: &PanelDecl) -> Result<(), CodegenError> {
         // Generate panel methods
         for method in &p.methods {
-            let mangled_name = format!("{}_{}", p.name, method.name);
-            self.gen_function_named(&mangled_name, method)?;
+            self.gen_method(&p.name, method)?;
             self.emit_line("");
         }
 
@@ -494,36 +546,6 @@ impl CodeGen {
     fn gen_typealias(&mut self, t: &TypealiasDecl) {
         let target_c = self.type_to_c(&t.target);
         self.emit_line(&format!("typedef {} {};", target_c, t.name));
-    }
-
-    fn gen_function_named(&mut self, name: &str, f: &FnDecl) -> Result<(), CodegenError> {
-        self.defer_stack.clear();
-
-        let ret_type = f.return_type.as_ref()
-            .map(|t| self.type_to_c(t))
-            .unwrap_or_else(|| "void".to_string());
-
-        let params: Vec<String> = f.params.iter()
-            .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
-            .collect();
-
-        let params_str = if params.is_empty() {
-            "void".to_string()
-        } else {
-            params.join(", ")
-        };
-
-        self.emit_line(&format!("{} {}({}) {{", ret_type, name, params_str));
-        self.indent();
-        self.gen_block(&f.body)?;
-
-        if !self.defer_stack.is_empty() {
-            self.emit_deferred_cleanup()?;
-        }
-
-        self.dedent();
-        self.emit_line("}");
-        Ok(())
     }
 
     fn gen_function(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
@@ -918,7 +940,13 @@ impl CodeGen {
             }
             Expr::Member(obj, field, _) => {
                 self.gen_expr(obj)?;
-                self.emit(&format!(".{}", field));
+                // `self` is a pointer inside methods; every other receiver is a value.
+                let accessor = if matches!(obj.as_ref(), Expr::SelfRef(_)) { "->" } else { "." };
+                self.emit(&format!("{}{}", accessor, field));
+            }
+            Expr::SelfRef(_) => self.emit("self"),
+            Expr::MethodCall(receiver, type_name, method, args, _) => {
+                self.gen_method_call(receiver, type_name, method, args)?;
             }
             Expr::Index(arr, idx, _) => {
                 self.gen_expr(arr)?;
@@ -1109,6 +1137,45 @@ impl CodeGen {
         }
         Ok(())
     }
+    /// `TypeName_method(&receiver, args)`. `self` is already a pointer; a
+    /// temporary receiver is materialised first so its address can be taken.
+    fn gen_method_call(&mut self, receiver: &Expr, type_name: &str, method: &str, args: &[Expr]) -> Result<(), CodegenError> {
+        let callee = Self::mangle_method(type_name, method);
+        let is_temporary = !Self::is_place(receiver);
+        if is_temporary {
+            self.emit(&format!("({{ {} _rx_recv = ", type_name));
+            self.gen_expr(receiver)?;
+            self.emit(&format!("; {}(&_rx_recv", callee));
+        } else {
+            self.emit(&format!("{}(", callee));
+            if matches!(receiver, Expr::SelfRef(_)) {
+                self.emit("self");
+            } else {
+                self.emit("&(");
+                self.gen_expr(receiver)?;
+                self.emit(")");
+            }
+        }
+        for arg in args {
+            self.emit(", ");
+            self.gen_expr(arg)?;
+        }
+        self.emit(")");
+        if is_temporary {
+            self.emit("; })");
+        }
+        Ok(())
+    }
+
+    /// Whether `expr` denotes a C lvalue whose address can be taken.
+    fn is_place(expr: &Expr) -> bool {
+        match expr {
+            Expr::Identifier(_, _) | Expr::SelfRef(_) => true,
+            Expr::Member(obj, _, _) | Expr::Index(obj, _, _) => Self::is_place(obj),
+            _ => false,
+        }
+    }
+
     fn compound_op_to_c(&self, op: &CompoundOp) -> &'static str {
         match op {
             CompoundOp::AddEq => "+=",
@@ -1377,10 +1444,55 @@ mod tests {
                 is_async: false,
                 is_pub: false,
                 is_static: false,
+                is_mut: false,
                 span,
             })],
         };
         let err = generate_string(&ast).unwrap_err();
         assert!(err.message.contains("nested deeper than"), "{}", err.message);
+    }
+
+    // === Methods and self ===
+
+    fn compile(source: &str) -> String {
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(&tokens).unwrap();
+        let checked = crate::typechecker::check(&ast).unwrap_or_else(|e| panic!("{:?}", e));
+        CodeGen::new().generate(&checked).unwrap()
+    }
+
+    #[test]
+    fn methods_take_self_as_a_pointer() {
+        let c = compile(r#"
+            struct Counter {
+                count: int
+                fn value() -> int { return self.count; }
+                mut fn bump(by: int) { self.count = self.count + by; }
+                static fn make() -> Counter { return Counter { count: 0 }; }
+            }
+            extension Counter { mut fn twice() { self.bump(1); self.bump(1); } }
+            fn main() { let mut c = Counter.make(); c.bump(2); c.twice(); let v = c.value(); let w = Counter.make().value(); }
+        "#);
+        assert!(c.contains("int64_t Counter_value(Counter* self);"), "{}", c);
+        assert!(c.contains("void Counter_bump(Counter* self, int64_t by)"), "{}", c);
+        assert!(c.contains("Counter Counter_make(void)"), "{}", c);
+        assert!(c.contains("return self->count;"), "{}", c);
+        assert!(c.contains("self->count = (self->count + by);"), "{}", c);
+        assert!(c.contains("Counter_bump(self, 1);"), "{}", c);
+        assert!(c.contains("Counter c = Counter_make();"), "{}", c);
+        assert!(c.contains("Counter_bump(&(c), 2);"), "{}", c);
+        assert!(c.contains("int64_t v = Counter_value(&(c));"), "{}", c);
+        assert!(c.contains("({ Counter _rx_recv = Counter_make(); Counter_value(&_rx_recv); })"), "{}", c);
+    }
+
+    #[test]
+    fn layer_and_panel_methods_take_self() {
+        let c = compile(r#"
+            layer Button { let label: string; fn title() -> string { return self.label; } }
+            panel Main { title: "x", fn root() -> int { return 1; } }
+        "#);
+        assert!(c.contains("const char* Button_title(Button* self)"), "{}", c);
+        assert!(c.contains("typedef struct Main Main;"), "{}", c);
+        assert!(c.contains("int64_t Main_root(Main* self)"), "{}", c);
     }
 }

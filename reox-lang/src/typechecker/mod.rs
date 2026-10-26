@@ -4,6 +4,7 @@
 
 #![allow(dead_code, unused_imports, unused_variables)]
 
+mod lower;
 mod types;
 
 pub use types::*;
@@ -15,8 +16,10 @@ use crate::parser::{
     FnDecl, StructDecl, ExternDecl, Block, Type, LetStmt,
     ReturnStmt, IfStmt, WhileStmt, ForStmt, GuardStmt, DeferStmt,
     TryCatchStmt, ThrowStmt, CompoundOp,
+    VariantDecl, ProtocolDecl, ExtensionDecl, LayerDecl, PanelDecl, ConstDecl,
 };
 use crate::lexer::Span;
+use lower::{Lowerer, Resolution, Resolutions, SiteKey, SiteKind};
 
 /// Type check error, located by a source span
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +67,14 @@ const MAX_ALIAS_CHAIN: usize = 64;
 /// Stack reserved for type checking; see `check`.
 const CHECK_STACK_BYTES: usize = 64 * 1024 * 1024;
 
+/// The method body being checked, when it has an implicit `self`.
+#[derive(Debug, Clone)]
+struct SelfContext {
+    type_name: String,
+    is_mut: bool,
+    method: String,
+}
+
 /// Type checker state
 pub struct TypeChecker {
     symbols: SymbolTable,
@@ -74,6 +85,14 @@ pub struct TypeChecker {
     /// Runtime natives (print, len, push, ...). They accept any arguments and
     /// return an unknown type; a user declaration of the same name shadows them.
     builtins: HashSet<String>,
+    /// Every nominal type by name and the declaration form that introduced it.
+    type_kinds: HashMap<String, TypeKind>,
+    /// Methods per nominal type, from struct bodies, extensions, layers and panels.
+    methods: HashMap<String, HashMap<String, MethodInfo>>,
+    /// `self` of the method body being checked.
+    current_self: Option<SelfContext>,
+    /// Resolutions recorded while checking the current body; consumed by lowering.
+    resolutions: Resolutions,
 }
 
 impl TypeChecker {
@@ -89,6 +108,164 @@ impl TypeChecker {
             type_aliases: HashMap::new(),
             expr_depth: 0,
             builtins,
+            type_kinds: HashMap::new(),
+            methods: HashMap::new(),
+            current_self: None,
+            resolutions: Resolutions::new(),
+        }
+    }
+
+    fn record(&mut self, kind: SiteKind, span: Span, resolution: Resolution) {
+        self.resolutions.insert(SiteKey::new(kind, span), resolution);
+    }
+
+    /// Whether `name` denotes a nominal type at this point (and no variable
+    /// of that name shadows it).
+    fn is_type_name(&self, name: &str) -> bool {
+        self.type_kinds.contains_key(name)
+            && !matches!(self.symbols.lookup(name), Some(sym) if sym.kind != SymbolKind::Struct)
+    }
+
+    /// Check that `target` may be assigned to: its root must be a mutable
+    /// variable, or `self` inside a `mut` method.
+    fn check_assignable(&mut self, target: &Expr) {
+        match target {
+            Expr::Identifier(name, span) => {
+                if let Some(sym) = self.symbols.lookup(name) {
+                    if !sym.mutable {
+                        let what = if sym.kind == SymbolKind::Parameter { "parameter" } else { "immutable variable" };
+                        self.errors.push(TypeError::new(
+                            format!("cannot assign to {} '{}'; declare it with 'let mut'", what, name),
+                            span,
+                        ));
+                    }
+                }
+            }
+            Expr::SelfRef(span) => {
+                let ctx = self.current_self.clone();
+                match ctx {
+                    Some(ctx) if !ctx.is_mut => self.errors.push(TypeError::new(
+                        format!(
+                            "cannot assign through 'self' in method '{}' of '{}'; declare it with 'mut fn'",
+                            ctx.method, ctx.type_name
+                        ),
+                        span,
+                    )),
+                    _ => {}
+                }
+            }
+            Expr::Member(obj, _, _) | Expr::OptionalChain(obj, _, _) | Expr::Index(obj, _, _) => {
+                self.check_assignable(obj)
+            }
+            other => self.errors.push(TypeError::new("invalid assignment target", &other.span())),
+        }
+    }
+
+    /// Whether `expr` denotes a place in memory (a variable, field, element or `self`).
+    fn is_place(expr: &Expr) -> bool {
+        match expr {
+            Expr::Identifier(_, _) | Expr::SelfRef(_) => true,
+            Expr::Member(obj, _, _) | Expr::Index(obj, _, _) => Self::is_place(obj),
+            _ => false,
+        }
+    }
+
+    /// Check a call `receiver.method(args)` or `Type.method(args)` and
+    /// record how it dispatches. Returns `None` when `receiver.method` is not
+    /// a method, so the caller falls back to treating it as a field access.
+    fn check_method_call(&mut self, receiver: &Expr, method: &str, args: &[Expr], call_span: &Span, member_span: &Span) -> Option<ResolvedType> {
+        // Static call on a type name: Type.method(args)
+        if let Expr::Identifier(type_name, _) = receiver {
+            if self.is_type_name(type_name) {
+                let info = self.lookup_method(type_name, method).cloned();
+                return Some(match info {
+                    Some(info) if info.is_static => {
+                        self.check_args(&info.params, args, call_span);
+                        self.record(SiteKind::Call, *call_span, Resolution::StaticCall {
+                            mangled: Self::mangle_method(type_name, method),
+                        });
+                        info.ret
+                    }
+                    Some(_) => {
+                        self.errors.push(TypeError::new(
+                            format!("method '{}' of '{}' needs a receiver; call it on a value of type '{}'", method, type_name, type_name),
+                            member_span,
+                        ));
+                        ResolvedType::Error
+                    }
+                    None => {
+                        self.errors.push(TypeError::new(
+                            format!("type '{}' has no static method '{}'", type_name, method),
+                            member_span,
+                        ));
+                        ResolvedType::Error
+                    }
+                });
+            }
+        }
+
+        let receiver_ty = self.infer_expr_type(receiver);
+        let type_name = match &receiver_ty {
+            ResolvedType::Struct(name) => name.clone(),
+            _ => return None,
+        };
+        let info = self.lookup_method(&type_name, method)?.clone();
+        if info.is_static {
+            self.errors.push(TypeError::new(
+                format!("'{}' is a static method of '{}'; call it as '{}.{}(...)'", method, type_name, type_name, method),
+                member_span,
+            ));
+            return Some(ResolvedType::Error);
+        }
+        if info.is_mut {
+            if !Self::is_place(receiver) {
+                self.errors.push(TypeError::new(
+                    format!("cannot call mut method '{}' on a temporary value of type '{}'", method, type_name),
+                    member_span,
+                ));
+            } else {
+                let before = self.errors.len();
+                self.check_assignable(receiver);
+                // Reword the assignment diagnostics for the call site.
+                for err in self.errors.iter_mut().skip(before) {
+                    if let Some(rest) = err.message.strip_prefix("cannot assign to ") {
+                        err.message = format!("cannot call mut method '{}' on {}", method, rest);
+                    } else if err.message.starts_with("cannot assign through 'self'") {
+                        err.message = err.message.replacen("cannot assign through 'self'", &format!("cannot call mut method '{}' on 'self'", method), 1);
+                    }
+                }
+            }
+        }
+        self.check_args(&info.params, args, call_span);
+        self.record(SiteKind::Call, *call_span, Resolution::MethodCall { type_name });
+        Some(info.ret)
+    }
+
+    /// Check call arguments against parameter types.
+    fn check_args(&mut self, params: &[ResolvedType], args: &[Expr], span: &Span) {
+        if args.len() != params.len() {
+            self.errors.push(TypeError::new(
+                format!("expected {} arguments, found {}", params.len(), args.len()),
+                span,
+            ));
+            for arg in args {
+                self.infer_expr_type(arg);
+            }
+            return;
+        }
+        for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
+            let arg_ty = self.infer_expr_type(arg);
+            if !param.is_assignable_from(&arg_ty) {
+                self.errors.push(TypeError::new(
+                    format!(
+                        "argument {} type mismatch: expected '{}', found '{}'",
+                        i + 1,
+                        param.display_name(),
+                        arg_ty.display_name()
+                    ),
+                    span,
+                ));
+            }
         }
     }
 
@@ -97,107 +274,24 @@ impl TypeChecker {
         self.builtins.contains(name) && self.symbols.lookup(name).is_none()
     }
 
-    /// Type check the entire AST
+    /// Type check the entire AST. See `check_and_lower` for the lowered result.
     pub fn check_program(&mut self, ast: &Ast) -> Result<(), Vec<TypeError>> {
-        // First pass: collect all struct and function declarations
+        self.check_and_lower(ast).map(|_| ())
+    }
+
+    /// Type check the whole program and return the lowered AST: method calls
+    /// resolved to `Expr::MethodCall`, static calls to their mangled function,
+    /// and every `let` carrying its type.
+    pub fn check_and_lower(&mut self, ast: &Ast) -> Result<Ast, Vec<TypeError>> {
+        // Pass 1a: nominal types, so that methods, extensions and signatures
+        // declared earlier in the file can refer to types declared later.
         for decl in &ast.declarations {
             match decl {
                 Decl::Struct(s) => self.register_struct(s),
-                Decl::Function(f) => self.register_function(f),
-                Decl::Extern(e) => self.register_extern(e),
-                Decl::Import(_) => {}
-                Decl::Variant(v) => {
-                    // Register variant type itself
-                    let _ = self.symbols.define(Symbol {
-                        name: v.name.clone(),
-                        ty: ResolvedType::Struct(v.name.clone()),
-                        mutable: false,
-                        kind: SymbolKind::Struct,
-                    });
-                    // Register each case as a constructor function
-                    for case in &v.cases {
-                        let case_symbol_name = format!("{}_{}", v.name, case.name);
-                        if case.fields.is_empty() {
-                            let _ = self.symbols.define(Symbol {
-                                name: case_symbol_name,
-                                ty: ResolvedType::Struct(v.name.clone()),
-                                mutable: false,
-                                kind: SymbolKind::Variable,
-                            });
-                        } else {
-                            let param_types: Vec<ResolvedType> = case.fields.iter()
-                                .map(|f| ResolvedType::from_parser_type(&f.ty))
-                                .collect();
-                            let _ = self.symbols.define(Symbol {
-                                name: case_symbol_name,
-                                ty: ResolvedType::Function {
-                                    params: param_types,
-                                    ret: Box::new(ResolvedType::Struct(v.name.clone())),
-                                },
-                                mutable: false,
-                                kind: SymbolKind::Function,
-                            });
-                        }
-                    }
-                }
-                Decl::Protocol(p) => {
-                    // Register protocol as a named type
-                    let _ = self.symbols.define(Symbol {
-                        name: p.name.clone(),
-                        ty: ResolvedType::Struct(p.name.clone()),
-                        mutable: false,
-                        kind: SymbolKind::Struct,
-                    });
-                    // Register protocol method signatures
-                    for method in &p.methods {
-                        let mangled = format!("{}_{}", p.name, method.name);
-                        let _ = self.symbols.define(Symbol {
-                            name: mangled,
-                            ty: ResolvedType::Function {
-                                params: method.params.iter()
-                                    .map(|param| ResolvedType::from_parser_type(&param.ty))
-                                    .collect(),
-                                ret: Box::new(method.return_type.as_ref()
-                                    .map(ResolvedType::from_parser_type)
-                                    .unwrap_or(ResolvedType::Void)),
-                            },
-                            mutable: false,
-                            kind: SymbolKind::Function,
-                        });
-                    }
-                }
-                Decl::Extension(ext) => {
-                    for method in &ext.methods {
-                        self.register_function_named(&format!("{}_{}", ext.target, method.name), method);
-                    }
-                }
-                Decl::Layer(l) => {
-                    let _ = self.symbols.define(Symbol {
-                        name: l.name.clone(),
-                        ty: ResolvedType::Struct(l.name.clone()),
-                        mutable: false,
-                        kind: SymbolKind::Struct,
-                    });
-                    for method in &l.methods {
-                        self.register_function_named(&format!("{}_{}", l.name, method.name), method);
-                    }
-                }
-                Decl::Panel(p) => {
-                    for method in &p.methods {
-                        self.register_function_named(&format!("{}_{}", p.name, method.name), method);
-                    }
-                }
-                Decl::Const(c) => {
-                    let ty = c.ty.as_ref()
-                        .map(ResolvedType::from_parser_type)
-                        .unwrap_or(ResolvedType::Unknown);
-                    let _ = self.symbols.define(Symbol {
-                        name: c.name.clone(),
-                        ty,
-                        mutable: false,
-                        kind: SymbolKind::Variable,
-                    });
-                }
+                Decl::Variant(v) => self.register_variant(v),
+                Decl::Protocol(p) => self.register_protocol(p),
+                Decl::Layer(l) => self.register_layer(l),
+                Decl::Panel(p) => self.register_panel(p),
                 Decl::Typealias(t) => {
                     let resolved = ResolvedType::from_parser_type(&t.target);
                     self.type_aliases.insert(t.name.clone(), resolved.clone());
@@ -206,6 +300,69 @@ impl TypeChecker {
                         ty: resolved,
                         mutable: false,
                         kind: SymbolKind::Struct,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // Pass 1b: functions, methods, constants and globals.
+        self.resolutions.clear();
+        for decl in &ast.declarations {
+            match decl {
+                Decl::Function(f) => self.register_function(f),
+                Decl::Extern(e) => self.register_extern(e),
+                Decl::Struct(s) => {
+                    for method in &s.methods {
+                        self.register_method(&s.name, method);
+                    }
+                }
+                Decl::Extension(ext) => {
+                    if !self.type_kinds.contains_key(&ext.target) {
+                        self.errors.push(TypeError::new(
+                            format!("extension of undefined type '{}'", ext.target),
+                            &ext.span,
+                        ));
+                    }
+                    for method in &ext.methods {
+                        self.register_method(&ext.target, method);
+                    }
+                }
+                Decl::Layer(l) => {
+                    for method in &l.methods {
+                        self.register_method(&l.name, method);
+                    }
+                }
+                Decl::Panel(p) => {
+                    for method in &p.methods {
+                        self.register_method(&p.name, method);
+                    }
+                }
+                Decl::Const(c) => {
+                    let declared = c.ty.as_ref().map(ResolvedType::from_parser_type);
+                    let inferred = self.infer_expr_type(&c.value);
+                    let ty = match declared {
+                        Some(decl_ty) => {
+                            if !decl_ty.is_assignable_from(&inferred) {
+                                self.errors.push(TypeError::new(
+                                    format!(
+                                        "const '{}' expects '{}', found '{}'",
+                                        c.name,
+                                        decl_ty.display_name(),
+                                        inferred.display_name()
+                                    ),
+                                    &c.span,
+                                ));
+                            }
+                            decl_ty
+                        }
+                        None => inferred,
+                    };
+                    let _ = self.symbols.define(Symbol {
+                        name: c.name.clone(),
+                        ty,
+                        mutable: false,
+                        kind: SymbolKind::Variable,
                     });
                 }
                 Decl::GlobalVar(g) => {
@@ -222,37 +379,154 @@ impl TypeChecker {
                         kind: SymbolKind::Variable,
                     });
                 }
+                Decl::Import(_) | Decl::Variant(_) | Decl::Protocol(_) | Decl::Typealias(_) => {}
             }
         }
+        let global_resolutions = std::mem::take(&mut self.resolutions);
 
-        // Second pass: type check all function/method bodies
+        // Pass 2: check and lower every body.
+        let mut lowered: Vec<Decl> = Vec::with_capacity(ast.declarations.len());
         for decl in &ast.declarations {
-            match decl {
-                Decl::Function(f) => self.check_function(f),
-                Decl::Extension(ext) => {
-                    for method in &ext.methods {
-                        self.check_function(method);
-                    }
-                }
-                Decl::Layer(l) => {
-                    for method in &l.methods {
-                        self.check_function(method);
-                    }
-                }
-                Decl::Panel(p) => {
-                    for method in &p.methods {
-                        self.check_function(method);
-                    }
-                }
-                _ => {}
-            }
+            let out = match decl {
+                Decl::Function(f) => Decl::Function(self.check_function(f)),
+                Decl::Struct(s) => Decl::Struct(StructDecl {
+                    methods: s.methods.iter().map(|m| self.check_method(&s.name, m)).collect(),
+                    ..s.clone()
+                }),
+                Decl::Extension(ext) => Decl::Extension(ExtensionDecl {
+                    methods: ext.methods.iter().map(|m| self.check_method(&ext.target, m)).collect(),
+                    ..ext.clone()
+                }),
+                Decl::Layer(l) => Decl::Layer(LayerDecl {
+                    methods: l.methods.iter().map(|m| self.check_method(&l.name, m)).collect(),
+                    ..l.clone()
+                }),
+                Decl::Panel(p) => Decl::Panel(PanelDecl {
+                    methods: p.methods.iter().map(|m| self.check_method(&p.name, m)).collect(),
+                    ..p.clone()
+                }),
+                Decl::Const(c) => Decl::Const(ConstDecl {
+                    value: Lowerer::new(&global_resolutions).expr(&c.value),
+                    ..c.clone()
+                }),
+                Decl::GlobalVar(g) => Decl::GlobalVar(Lowerer::new(&global_resolutions).let_stmt(g)),
+                other => other.clone(),
+            };
+            lowered.push(out);
         }
 
         if self.errors.is_empty() {
-            Ok(())
+            Ok(Ast { declarations: lowered })
         } else {
             Err(self.errors.clone())
         }
+    }
+
+    fn register_nominal(&mut self, name: &str, kind: TypeKind, fields: HashMap<String, ResolvedType>, span: &Span) {
+        if let Some(existing) = self.type_kinds.get(name) {
+            self.errors.push(TypeError::new(
+                format!("{} '{}' conflicts with the {} of the same name", kind.keyword(), name, existing.keyword()),
+                span,
+            ));
+            return;
+        }
+        self.type_kinds.insert(name.to_string(), kind);
+        if let Err(e) = self.symbols.define_struct(StructInfo { name: name.to_string(), fields }) {
+            self.errors.push(TypeError::new(e, span));
+        }
+    }
+
+    fn register_variant(&mut self, v: &VariantDecl) {
+        self.register_nominal(&v.name, TypeKind::Variant, HashMap::new(), &v.span);
+        let _ = self.symbols.define(Symbol {
+            name: v.name.clone(),
+            ty: ResolvedType::Struct(v.name.clone()),
+            mutable: false,
+            kind: SymbolKind::Struct,
+        });
+        // Register each case as a constructor function
+        for case in &v.cases {
+            let case_symbol_name = format!("{}_{}", v.name, case.name);
+            if case.fields.is_empty() {
+                let _ = self.symbols.define(Symbol {
+                    name: case_symbol_name,
+                    ty: ResolvedType::Struct(v.name.clone()),
+                    mutable: false,
+                    kind: SymbolKind::Variable,
+                });
+            } else {
+                let param_types: Vec<ResolvedType> = case.fields.iter()
+                    .map(|f| ResolvedType::from_parser_type(&f.ty))
+                    .collect();
+                let _ = self.symbols.define(Symbol {
+                    name: case_symbol_name,
+                    ty: ResolvedType::Function {
+                        params: param_types,
+                        ret: Box::new(ResolvedType::Struct(v.name.clone())),
+                    },
+                    mutable: false,
+                    kind: SymbolKind::Function,
+                });
+            }
+        }
+    }
+
+    fn register_protocol(&mut self, p: &ProtocolDecl) {
+        self.register_nominal(&p.name, TypeKind::Protocol, HashMap::new(), &p.span);
+        let _ = self.symbols.define(Symbol {
+            name: p.name.clone(),
+            ty: ResolvedType::Struct(p.name.clone()),
+            mutable: false,
+            kind: SymbolKind::Struct,
+        });
+    }
+
+    fn register_layer(&mut self, l: &LayerDecl) {
+        let fields = l.fields.iter()
+            .map(|f| (f.name.clone(), ResolvedType::from_parser_type(&f.ty)))
+            .collect();
+        self.register_nominal(&l.name, TypeKind::Layer, fields, &l.span);
+        let _ = self.symbols.define(Symbol {
+            name: l.name.clone(),
+            ty: ResolvedType::Struct(l.name.clone()),
+            mutable: false,
+            kind: SymbolKind::Struct,
+        });
+    }
+
+    fn register_panel(&mut self, p: &PanelDecl) {
+        self.register_nominal(&p.name, TypeKind::Panel, HashMap::new(), &p.span);
+    }
+
+    /// Record a method of `type_name`. The C symbol is `TypeName_method`.
+    fn register_method(&mut self, type_name: &str, f: &FnDecl) {
+        let info = MethodInfo {
+            name: f.name.clone(),
+            params: f.params.iter().map(|p| ResolvedType::from_parser_type(&p.ty)).collect(),
+            ret: f.return_type.as_ref().map(ResolvedType::from_parser_type).unwrap_or(ResolvedType::Void),
+            is_mut: f.is_mut,
+            is_static: f.is_static,
+            span: f.span,
+        };
+        let table = self.methods.entry(type_name.to_string()).or_default();
+        if table.contains_key(&f.name) {
+            self.errors.push(TypeError::new(
+                format!("method '{}' is already defined for type '{}'", f.name, type_name),
+                &f.span,
+            ));
+            return;
+        }
+        table.insert(f.name.clone(), info);
+    }
+
+    /// Look up a method of a nominal type.
+    fn lookup_method(&self, type_name: &str, method: &str) -> Option<&MethodInfo> {
+        self.methods.get(type_name).and_then(|t| t.get(method))
+    }
+
+    /// C symbol of a method.
+    pub fn mangle_method(type_name: &str, method: &str) -> String {
+        format!("{}_{}", type_name, method)
     }
 
     fn register_struct(&mut self, s: &StructDecl) {
@@ -262,15 +536,7 @@ impl TypeChecker {
             fields.insert(field.name.clone(), ty);
         }
 
-        if let Err(e) = self.symbols.define_struct(StructInfo {
-            name: s.name.clone(),
-            fields,
-        }) {
-            self.errors.push(TypeError {
-                message: e,
-                span: s.span,
-            });
-        }
+        self.register_nominal(&s.name, TypeKind::Struct, fields, &s.span);
     }
 
     fn register_function(&mut self, f: &FnDecl) {
@@ -361,8 +627,34 @@ impl TypeChecker {
         });
     }
 
-    fn check_function(&mut self, f: &FnDecl) {
+    /// Check a free function body and return it lowered.
+    fn check_function(&mut self, f: &FnDecl) -> FnDecl {
+        self.check_body(f, None)
+    }
+
+    /// Check a method body with `self` bound to `type_name` and return it lowered.
+    fn check_method(&mut self, type_name: &str, f: &FnDecl) -> FnDecl {
+        if f.is_static {
+            self.check_body(f, None)
+        } else {
+            let ctx = SelfContext { type_name: type_name.to_string(), is_mut: f.is_mut, method: f.name.clone() };
+            self.check_body(f, Some(ctx))
+        }
+    }
+
+    fn check_body(&mut self, f: &FnDecl, self_ctx: Option<SelfContext>) -> FnDecl {
+        self.resolutions.clear();
+        let saved_self = std::mem::replace(&mut self.current_self, self_ctx);
         self.symbols.push_scope();
+
+        if let Some(ctx) = &self.current_self {
+            let _ = self.symbols.define(Symbol {
+                name: "self".to_string(),
+                ty: ResolvedType::Struct(ctx.type_name.clone()),
+                mutable: ctx.is_mut,
+                kind: SymbolKind::Parameter,
+            });
+        }
 
         // Add parameters to scope
         for param in &f.params {
@@ -385,6 +677,10 @@ impl TypeChecker {
 
         self.current_return_type = None;
         self.symbols.pop_scope();
+        self.current_self = saved_self;
+
+        let table = std::mem::take(&mut self.resolutions);
+        Lowerer::new(&table).fn_decl(f)
     }
 
     fn check_block(&mut self, block: &Block) {
@@ -506,6 +802,12 @@ impl TypeChecker {
                 ResolvedType::Error
             }
         };
+
+        if l.ty.is_none() {
+            if let Some(ty) = final_type.to_parser_type() {
+                self.record(SiteKind::Let, l.span, Resolution::LetType(ty));
+            }
+        }
 
         if let Err(e) = self.symbols.define(Symbol {
             name: l.name.clone(),
@@ -656,11 +958,64 @@ impl TypeChecker {
                         return ResolvedType::Unknown;
                     }
                 }
+                if let Expr::Member(receiver, method, member_span) = callee.as_ref() {
+                    if let Some(ty) = self.check_method_call(receiver, method, args, span, member_span) {
+                        return ty;
+                    }
+                }
                 let callee_ty = self.infer_expr_type(callee);
                 self.check_call(&callee_ty, args, span)
             }
+            Expr::MethodCall(receiver, type_name, method, args, span) => {
+                // Already lowered (the checker ran twice); re-check against the method.
+                self.infer_expr_type(receiver);
+                match self.lookup_method(type_name, method).cloned() {
+                    Some(info) => {
+                        self.check_args(&info.params, args, span);
+                        info.ret
+                    }
+                    None => {
+                        self.errors.push(TypeError::new(
+                            format!("type '{}' has no method '{}'", type_name, method),
+                            span,
+                        ));
+                        ResolvedType::Error
+                    }
+                }
+            }
+            Expr::SelfRef(span) => match &self.current_self {
+                Some(ctx) => ResolvedType::Struct(ctx.type_name.clone()),
+                None => {
+                    self.errors.push(TypeError::new(
+                        "'self' is only available inside a method body",
+                        span,
+                    ));
+                    ResolvedType::Error
+                }
+            },
             Expr::Member(obj, field, span) => {
+                if let Expr::Identifier(type_name, _) = obj.as_ref() {
+                    if self.is_type_name(type_name) {
+                        let msg = match self.lookup_method(type_name, field) {
+                            Some(info) if info.is_static => format!("'{}.{}' is a static method; call it with parentheses", type_name, field),
+                            Some(_) => format!("'{}' is an instance method of '{}'; call it on a value", field, type_name),
+                            None => format!("type '{}' has no static member '{}'", type_name, field),
+                        };
+                        self.errors.push(TypeError::new(msg, span));
+                        return ResolvedType::Error;
+                    }
+                }
                 let obj_ty = self.infer_expr_type(obj);
+                if let ResolvedType::Struct(name) = &obj_ty {
+                    let has_field = self.symbols.lookup_struct(name).map(|s| s.fields.contains_key(field)).unwrap_or(false);
+                    if !has_field && self.lookup_method(name, field).is_some() {
+                        self.errors.push(TypeError::new(
+                            format!("'{}' is a method of '{}'; call it with parentheses", field, name),
+                            span,
+                        ));
+                        return ResolvedType::Error;
+                    }
+                }
                 self.check_member_access(&obj_ty, field, span)
             }
             Expr::Index(arr, idx, span) => {
@@ -671,17 +1026,7 @@ impl TypeChecker {
             Expr::Assign(target, value, span) => {
                 let target_ty = self.infer_expr_type(target);
                 let value_ty = self.infer_expr_type(value);
-                // Mutability check: assignment to immutable variable is an error
-                if let Expr::Identifier(name, ident_span) = target.as_ref() {
-                    if let Some(sym) = self.symbols.lookup(name) {
-                        if !sym.mutable {
-                            self.errors.push(TypeError::new(
-                                format!("cannot assign to immutable variable '{}'; declare it with 'let mut'", name),
-                                ident_span,
-                            ));
-                        }
-                    }
-                }
+                self.check_assignable(target);
                 if !target_ty.is_assignable_from(&value_ty) {
                     self.errors.push(TypeError::new(
                         format!(
@@ -782,6 +1127,7 @@ impl TypeChecker {
             Expr::CompoundAssign(target, _op, value, span) => {
                 let target_ty = self.infer_expr_type(target);
                 let value_ty = self.infer_expr_type(value);
+                self.check_assignable(target);
                 if !target_ty.is_assignable_from(&value_ty) {
                     self.errors.push(TypeError::new(
                         format!("cannot compound assign '{}' to '{}'", value_ty.display_name(), target_ty.display_name()),
@@ -793,6 +1139,7 @@ impl TypeChecker {
             Expr::PreIncrement(operand, span) | Expr::PreDecrement(operand, span) |  
             Expr::PostIncrement(operand, span) | Expr::PostDecrement(operand, span) => {
                 let ty = self.infer_expr_type(operand);
+                self.check_assignable(operand);
                 if !matches!(ty, ResolvedType::Int | ResolvedType::Float) {
                     self.errors.push(TypeError::new(
                         format!("cannot increment/decrement '{}'", ty.display_name()),
@@ -1093,25 +1440,24 @@ impl Default for TypeChecker {
     }
 }
 
-/// Type check the AST. On success the (unchanged) AST is returned; every
-/// type error found is returned together, none is printed.
+/// Type check the AST. On success the lowered AST is returned (method calls
+/// resolved, untyped `let`s annotated); every type error found is returned
+/// together, none is printed.
 pub fn check(ast: &Ast) -> Result<Ast, Vec<TypeError>> {
     // The checker recurses over the expression tree, so run it on a thread
     // with a stack large enough for `MAX_EXPR_DEPTH` levels in debug builds.
-    let outcome = std::thread::scope(|scope| {
+    std::thread::scope(|scope| {
         let worker = std::thread::Builder::new()
             .name("reox-typecheck".to_string())
             .stack_size(CHECK_STACK_BYTES)
-            .spawn_scoped(scope, || TypeChecker::new().check_program(ast));
+            .spawn_scoped(scope, || TypeChecker::new().check_and_lower(ast));
         match worker {
             Ok(handle) => handle.join().unwrap_or_else(|_| {
                 Err(vec![TypeError::new("type checker thread terminated unexpectedly", &Span::default())])
             }),
-            Err(_) => TypeChecker::new().check_program(ast),
+            Err(_) => TypeChecker::new().check_and_lower(ast),
         }
-    });
-    outcome?;
-    Ok(ast.clone())
+    })
 }
 
 #[cfg(test)]
@@ -1272,6 +1618,7 @@ mod tests {
                 is_async: false,
                 is_pub: false,
                 is_static: false,
+                is_mut: false,
                 span,
             })],
         };
@@ -1307,5 +1654,126 @@ mod tests {
         let errors = check_source("fn main() { println(undefined_thing); }").unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("undefined variable 'undefined_thing'"));
+    }
+
+    // === Methods and self ===
+
+    const COUNTER: &str = r#"
+        struct Counter {
+            count: int
+            fn value() -> int { return self.count; }
+            mut fn bump(by: int) { self.count += by; }
+            static fn make() -> Counter { return Counter { count: 0 }; }
+        }
+    "#;
+
+    fn with_counter(body: &str) -> Result<(), Vec<TypeError>> {
+        check_source(&format!("{}\n{}", COUNTER, body))
+    }
+
+    fn messages(result: Result<(), Vec<TypeError>>) -> Vec<String> {
+        result.unwrap_err().into_iter().map(|e| e.message).collect()
+    }
+
+    #[test]
+    fn methods_dispatch_on_receiver_type() {
+        let ok = with_counter("fn main() { let mut c = Counter.make(); c.bump(2); let v: int = c.value(); }");
+        assert!(ok.is_ok(), "{:?}", ok.err());
+    }
+
+    #[test]
+    fn method_argument_types_are_checked() {
+        let msgs = messages(with_counter("fn main() { let mut c = Counter.make(); c.bump(\"x\"); c.value(1); }"));
+        assert!(msgs.iter().any(|m| m.contains("argument 1 type mismatch: expected 'int', found 'string'")), "{:?}", msgs);
+        assert!(msgs.iter().any(|m| m.contains("expected 0 arguments, found 1")), "{:?}", msgs);
+    }
+
+    #[test]
+    fn assigning_through_self_requires_a_mut_method() {
+        let msgs = messages(check_source("struct P { x: int fn reset() { self.x = 0; } }"));
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].contains("cannot assign through 'self' in method 'reset' of 'P'; declare it with 'mut fn'"), "{}", msgs[0]);
+        let msgs = messages(check_source("struct P { x: int fn step() { self.x++; } }"));
+        assert!(msgs[0].contains("declare it with 'mut fn'"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn mut_methods_need_a_mutable_receiver() {
+        let msgs = messages(with_counter("fn main() { let c = Counter.make(); c.bump(1); }"));
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].contains("cannot call mut method 'bump' on immutable variable 'c'; declare it with 'let mut'"), "{}", msgs[0]);
+        let msgs = messages(with_counter("fn main() { Counter.make().bump(1); }"));
+        assert!(msgs[0].contains("cannot call mut method 'bump' on a temporary value"), "{}", msgs[0]);
+        let msgs = messages(with_counter("fn f(c: Counter) { c.bump(1); }"));
+        assert!(msgs[0].contains("cannot call mut method 'bump' on parameter 'c'"), "{}", msgs[0]);
+        // A mut method may call another mut method on self; a non-mut one may not.
+        assert!(with_counter("extension Counter { mut fn twice() { self.bump(1); self.bump(1); } }").is_ok());
+        let msgs = messages(with_counter("extension Counter { fn twice() { self.bump(1); } }"));
+        assert!(msgs[0].contains("cannot call mut method 'bump' on 'self' in method 'twice'"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn self_is_only_available_in_methods() {
+        let msgs = messages(check_source("fn main() { let x = self; }"));
+        assert!(msgs[0].contains("'self' is only available inside a method body"), "{}", msgs[0]);
+        let msgs = messages(check_source("struct P { x: int static fn make() -> int { return self.x; } }"));
+        assert!(msgs[0].contains("'self' is only available inside a method body"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn static_and_instance_methods_are_not_interchangeable() {
+        let msgs = messages(with_counter("fn main() { let v = Counter.value(); }"));
+        assert!(msgs[0].contains("method 'value' of 'Counter' needs a receiver"), "{}", msgs[0]);
+        let msgs = messages(with_counter("fn main() { let c = Counter.make(); let d = c.make(); }"));
+        assert!(msgs[0].contains("'make' is a static method of 'Counter'; call it as 'Counter.make(...)'"), "{}", msgs[0]);
+        let msgs = messages(with_counter("fn main() { let c = Counter.make(); let v = c.value; }"));
+        assert!(msgs[0].contains("'value' is a method of 'Counter'; call it with parentheses"), "{}", msgs[0]);
+        let msgs = messages(with_counter("fn main() { let v = Counter.nothing(); }"));
+        assert!(msgs[0].contains("type 'Counter' has no static method 'nothing'"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn duplicate_methods_and_unknown_extension_targets_are_errors() {
+        let msgs = messages(check_source("struct P { x: int fn f() { } } extension P { fn f() { } }"));
+        assert!(msgs[0].contains("method 'f' is already defined for type 'P'"), "{}", msgs[0]);
+        let msgs = messages(check_source("extension Nope { fn f() { } }"));
+        assert!(msgs[0].contains("extension of undefined type 'Nope'"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn layers_and_panels_have_self_too() {
+        let ok = check_source(r#"
+            layer Button { let label: string; signal on_click; fn title() -> string { return self.label; } }
+            panel Main { title: "x", fn root() -> int { return 1; } static fn version() -> int { return 2; } }
+            fn main() { let b = Button { label: "ok" }; let t: string = b.title(); let r: int = Main.version(); }
+        "#);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+    }
+
+    #[test]
+    fn field_assignment_through_immutable_variable_is_rejected() {
+        let msgs = messages(check_source("struct P { x: int } fn main() { let p = P { x: 1 }; p.x = 2; }"));
+        assert!(msgs[0].contains("cannot assign to immutable variable 'p'"), "{}", msgs[0]);
+        assert!(check_source("struct P { x: int } fn main() { let mut p = P { x: 1 }; p.x = 2; p.x += 1; }").is_ok());
+    }
+
+    #[test]
+    fn lowering_resolves_method_calls_and_let_types() {
+        let tokens = tokenize(&format!("{}\nfn main() {{ let mut c = Counter.make(); c.bump(1); let v = c.value(); }}", COUNTER)).unwrap();
+        let ast = parse(&tokens).unwrap();
+        let lowered = check(&ast).unwrap();
+        let main = match &lowered.declarations[1] { Decl::Function(f) => f, other => panic!("{:?}", other) };
+        match &main.body.statements[0] {
+            Stmt::Let(l) => {
+                assert_eq!(l.ty, Some(Type::Named("Counter".into())));
+                assert!(matches!(&l.init, Some(Expr::Call(callee, _, _)) if matches!(callee.as_ref(), Expr::Identifier(n, _) if n == "Counter_make")));
+            }
+            other => panic!("{:?}", other),
+        }
+        assert!(matches!(&main.body.statements[1], Stmt::Expr(Expr::MethodCall(_, t, m, args, _)) if t == "Counter" && m == "bump" && args.len() == 1));
+        match &main.body.statements[2] {
+            Stmt::Let(l) => assert_eq!(l.ty, Some(Type::Int)),
+            other => panic!("{:?}", other),
+        }
     }
 }

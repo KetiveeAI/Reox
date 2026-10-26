@@ -250,6 +250,13 @@ static NATIVES: &[(&str, NativeFn)] = &[
         for x in &a { println!("{}", x); }
         Ok(Value::Nil)
     }),
+    // Typed printers, matching the C runtime's print_int/print_float/print_bool.
+    ("print_int", |a| { println!("{}", arg_int(&a, 0, "print_int")?); Ok(Value::Nil) }),
+    ("print_float", |a| { println!("{}", arg_float(&a, 0, "print_float")?); Ok(Value::Nil) }),
+    ("print_bool", |a| match arg(&a, 0, "print_bool")? {
+        Value::Bool(b) => { println!("{}", b); Ok(Value::Nil) }
+        other => Err(type_mismatch("print_bool", 0, "a bool", other)),
+    }),
     ("input", |a| {
         if let Some(prompt) = a.first() {
             print!("{}", prompt);
@@ -712,7 +719,12 @@ impl Interpreter {
     pub fn eval_on_current_thread(&mut self, ast: &Ast) -> Result<Value, RuntimeError> {
         for d in &ast.declarations {
             match d {
-                Decl::Struct(s) => { self.structs.insert(s.name.clone(), s.clone()); },
+                Decl::Struct(s) => {
+                    self.structs.insert(s.name.clone(), s.clone());
+                    for method in &s.methods {
+                        self.functions.insert(format!("{}_{}", s.name, method.name), method.clone());
+                    }
+                },
                 Decl::Function(f) => { self.functions.insert(f.name.clone(), f.clone()); },
                 Decl::Variant(v) => {
                     for case in &v.cases {
@@ -791,6 +803,109 @@ impl Interpreter {
         self.env.pop();
         self.exit_call();
         self.take_return(r)
+    }
+
+    /// Call a method with `self` bound to `receiver`. Returns the result and
+    /// the receiver as it is after the call, so callers can write mutations
+    /// back to the place the receiver came from.
+    fn call_method(&mut self, f: &FnDecl, receiver: Value, a: Vec<Value>) -> Result<(Value, Value), RuntimeError> {
+        self.enter_call(Some(f.span))?;
+        self.env.push();
+        self.env.define("self", receiver.clone());
+        for (i, p) in f.params.iter().enumerate() { self.env.define(&p.name, a.get(i).cloned().unwrap_or(Value::Nil)); }
+        let r = self.block(&f.body);
+        let after = self.env.get("self").unwrap_or(receiver);
+        self.env.pop();
+        self.exit_call();
+        Ok((self.take_return(r)?, after))
+    }
+
+    /// Dispatch `receiver.method(args)`: look the method up by the receiver's
+    /// type, call it, and write the possibly mutated `self` back when the
+    /// receiver expression names a place.
+    fn dispatch_method(&mut self, receiver_expr: &Expr, method: &str, args: &[Expr], span: Span) -> Result<Option<Value>, RuntimeError> {
+        // Static call on a type name: Type.method(args)
+        if let Expr::Identifier(type_name, _) = receiver_expr {
+            if self.env.get(type_name).is_none() {
+                if let Some(f) = self.functions.get(&format!("{}_{}", type_name, method)).cloned() {
+                    let vs = self.eval_args(args)?;
+                    return self.call(&f, vs).map(Some);
+                }
+            }
+        }
+        let receiver = self.expr(receiver_expr)?;
+        let type_name = match &receiver {
+            Value::Struct { name, .. } => name.clone(),
+            Value::Variant { type_name, .. } => type_name.clone(),
+            _ => return Ok(None),
+        };
+        let f = match self.functions.get(&format!("{}_{}", type_name, method)).cloned() {
+            Some(f) => f,
+            None => return Ok(None),
+        };
+        let vs = self.eval_args(args)?;
+        let (result, after) = self.call_method(&f, receiver, vs)?;
+        if Self::is_place(receiver_expr) {
+            self.assign_path(receiver_expr, after).map_err(|e| e.with_span(span))?;
+        }
+        Ok(Some(result))
+    }
+
+    /// Whether `expr` names a place that `assign_path` can store into.
+    fn is_place(expr: &Expr) -> bool {
+        match expr {
+            Expr::Identifier(_, _) | Expr::SelfRef(_) => true,
+            Expr::Member(obj, _, _) | Expr::Index(obj, _, _) => Self::is_place(obj),
+            _ => false,
+        }
+    }
+
+    /// Store `value` into the place `target` denotes: a variable, `self`, a
+    /// struct field or an array/map element, through any depth of nesting.
+    fn assign_path(&mut self, target: &Expr, value: Value) -> Result<(), RuntimeError> {
+        match target {
+            Expr::Identifier(n, _) => {
+                if self.env.set(n, value) { Ok(()) } else {
+                    Err(RuntimeError::new(format!("assignment to undefined variable '{}'", n)))
+                }
+            }
+            Expr::SelfRef(_) => {
+                if self.env.set("self", value) { Ok(()) } else {
+                    Err(RuntimeError::new("'self' is only available inside a method body"))
+                }
+            }
+            Expr::Member(obj, field, _) => {
+                let mut container = self.expr(obj)?;
+                match &mut container {
+                    Value::Struct { fields, name } => {
+                        if !fields.contains_key(field) {
+                            return Err(RuntimeError::new(format!("struct '{}' has no field '{}'", name, field)));
+                        }
+                        fields.insert(field.clone(), value);
+                    }
+                    other => return Err(RuntimeError::new(format!("cannot assign field '{}' on {}", field, other.type_name()))),
+                }
+                self.assign_path(obj, container)
+            }
+            Expr::Index(arr, idx, _) => {
+                let mut container = self.expr(arr)?;
+                let index = self.expr(idx)?;
+                match (&mut container, &index) {
+                    (Value::Array(items), Value::Int(i)) => {
+                        let len = items.len();
+                        let slot = usize::try_from(*i).ok().and_then(|i| items.get_mut(i))
+                            .ok_or_else(|| RuntimeError::new(format!("index {} out of bounds (length {})", i, len)))?;
+                        *slot = value;
+                    }
+                    (Value::Map(m), Value::String(k)) => { m.insert(k.clone(), value); }
+                    (base, index) => return Err(RuntimeError::new(format!(
+                        "cannot assign into {} with {}", base.type_name(), index.type_name()
+                    ))),
+                }
+                self.assign_path(arr, container)
+            }
+            _ => Err(RuntimeError::new("invalid assignment target")),
+        }
     }
 
     /// Resolve a function body's result: an explicit `return` value wins over
@@ -974,6 +1089,11 @@ impl Interpreter {
                 }
             },
             Expr::Call(c, a, span) => {
+                if let Expr::Member(receiver, method, _) = c.as_ref() {
+                    if let Some(v) = self.dispatch_method(receiver, method, a, *span)? {
+                        return Ok(v);
+                    }
+                }
                 if let Expr::Identifier(n, _) = c.as_ref() {
                     match self.env.get(n) {
                         Some(Value::NativeAction(f)) => {
@@ -1005,6 +1125,14 @@ impl Interpreter {
                     other => Err(RuntimeError::new(format!("{} is not callable", other.type_name())))
                 }
             },
+            Expr::MethodCall(receiver, type_name, method, args, span) => {
+                match self.dispatch_method(receiver, method, args, *span)? {
+                    Some(v) => Ok(v),
+                    None => Err(RuntimeError::new(format!("type '{}' has no method '{}'", type_name, method))),
+                }
+            },
+            Expr::SelfRef(_) => self.env.get("self")
+                .ok_or_else(|| RuntimeError::new("'self' is only available inside a method body")),
             Expr::Member(o, f, _) => {
                 let ov = self.expr(o)?;
                 match ov {
@@ -1031,16 +1159,8 @@ impl Interpreter {
             },
             Expr::Assign(t, v, _) => {
                 let val = self.expr(v)?;
-                match t.as_ref() {
-                    Expr::Identifier(n, _) => {
-                        if self.env.set(n, val.clone()) {
-                            Ok(val)
-                        } else {
-                            Err(RuntimeError::new(format!("assignment to undefined variable '{}'", n)))
-                        }
-                    }
-                    _ => Err(RuntimeError::new("invalid assignment target")),
-                }
+                self.assign_path(t, val.clone())?;
+                Ok(val)
             },
             Expr::ArrayLit(es, _) => Ok(Value::Array(self.eval_args(es)?)),
             Expr::StructLit(n, fs, _) => {
@@ -1059,11 +1179,10 @@ impl Interpreter {
             },
             // Compound assignments: +=, -=, *=, /=, %=
             Expr::CompoundAssign(target, op, value, _) => {
-                let n = match target.as_ref() {
-                    Expr::Identifier(n, _) => n,
-                    _ => return Err(RuntimeError::new("invalid compound assignment target")),
-                };
-                let current = self.env.get(n).ok_or_else(|| RuntimeError::new(format!("undefined variable '{}'", n)))?;
+                if !Self::is_place(target) {
+                    return Err(RuntimeError::new("invalid compound assignment target"));
+                }
+                let current = self.expr(target)?;
                 let rhs = self.expr(value)?;
                 let bin = match op {
                     CompoundOp::AddEq => BinOp::Add,
@@ -1073,7 +1192,7 @@ impl Interpreter {
                     CompoundOp::ModEq => BinOp::Mod,
                 };
                 let result = self.binop(current, &bin, rhs)?;
-                self.env.set(n, result.clone());
+                self.assign_path(target, result.clone())?;
                 Ok(result)
             },
             Expr::PreIncrement(target, _) => self.step_variable(target, 1, true),
@@ -1129,17 +1248,15 @@ impl Interpreter {
     /// Shared implementation of ++x, --x, x++ and x--.
     fn step_variable(&mut self, target: &Expr, delta: i64, prefix: bool) -> Result<Value, RuntimeError> {
         let verb = if delta > 0 { "increment" } else { "decrement" };
-        let n = match target {
-            Expr::Identifier(n, _) => n,
-            _ => return Err(RuntimeError::new(format!("invalid {} target", verb))),
-        };
-        let current = self.env.get(n).ok_or_else(|| RuntimeError::new(format!("undefined variable '{}'", n)))?;
-        let old = match current {
+        if !Self::is_place(target) {
+            return Err(RuntimeError::new(format!("invalid {} target", verb)));
+        }
+        let old = match self.expr(target)? {
             Value::Int(i) => i,
             other => return Err(RuntimeError::new(format!("{} requires int, found {}", verb, other.type_name()))),
         };
         let new = old.checked_add(delta).ok_or_else(|| RuntimeError::new(format!("integer overflow in {}", verb)))?;
-        self.env.set(n, Value::Int(new));
+        self.assign_path(target, Value::Int(new))?;
         Ok(Value::Int(if prefix { new } else { old }))
     }
 
@@ -1482,6 +1599,7 @@ mod tests {
                 is_async: false,
                 is_pub: false,
                 is_static: false,
+                is_mut: false,
                 span,
             })],
         };
@@ -1503,5 +1621,52 @@ mod tests {
         let ast = parse(&tokens).unwrap();
         assert_eq!(Interpreter::new().eval_on_current_thread(&ast).unwrap(), Value::Int(4));
         assert_eq!(eval(&ast).unwrap(), Value::Int(4));
+    }
+
+    // === Methods and self ===
+
+    const COUNTER: &str = r#"
+        struct Counter {
+            count: int
+            fn value() -> int { return self.count; }
+            mut fn bump(by: int) { self.count += by; }
+            static fn make() -> Counter { return Counter { count: 0 }; }
+        }
+        extension Counter { mut fn twice() { self.bump(1); self.bump(1); } }
+    "#;
+
+    fn run_checked(source: &str) -> Result<Value, RuntimeError> {
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(&tokens).unwrap();
+        let checked = crate::typechecker::check(&ast).unwrap_or_else(|e| panic!("{:?}", e));
+        eval(&checked)
+    }
+
+    #[test]
+    fn mut_methods_write_back_to_the_receiver() {
+        let src = format!("{}\nfn main() -> int {{ let mut c = Counter.make(); c.bump(5); c.twice(); return c.value(); }}", COUNTER);
+        assert_eq!(run_checked(&src).unwrap(), Value::Int(7));
+        // The same program also runs unlowered (dynamic dispatch on the struct name).
+        assert_eq!(run(&src).unwrap(), Value::Int(7));
+    }
+
+    #[test]
+    fn method_calls_on_nested_fields_mutate_in_place() {
+        let src = format!("{}\nstruct Pair {{ a: Counter, b: Counter }}\nfn main() -> int {{ let mut p = Pair {{ a: Counter.make(), b: Counter.make() }}; p.a.bump(3); p.b.count = 10; p.b.count++; return p.a.value() + p.b.value(); }}", COUNTER);
+        assert_eq!(run_checked(&src).unwrap(), Value::Int(14));
+    }
+
+    #[test]
+    fn element_assignment_through_paths() {
+        assert_eq!(run("fn main() -> int { let a = [1, 2, 3]; a[1] = 20; a[2] += 5; return a[1] + a[2]; }").unwrap(), Value::Int(28));
+        let err = run_err("fn main() { let a = [1]; a[4] = 2; }");
+        assert_eq!(err.message, "index 4 out of bounds (length 1)");
+        let err = run_err("struct P { x: int } fn main() { let p = P { x: 1 }; p.y = 2; }");
+        assert_eq!(err.message, "struct 'P' has no field 'y'");
+    }
+
+    #[test]
+    fn self_outside_a_method_is_a_runtime_error_when_unchecked() {
+        assert_eq!(run_err("fn main() { let s = self; }").message, "'self' is only available inside a method body");
     }
 }

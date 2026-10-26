@@ -206,7 +206,7 @@ impl<'a> Parser<'a> {
                     ))
                 }
             }
-            TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
+            TokenKind::Struct => self.parse_struct_decl(false).map(Decl::Struct),
             TokenKind::Import => self.parse_import_decl().map(Decl::Import),
             TokenKind::Extern => self.parse_extern_decl().map(Decl::Extern),
             TokenKind::Variant => self.parse_variant_decl(false).map(Decl::Variant),
@@ -219,6 +219,8 @@ impl<'a> Parser<'a> {
             TokenKind::Pub => self.parse_pub_decl(),
             TokenKind::Static => self.parse_static_decl(),
             TokenKind::Let => self.parse_global_var_decl(),
+            TokenKind::Mut => Err(ParseError::new("'mut fn' is only allowed inside a struct, extension, layer or panel body", self.peek().span)
+                .with_hint("a free function has no 'self' to mutate; drop 'mut'")),
             _ => Err(self
                 .error_here("expected declaration")
                 .with_hint("top-level items are fn, struct, variant, protocol, extension, layer, panel, const, typealias, import, extern or let")),
@@ -256,6 +258,27 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_fn_decl_with_modifiers(&mut self, is_async: bool, is_pub: bool, is_static: bool) -> Result<FnDecl, ParseError> {
+        self.parse_fn_decl_full(is_async, is_pub, is_static, false)
+    }
+
+    /// Parse a method inside a struct, extension, layer or panel body:
+    /// `[pub] [static] [mut] fn name(params) [-> Type] { body }`.
+    fn parse_method_decl(&mut self) -> Result<FnDecl, ParseError> {
+        let is_pub = self.match_token(&[TokenKind::Pub]);
+        let is_static = self.match_token(&[TokenKind::Static]);
+        let mut_span = self.peek().span;
+        let is_mut = self.match_token(&[TokenKind::Mut]);
+        if is_mut && is_static {
+            return Err(ParseError::new("a static method cannot be 'mut'", mut_span)
+                .with_hint("static methods have no 'self' to mutate; remove 'mut' or 'static'"));
+        }
+        if !self.check(&TokenKind::Fn) {
+            return Err(self.error_here("expected 'fn' to start a method"));
+        }
+        self.parse_fn_decl_full(false, is_pub, is_static, is_mut)
+    }
+
+    fn parse_fn_decl_full(&mut self, is_async: bool, is_pub: bool, is_static: bool, is_mut: bool) -> Result<FnDecl, ParseError> {
         let start_span = self.peek().span;
         self.consume(&TokenKind::Fn, "expected 'fn'")?;
 
@@ -281,6 +304,7 @@ impl<'a> Parser<'a> {
             is_async,
             is_pub,
             is_static,
+            is_mut,
             span: start_span,
         })
     }
@@ -309,7 +333,8 @@ impl<'a> Parser<'a> {
         Ok(Param { name, ty, span })
     }
 
-    fn parse_struct_decl(&mut self) -> Result<StructDecl, ParseError> {
+    /// Parse: struct Name { field: Type, ... [pub] [static] [mut] fn method() { ... } ... }
+    fn parse_struct_decl(&mut self, is_pub: bool) -> Result<StructDecl, ParseError> {
         let start_span = self.peek().span;
         self.consume(&TokenKind::Struct, "expected 'struct'")?;
 
@@ -317,10 +342,23 @@ impl<'a> Parser<'a> {
         self.consume(&TokenKind::LBrace, "expected '{'")?;
 
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            if self.starts_method() {
+                methods.push(self.parse_method_decl()?);
+                continue;
+            }
+            if !methods.is_empty() {
+                return Err(self
+                    .error_here("expected a method or '}' after struct methods")
+                    .with_hint("declare every field before the first method"));
+            }
             fields.push(self.parse_field()?);
             if !self.match_token(&[TokenKind::Comma]) {
-                break;
+                // The field list may end without a trailing comma before methods or '}'.
+                if !self.check(&TokenKind::RBrace) && !self.starts_method() {
+                    return Err(self.error_here("expected ',' or '}' after struct field"));
+                }
             }
         }
 
@@ -329,8 +367,18 @@ impl<'a> Parser<'a> {
         Ok(StructDecl {
             name,
             fields,
+            methods,
+            is_pub,
             span: start_span,
         })
+    }
+
+    /// Whether the current token begins a method declaration inside a type body.
+    fn starts_method(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            TokenKind::Fn | TokenKind::Pub | TokenKind::Static | TokenKind::Mut
+        )
     }
 
     fn parse_field(&mut self) -> Result<Field, ParseError> {
@@ -1075,6 +1123,10 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(Expr::Nil(token.span))
             }
+            TokenKind::Self_ => {
+                self.advance();
+                Ok(Expr::SelfRef(token.span))
+            }
             TokenKind::Match => {
                 self.advance();
                 let scrutinee = self.parse_expression()?;
@@ -1298,9 +1350,11 @@ impl<'a> Parser<'a> {
 
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
-            let is_pub = self.match_token(&[TokenKind::Pub]);
-            let is_static = self.match_token(&[TokenKind::Static]);
-            methods.push(self.parse_fn_decl_with_modifiers(false, is_pub, is_static)?);
+            if !self.starts_method() {
+                return Err(self.error_here("expected a method in extension body")
+                    .with_hint("extensions may only contain '[pub] [static] [mut] fn' declarations"));
+            }
+            methods.push(self.parse_method_decl()?);
         }
 
         self.consume(&TokenKind::RBrace, "expected '}'")?;
@@ -1368,10 +1422,8 @@ impl<'a> Parser<'a> {
 
                     gestures.push(GestureHandler { kind, params, body, span: gesture_span });
                 }
-                TokenKind::Fn | TokenKind::Pub | TokenKind::Static => {
-                    let is_pub = self.match_token(&[TokenKind::Pub]);
-                    let is_static = self.match_token(&[TokenKind::Static]);
-                    methods.push(self.parse_fn_decl_with_modifiers(false, is_pub, is_static)?);
+                TokenKind::Fn | TokenKind::Pub | TokenKind::Static | TokenKind::Mut => {
+                    methods.push(self.parse_method_decl()?);
                 }
                 TokenKind::Let | TokenKind::At => {
                     // Fields declared with let or @Bind let
@@ -1424,8 +1476,8 @@ impl<'a> Parser<'a> {
 
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
             match self.peek_kind() {
-                TokenKind::Fn => {
-                    methods.push(self.parse_fn_decl(false)?);
+                TokenKind::Fn | TokenKind::Pub | TokenKind::Static | TokenKind::Mut => {
+                    methods.push(self.parse_method_decl()?);
                 }
                 TokenKind::Ident(_) => {
                     // Property: key: value
@@ -1484,7 +1536,7 @@ impl<'a> Parser<'a> {
         self.advance(); // consume 'pub'
         match self.peek_kind() {
             TokenKind::Fn => self.parse_fn_decl_with_modifiers(false, true, false).map(Decl::Function),
-            TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
+            TokenKind::Struct => self.parse_struct_decl(true).map(Decl::Struct),
             TokenKind::Variant => self.parse_variant_decl(true).map(Decl::Variant),
             TokenKind::Protocol => self.parse_protocol_decl(true).map(Decl::Protocol),
             TokenKind::Layer => self.parse_layer_decl(true).map(Decl::Layer),
@@ -2327,5 +2379,56 @@ mod tests {
         let mut parser = Parser::new(&tokens);
         assert_eq!(parser.match_map(&[(TokenKind::Plus, 1), (TokenKind::Minus, 2)]), None);
         assert_eq!(parser.current, 0);
+    }
+
+    // === Methods and self ===
+
+    #[test]
+    fn struct_body_holds_fields_then_methods() {
+        let tokens = tokenize("struct P { x: int, y: int fn len() -> int { return self.x; } mut fn reset() { self.x = 0; } static fn zero() -> P { return P { x: 0, y: 0 }; } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        match &ast.declarations[0] {
+            Decl::Struct(s) => {
+                assert_eq!(s.fields.len(), 2);
+                assert_eq!(s.methods.len(), 3);
+                assert!(!s.methods[0].is_mut && !s.methods[0].is_static);
+                assert!(s.methods[1].is_mut);
+                assert!(s.methods[2].is_static);
+                match &s.methods[0].body.statements[0] {
+                    Stmt::Return(r) => assert!(matches!(r.value, Some(Expr::Member(ref obj, ref f, _)) if matches!(**obj, Expr::SelfRef(_)) && f == "x")),
+                    other => panic!("expected return, got {:?}", other),
+                }
+            }
+            other => panic!("expected struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn field_after_method_is_rejected_with_hint() {
+        let tokens = tokenize("struct P { fn f() { } x: int }").unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("expected a method or '}'"), "{}", err.message);
+        assert!(err.hint.is_some());
+    }
+
+    #[test]
+    fn mut_fn_is_only_valid_inside_type_bodies() {
+        let tokens = tokenize("mut fn f() { }").unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("'mut fn' is only allowed inside"), "{}", err.message);
+        let tokens = tokenize("struct P { static mut fn f() { } }").unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("static method cannot be 'mut'"), "{}", err.message);
+    }
+
+    #[test]
+    fn extension_layer_and_panel_methods_accept_mut() {
+        let tokens = tokenize("extension P { mut fn f() { } } layer L { mut fn g() { } } panel W { mut fn h() { } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        assert!(matches!(&ast.declarations[0], Decl::Extension(e) if e.methods[0].is_mut));
+        assert!(matches!(&ast.declarations[1], Decl::Layer(l) if l.methods[0].is_mut));
+        assert!(matches!(&ast.declarations[2], Decl::Panel(p) if p.methods[0].is_mut));
+        let tokens = tokenize("extension P { let x = 1; }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("expected a method in extension body"));
     }
 }

@@ -38,6 +38,9 @@ pub struct FnDecl {
     pub is_async: bool,
     pub is_pub: bool,
     pub is_static: bool,
+    /// `mut fn`: the method may assign through `self`. Only meaningful for
+    /// methods declared inside a struct, extension, layer or panel body.
+    pub is_mut: bool,
     pub span: Span,
 }
 
@@ -54,6 +57,10 @@ pub struct Param {
 pub struct StructDecl {
     pub name: String,
     pub fields: Vec<Field>,
+    /// Methods declared inside the struct body. Each takes an implicit `self`
+    /// unless it is `static`.
+    pub methods: Vec<FnDecl>,
+    pub is_pub: bool,
     pub span: Span,
 }
 
@@ -237,6 +244,12 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>, Span),             // start..end (inclusive)
     // Closure/lambda expression
     Action(Vec<Param>, Option<Box<Type>>, Box<Block>, Span), // action (params) -> Type { body }
+    /// `self` inside a method body
+    SelfRef(Span),
+    /// Statically dispatched method call, produced by the type checker from
+    /// `receiver.method(args)`: (receiver, type name, method name, args, span).
+    /// Codegen emits `TypeName_method(&receiver, args)`.
+    MethodCall(Box<Expr>, String, String, Vec<Expr>, Span),
 }
 
 impl Expr {
@@ -265,7 +278,9 @@ impl Expr {
             | Expr::Nil(s)
             | Expr::Await(_, s)
             | Expr::Range(_, _, s)
-            | Expr::Action(_, _, _, s) => *s,
+            | Expr::Action(_, _, _, s)
+            | Expr::SelfRef(s)
+            | Expr::MethodCall(_, _, _, _, s) => *s,
         }
     }
 }
