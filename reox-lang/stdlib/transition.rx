@@ -1,12 +1,12 @@
 // ============================================================================
 // REOX Standard Library - Transitions & Animations
 // Native animation system for NeolyxOS UI
-// 
+//
 // Copyright (c) 2025-2026 KetiveeAI
-// 
+//
 // Usage:
 //   import transition;
-//   
+//
 //   let t = transition_ease_out(300);
 //   view_animate_opacity(myButton, 1.0, t);
 // ============================================================================
@@ -15,7 +15,7 @@
 // TRANSITION TYPES
 // ============================================================================
 
-struct Transition { 
+struct Transition {
     id: int,
     duration_ms: int,
     easing: int

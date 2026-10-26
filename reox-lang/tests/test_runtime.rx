@@ -4,14 +4,14 @@
 
 fn main() -> int {
     println("Hello from REOX!");
-    
+
     let x: int = 42;
     let y: int = 8;
     let sum: int = x + y;
-    
+
     println("Testing arithmetic:");
     print_int(sum);
     println("");
-    
+
     return 0;
 }
