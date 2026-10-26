@@ -42,6 +42,13 @@ fn handle_command(cmd: cli::CliCommand) -> Result<(), String> {
             let cmd = pkg::parse_pkg_args(&args)?;
             pkg::handle_pkg(cmd)
         }
+        cli::CliCommand::Fmt(args) => {
+            let code = reoxc::fmt::run(&args)?;
+            if code != 0 {
+                process::exit(code);
+            }
+            Ok(())
+        }
         cli::CliCommand::Help => {
             cli::print_usage();
             Ok(())

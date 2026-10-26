@@ -12,6 +12,7 @@ pub mod stdlib;
 pub mod cli;
 pub mod pkg;
 pub mod templates;
+pub mod fmt;
 
 // Re-export main types for convenience
 pub use diagnostic::{Diagnostic, Severity};

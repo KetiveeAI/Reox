@@ -210,7 +210,7 @@ fn diagnostics_are_published_on_open_change_and_close() {
 fn parse_error_carries_hint_and_points_at_end_of_file() {
     let mut client = Client::spawn();
     client.initialize();
-    let (_, text) = client.open_fixture("unclosed.rx");
+    let (_, text) = client.open_fixture("unclosed.rx.broken");
     let note = client.wait_notification("textDocument/publishDiagnostics");
     let diags = note["params"]["diagnostics"].as_array().expect("diagnostics");
     assert_eq!(diags.len(), 1);
