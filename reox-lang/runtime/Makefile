@@ -100,10 +100,13 @@ clean:
 # Host-side tests (Linux only): the freestanding libc subset against glibc,
 # and the NeolyxOS math shim against libm.
 .PHONY: test mathcheck
-test: librx_linux.a tests/test_core.c
+TEST_LIBS := librx_linux.a -lm $(shell pkg-config --libs sdl2 2>/dev/null)
+test: librx_linux.a tests/test_core.c tests/test_object.c
 	@mkdir -p $(BUILD_DIR)/tests
-	$(CC) $(WARNFLAGS) -std=c11 -O2 -Wno-format-truncation tests/test_core.c librx_linux.a -lm $(shell pkg-config --libs sdl2 2>/dev/null) -o $(BUILD_DIR)/tests/test_core
+	$(CC) $(WARNFLAGS) -std=c11 -O2 -Wno-format-truncation tests/test_core.c $(TEST_LIBS) -o $(BUILD_DIR)/tests/test_core
 	$(BUILD_DIR)/tests/test_core
+	$(CC) $(WARNFLAGS) -std=gnu11 -O2 tests/test_object.c $(TEST_LIBS) -o $(BUILD_DIR)/tests/test_object
+	$(BUILD_DIR)/tests/test_object
 	$(MAKE) mathcheck
 
 mathcheck: tests/test_math.c platform/neolyx/rx_math_neolyx.c
