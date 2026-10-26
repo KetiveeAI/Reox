@@ -114,6 +114,23 @@ impl CodeGen {
         self.emit_line("#include \"reox_nxrender_bridge.h\"");  // NXRender integration
         self.emit_line("");
 
+        // Generic declarations only exist as instances; the checker produces them.
+        for decl in &ast.declarations {
+            let generic = match decl {
+                Decl::Function(f) if !f.type_params.is_empty() => Some((&f.name, f.span)),
+                Decl::Struct(s) if !s.type_params.is_empty() => Some((&s.name, s.span)),
+                Decl::Variant(v) if !v.type_params.is_empty() => Some((&v.name, v.span)),
+                Decl::Extension(e) if !e.type_params.is_empty() => Some((&e.target, e.span)),
+                _ => None,
+            };
+            if let Some((name, span)) = generic {
+                return Err(CodegenError::new(
+                    format!("generic declaration '{}' must be instantiated by the type checker before code generation", name),
+                    span,
+                ));
+            }
+        }
+
         // Payload layout of every variant, needed to destructure patterns.
         for decl in &ast.declarations {
             if let Decl::Variant(v) = decl {
@@ -157,19 +174,19 @@ impl CodeGen {
             }
         }
 
-        // Generate variant (tagged union)
-        for decl in &ast.declarations {
-            if let Decl::Variant(v) = decl {
-                self.gen_variant(v);
-                self.emit_line("");
-            }
-        }
-
-        // Generate struct definitions
-        for decl in &ast.declarations {
-            if let Decl::Struct(s) = decl {
-                self.gen_struct(s);
-                self.emit_line("");
+        // Generate variant and struct definitions, each after the types it
+        // holds by value (generic instances may be declared after their users).
+        for decl in self.ordered_type_decls(ast)? {
+            match decl {
+                Decl::Variant(v) => {
+                    self.gen_variant(v);
+                    self.emit_line("");
+                }
+                Decl::Struct(s) => {
+                    self.gen_struct(s);
+                    self.emit_line("");
+                }
+                _ => {}
             }
         }
 
@@ -269,6 +286,82 @@ impl CodeGen {
         }
 
         Ok(self.output.clone())
+    }
+
+    /// Struct and variant declarations ordered so that every type appears
+    /// after the types its fields hold by value.
+    fn ordered_type_decls<'d>(&self, ast: &'d Ast) -> Result<Vec<&'d Decl>, CodegenError> {
+        let mut by_name: HashMap<String, &'d Decl> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        for decl in &ast.declarations {
+            let name = match decl {
+                Decl::Struct(s) => s.name.clone(),
+                Decl::Variant(v) => v.name.clone(),
+                _ => continue,
+            };
+            if by_name.insert(name.clone(), decl).is_none() {
+                names.push(name);
+            }
+        }
+
+        fn by_value_deps(decl: &Decl) -> Vec<String> {
+            // Arrays, optionals and functions are pointers in C: no ordering needed.
+            fn named(ty: &Type) -> Option<String> {
+                match ty {
+                    Type::Named(n) => Some(n.clone()),
+                    Type::Generic(_, _) => Some(crate::typechecker::ResolvedType::from_parser_type(ty).display_name()),
+                    _ => None,
+                }
+            }
+            match decl {
+                Decl::Struct(s) => s.fields.iter().filter_map(|f| named(&f.ty)).collect(),
+                Decl::Variant(v) => v.cases.iter().flat_map(|c| c.fields.iter().filter_map(|f| named(&f.ty))).collect(),
+                _ => Vec::new(),
+            }
+        }
+
+        fn visit<'d>(
+            name: &str,
+            by_name: &HashMap<String, &'d Decl>,
+            path: &mut Vec<String>,
+            done: &mut Vec<String>,
+            ordered: &mut Vec<&'d Decl>,
+        ) -> Result<(), CodegenError> {
+            if done.iter().any(|d| d == name) {
+                return Ok(());
+            }
+            let decl: &'d Decl = match by_name.get(name) {
+                Some(d) => d,
+                None => return Ok(()), // an extern or runtime type
+            };
+            if path.iter().any(|p| p == name) {
+                let span = match decl {
+                    Decl::Struct(s) => s.span,
+                    Decl::Variant(v) => v.span,
+                    _ => Span::default(),
+                };
+                path.push(name.to_string());
+                return Err(CodegenError::new(
+                    format!("type '{}' contains itself by value through {}", name, path.join(" -> ")),
+                    span,
+                ));
+            }
+            path.push(name.to_string());
+            for dep in by_value_deps(decl) {
+                visit(&dep, by_name, path, done, ordered)?;
+            }
+            path.pop();
+            done.push(name.to_string());
+            ordered.push(decl);
+            Ok(())
+        }
+
+        let mut done: Vec<String> = Vec::new();
+        let mut ordered: Vec<&'d Decl> = Vec::new();
+        for name in &names {
+            visit(name, &by_name, &mut Vec::new(), &mut done, &mut ordered)?;
+        }
+        Ok(ordered)
     }
 
     fn gen_struct(&mut self, s: &StructDecl) {
@@ -1431,6 +1524,12 @@ impl CodeGen {
             Type::U64 => "uint64_t".to_string(),
             Type::USize => "size_t".to_string(),
             Type::Named(name) => name.clone(),
+            Type::Generic(_, _) => {
+                // Instances are named by the checker (`Box__int`); the fallback
+                // mangling here covers ASTs that bypassed it.
+                let resolved = crate::typechecker::ResolvedType::from_parser_type(ty);
+                resolved.display_name()
+            }
             Type::Array(inner) => format!("{}*", self.type_to_c(inner)),
             Type::Optional(inner) => format!("{}*", self.type_to_c(inner)),
             Type::Function(params, ret) => {
@@ -1641,6 +1740,7 @@ mod tests {
         let ast = Ast {
             declarations: vec![Decl::Function(FnDecl {
                 name: "main".into(),
+                type_params: vec![],
                 params: vec![],
                 return_type: None,
                 body: Block { statements: vec![Stmt::Expr(expr)], span },
@@ -1756,5 +1856,44 @@ mod tests {
         let ast = parse(&tokens).unwrap();
         let err = CodeGen::new().generate(&ast).unwrap_err();
         assert!(err.message.contains("run the type checker"), "{}", err.message);
+    }
+
+    // === Generics ===
+
+    const GENERICS: &str = r#"
+        variant Option<T> { Some(T), None }
+        struct Box<T> { value: T  fn get() -> T { return self.value; } }
+        fn swap<T>(a: T, b: T) -> T { return b; }
+    "#;
+
+    #[test]
+    fn instances_are_emitted_in_dependency_order_with_mangled_names() {
+        let c = compile(&format!("{}\nstruct Pair {{ left: Option<Box<int>>, right: Box<string> }}\nfn main() {{ let p = Pair {{ left: Some(Box {{ value: 1 }}), right: Box {{ value: \"s\" }} }}; let x = swap(1, 2); let s = swap(\"a\", \"b\"); }}", GENERICS));
+        let pos = |needle: &str| c.find(needle).unwrap_or_else(|| panic!("missing {} in {}", needle, c));
+        assert!(pos("struct Box__int {") < pos("struct Option__Box__int {"));
+        assert!(pos("struct Option__Box__int {") < pos("struct Pair {"));
+        assert!(pos("struct Box__string {") < pos("struct Pair {"));
+        assert!(c.contains("int64_t Box__int_get(Box__int* self)"), "{}", c);
+        assert!(c.contains("const char* Box__string_get(Box__string* self)"), "{}", c);
+        assert!(c.contains("int64_t swap__int(int64_t a, int64_t b)"), "{}", c);
+        assert!(c.contains("const char* swap__string(const char* a, const char* b)"), "{}", c);
+        assert!(c.contains("Option__Box__int_Some((Box__int){.value = 1})"), "{}", c);
+        assert!(!c.contains("struct Box {"), "{}", c);
+    }
+
+    #[test]
+    fn recursive_by_value_types_are_a_codegen_error() {
+        let tokens = tokenize("struct A { b: B } struct B { a: A }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let err = CodeGen::new().generate(&ast).unwrap_err();
+        assert!(err.message.contains("contains itself by value through A -> B -> A"), "{}", err.message);
+    }
+
+    #[test]
+    fn uninstantiated_templates_are_rejected() {
+        let tokens = tokenize("fn swap<T>(a: T, b: T) -> T { return b; }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let err = CodeGen::new().generate(&ast).unwrap_err();
+        assert!(err.message.contains("generic declaration 'swap' must be instantiated"), "{}", err.message);
     }
 }

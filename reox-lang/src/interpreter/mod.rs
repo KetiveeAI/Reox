@@ -1697,6 +1697,7 @@ mod tests {
         let ast = Ast {
             declarations: vec![Decl::Function(FnDecl {
                 name: "main".into(),
+                type_params: vec![],
                 params: vec![],
                 return_type: None,
                 body: Block { statements: vec![Stmt::Return(ReturnStmt { value: Some(expr), span })], span },
@@ -1808,5 +1809,25 @@ mod tests {
         assert!(err.message.starts_with("no match arm matches the value Result.Ok(1)"), "{}", err.message);
         let err = run_err(&format!("{}\nfn main() {{ let r = Result.Nope; }}", RESULT));
         assert_eq!(err.message, "variant 'Result' has no case 'Nope'");
+    }
+
+    // === Generics ===
+
+    #[test]
+    fn generic_programs_run_after_monomorphisation() {
+        let src = r#"
+            variant Option<T> { Some(T), None }
+            struct Box<T> { value: T  fn get() -> T { return self.value; }  mut fn set(v: T) { self.value = v; } }
+            fn swap<T>(a: T, b: T) -> T { return b; }
+            fn unwrap_or(o: Option<int>, d: int) -> int { return match o { Some(v) => v, None => d }; }
+            fn main() -> int {
+                let mut b = Box { value: 40 };
+                b.set(b.get() + 2);
+                let s: Option<int> = Some(7);
+                let n: Option<int> = None;
+                return b.get() * 10 + unwrap_or(s, 0) + unwrap_or(n, 1) + swap(100, 0);
+            }
+        "#;
+        assert_eq!(run_checked(src).unwrap(), Value::Int(428));
     }
 }

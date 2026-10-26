@@ -21,6 +21,7 @@ pub(crate) enum SiteKind {
     Match,
     Ident,
     Member,
+    StructLit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,19 +62,81 @@ pub(crate) type Resolutions = HashMap<SiteKey, Resolution>;
 /// Rebuilds AST nodes, applying the recorded resolutions.
 pub(crate) struct Lowerer<'a> {
     res: &'a Resolutions,
+    /// Type parameter substitution applied to every type annotation, used
+    /// when instantiating a generic declaration.
+    subst: Option<&'a HashMap<String, Type>>,
 }
 
 impl<'a> Lowerer<'a> {
     pub(crate) fn new(res: &'a Resolutions) -> Self {
-        Self { res }
+        Self { res, subst: None }
+    }
+
+    pub(crate) fn with_subst(res: &'a Resolutions, subst: &'a HashMap<String, Type>) -> Self {
+        Self { res, subst: Some(subst) }
     }
 
     fn lookup(&self, kind: SiteKind, span: Span) -> Option<&Resolution> {
         self.res.get(&SiteKey::new(kind, span))
     }
 
+    /// Apply the type parameter substitution, if any, to a type annotation,
+    /// then name every applied generic type by its instance (`Box<int>`
+    /// becomes `Box__int`) so later stages only see concrete names.
+    pub(crate) fn ty(&self, t: &Type) -> Type {
+        match t {
+            Type::Named(name) => match self.subst.and_then(|m| m.get(name)) {
+                Some(replacement) => replacement.clone(),
+                None => t.clone(),
+            },
+            Type::Generic(name, args) => {
+                let args: Vec<Type> = args.iter().map(|a| self.ty(a)).collect();
+                if self.subst.is_some() && args.iter().any(Self::mentions_param) {
+                    // Still generic inside a template body being substituted.
+                    return Type::Generic(name.clone(), args);
+                }
+                let resolved = crate::typechecker::ResolvedType::from_parser_type(&Type::Generic(name.clone(), args));
+                Type::Named(resolved.display_name())
+            }
+            Type::Array(inner) => Type::Array(Box::new(self.ty(inner))),
+            Type::Optional(inner) => Type::Optional(Box::new(self.ty(inner))),
+            Type::Function(params, ret) => {
+                Type::Function(params.iter().map(|p| self.ty(p)).collect(), Box::new(self.ty(ret)))
+            }
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.ty(e)).collect()),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether a type still mentions a (single-identifier, capitalised) type
+    /// parameter after substitution. Only used to keep nested generics
+    /// unresolved while a template is being substituted.
+    fn mentions_param(t: &Type) -> bool {
+        match t {
+            Type::Named(_) => false,
+            Type::Generic(_, args) => args.iter().any(Self::mentions_param),
+            Type::Array(inner) | Type::Optional(inner) => Self::mentions_param(inner),
+            Type::Function(ps, ret) => ps.iter().any(Self::mentions_param) || Self::mentions_param(ret),
+            Type::Tuple(elems) => elems.iter().any(Self::mentions_param),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn fields(&self, fields: &[Field]) -> Vec<Field> {
+        fields.iter().map(|f| Field { name: f.name.clone(), ty: self.ty(&f.ty), span: f.span }).collect()
+    }
+
+    fn params(&self, params: &[Param]) -> Vec<Param> {
+        params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), span: p.span }).collect()
+    }
+
     pub(crate) fn fn_decl(&self, f: &FnDecl) -> FnDecl {
-        FnDecl { body: self.block(&f.body), ..f.clone() }
+        FnDecl {
+            params: self.params(&f.params),
+            return_type: f.return_type.as_ref().map(|t| self.ty(t)),
+            body: self.block(&f.body),
+            ..f.clone()
+        }
     }
 
     pub(crate) fn block(&self, b: &Block) -> Block {
@@ -86,7 +149,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn let_stmt(&self, l: &LetStmt) -> LetStmt {
         let ty = match (&l.ty, self.lookup(SiteKind::Let, l.span)) {
             (None, Some(Resolution::LetType(t))) => Some(t.clone()),
-            (ty, _) => ty.clone(),
+            (ty, _) => ty.as_ref().map(|t| self.ty(t)),
         };
         LetStmt {
             ty,
@@ -151,7 +214,7 @@ impl<'a> Lowerer<'a> {
                 _ => e.clone(),
             },
             Expr::Block(b, s) => Expr::Block(self.block(b), *s),
-            Expr::Typed(inner, ty, s) => Expr::Typed(Box::new(self.expr(inner)), ty.clone(), *s),
+            Expr::Typed(inner, ty, s) => Expr::Typed(Box::new(self.expr(inner)), self.ty(ty), *s),
             Expr::Binary(l, op, r, s) => Expr::Binary(Box::new(self.expr(l)), *op, Box::new(self.expr(r)), *s),
             Expr::Unary(op, x, s) => Expr::Unary(*op, Box::new(self.expr(x)), *s),
             Expr::Call(callee, args, s) => self.call(callee, args, *s),
@@ -164,11 +227,13 @@ impl<'a> Lowerer<'a> {
             },
             Expr::Index(a, i, s) => Expr::Index(Box::new(self.expr(a)), Box::new(self.expr(i)), *s),
             Expr::Assign(t, v, s) => Expr::Assign(Box::new(self.expr(t)), Box::new(self.expr(v)), *s),
-            Expr::StructLit(name, fields, s) => Expr::StructLit(
-                name.clone(),
-                fields.iter().map(|(n, v)| (n.clone(), self.expr(v))).collect(),
-                *s,
-            ),
+            Expr::StructLit(name, fields, s) => {
+                let name = match self.lookup(SiteKind::StructLit, *s) {
+                    Some(Resolution::Rename { mangled }) => mangled.clone(),
+                    _ => name.clone(),
+                };
+                Expr::StructLit(name, fields.iter().map(|(n, v)| (n.clone(), self.expr(v))).collect(), *s)
+            }
             Expr::ArrayLit(elems, s) => Expr::ArrayLit(self.exprs(elems), *s),
             Expr::Match(scrutinee, arms, s) => {
                 let scrutinee = self.expr(scrutinee);
@@ -216,9 +281,12 @@ impl<'a> Lowerer<'a> {
             }
             Expr::Await(x, s) => Expr::Await(Box::new(self.expr(x)), *s),
             Expr::Range(a, b, s) => Expr::Range(Box::new(self.expr(a)), Box::new(self.expr(b)), *s),
-            Expr::Action(params, ret, body, s) => {
-                Expr::Action(params.clone(), ret.clone(), Box::new(self.block(body)), *s)
-            }
+            Expr::Action(params, ret, body, s) => Expr::Action(
+                self.params(params),
+                ret.as_ref().map(|t| Box::new(self.ty(t))),
+                Box::new(self.block(body)),
+                *s,
+            ),
         }
     }
 

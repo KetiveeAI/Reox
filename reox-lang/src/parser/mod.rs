@@ -62,11 +62,80 @@ pub struct Parser<'a> {
     tokens: &'a [Token],
     current: usize,
     depth: usize,
+    /// Set when a `>>` token closed one generic argument list and its second
+    /// `>` is still owed to the enclosing list (`Box<Box<int>>`).
+    pending_gt: bool,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, current: 0, depth: 0 }
+        Self { tokens, current: 0, depth: 0, pending_gt: false }
+    }
+
+    /// Consume the `>` that closes a generic parameter or argument list,
+    /// splitting a `>>` token when two lists close at once.
+    fn consume_gt(&mut self, msg: &str) -> Result<(), ParseError> {
+        if self.pending_gt {
+            self.pending_gt = false;
+            return Ok(());
+        }
+        if self.check(&TokenKind::Gt) {
+            self.advance();
+            return Ok(());
+        }
+        if self.check(&TokenKind::ShiftRight) {
+            self.advance();
+            self.pending_gt = true;
+            return Ok(());
+        }
+        Err(self.error_here(msg))
+    }
+
+    /// Optional `<T, U: Bound + Other>` after a declaration name.
+    fn parse_type_params(&mut self) -> Result<Vec<TypeParam>, ParseError> {
+        if !self.check(&TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+        self.advance();
+        let mut params = Vec::new();
+        loop {
+            let span = self.peek().span;
+            let name = self.parse_identifier()?;
+            let mut bounds = Vec::new();
+            if self.match_token(&[TokenKind::Colon]) {
+                bounds.push(self.parse_identifier()?);
+                while self.match_token(&[TokenKind::Plus]) {
+                    bounds.push(self.parse_identifier()?);
+                }
+            }
+            if params.iter().any(|p: &TypeParam| p.name == name) {
+                return Err(ParseError::new(format!("type parameter '{}' is declared twice", name), span));
+            }
+            params.push(TypeParam { name, bounds, span });
+            // A `>>` closed a nested list and already owes this one its `>`.
+            if self.pending_gt || !self.match_token(&[TokenKind::Comma]) {
+                break;
+            }
+        }
+        self.consume_gt("expected '>' after type parameters")?;
+        if params.is_empty() {
+            return Err(self.error_here("expected at least one type parameter"));
+        }
+        Ok(params)
+    }
+
+    /// `<Type, Type>` after a type name.
+    fn parse_type_args(&mut self) -> Result<Vec<Type>, ParseError> {
+        self.consume(&TokenKind::Lt, "expected '<'")?;
+        let mut args = Vec::new();
+        loop {
+            args.push(self.parse_type()?);
+            if self.pending_gt || !self.match_token(&[TokenKind::Comma]) {
+                break;
+            }
+        }
+        self.consume_gt("expected '>' after type arguments")?;
+        Ok(args)
     }
 
     // === Utility Methods ===
@@ -283,6 +352,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenKind::Fn, "expected 'fn'")?;
 
         let name = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
         self.consume(&TokenKind::LParen, "expected '(' after function name")?;
 
         let params = self.parse_param_list()?;
@@ -298,6 +368,7 @@ impl<'a> Parser<'a> {
 
         Ok(FnDecl {
             name,
+            type_params,
             params,
             return_type,
             body,
@@ -339,6 +410,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenKind::Struct, "expected 'struct'")?;
 
         let name = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
         self.consume(&TokenKind::LBrace, "expected '{'")?;
 
         let mut fields = Vec::new();
@@ -366,6 +438,7 @@ impl<'a> Parser<'a> {
 
         Ok(StructDecl {
             name,
+            type_params,
             fields,
             methods,
             is_pub,
@@ -473,6 +546,10 @@ impl<'a> Parser<'a> {
             TokenKind::USize => { self.advance(); Ok(Type::USize) }
             TokenKind::Ident(name) => {
                 self.advance();
+                if self.check(&TokenKind::Lt) {
+                    let args = self.parse_type_args()?;
+                    return Ok(Type::Generic(name, args));
+                }
                 Ok(Type::Named(name))
             }
             TokenKind::LBracket => {
@@ -1288,6 +1365,7 @@ impl<'a> Parser<'a> {
         let span = self.peek().span;
         self.consume(&TokenKind::Variant, "expected 'variant'")?;
         let name = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
         self.consume(&TokenKind::LBrace, "expected '{' after variant name")?;
 
         let mut cases = Vec::new();
@@ -1319,7 +1397,7 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(&TokenKind::RBrace, "expected '}'")?;
-        Ok(VariantDecl { name, cases, is_pub, span })
+        Ok(VariantDecl { name, type_params, cases, is_pub, span })
     }
 
     /// A variant payload field: `name: Type`, or a bare `Type` named `_<index>`.
@@ -1375,6 +1453,7 @@ impl<'a> Parser<'a> {
         let span = self.peek().span;
         self.consume(&TokenKind::Extension, "expected 'extension'")?;
         let target = self.parse_identifier()?;
+        let type_params = self.parse_type_params()?;
 
         let protocols = if self.match_token(&[TokenKind::Colon]) {
             let mut p = vec![self.parse_identifier()?];
@@ -1398,7 +1477,7 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(&TokenKind::RBrace, "expected '}'")?;
-        Ok(ExtensionDecl { target, protocols, methods, span })
+        Ok(ExtensionDecl { target, type_params, protocols, methods, span })
     }
 
     /// Parse: layer Name { fields, signals, fn body() -> View { ... } }
@@ -2533,5 +2612,54 @@ mod tests {
         let tokens = tokenize("fn f() { match r { Ok(v => 1 } }").unwrap();
         let err = parse(&tokens).unwrap_err();
         assert!(err.message.contains("expected ')' after case patterns"), "{}", err.message);
+    }
+
+    // === Generics ===
+
+    #[test]
+    fn type_parameters_and_generic_types_parse() {
+        let tokens = tokenize("fn swap<T>(a: T, b: T) -> T { return b; } struct Box<T: Drawable + Eq> { value: T } variant Result<T, E> { Ok(T), Err(E) } extension Box<T> : P { fn f() { } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        match &ast.declarations[0] {
+            Decl::Function(f) => { assert_eq!(f.type_params.len(), 1); assert_eq!(f.type_params[0].name, "T"); assert_eq!(f.params[0].ty, Type::Named("T".into())); }
+            other => panic!("{:?}", other),
+        }
+        match &ast.declarations[1] {
+            Decl::Struct(s) => assert_eq!(s.type_params[0].bounds, vec!["Drawable".to_string(), "Eq".to_string()]),
+            other => panic!("{:?}", other),
+        }
+        match &ast.declarations[2] {
+            Decl::Variant(v) => assert_eq!(v.type_params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["T", "E"]),
+            other => panic!("{:?}", other),
+        }
+        match &ast.declarations[3] {
+            Decl::Extension(e) => { assert_eq!(e.type_params.len(), 1); assert_eq!(e.protocols, vec!["P".to_string()]); }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn nested_generic_type_arguments_split_the_shift_token() {
+        let tokens = tokenize("fn f(a: Option<Box<int>>, b: Result<Option<Box<string>>, int>) { }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let f = match &ast.declarations[0] { Decl::Function(f) => f, other => panic!("{:?}", other) };
+        assert_eq!(f.params[0].ty, Type::Generic("Option".into(), vec![Type::Generic("Box".into(), vec![Type::Int])]));
+        assert_eq!(
+            f.params[1].ty,
+            Type::Generic("Result".into(), vec![
+                Type::Generic("Option".into(), vec![Type::Generic("Box".into(), vec![Type::String])]),
+                Type::Int,
+            ])
+        );
+    }
+
+    #[test]
+    fn generic_syntax_errors_are_reported() {
+        let tokens = tokenize("fn f<T, T>() { }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("type parameter 'T' is declared twice"));
+        let tokens = tokenize("fn f<>() { }").unwrap();
+        assert!(parse(&tokens).is_err());
+        let tokens = tokenize("fn f(a: Box<int) { }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("expected '>' after type arguments"));
     }
 }

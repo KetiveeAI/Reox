@@ -28,10 +28,20 @@ pub enum Decl {
     GlobalVar(LetStmt),
 }
 
+/// A generic type parameter: `T` or `T: Protocol + Other`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+    pub span: Span,
+}
+
 /// Function declaration
 #[derive(Debug, Clone)]
 pub struct FnDecl {
     pub name: String,
+    /// Generic parameters (`fn swap<T>(...)`); empty for ordinary functions.
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Block,
@@ -56,6 +66,8 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: String,
+    /// Generic parameters (`struct Box<T>`); empty for ordinary structs.
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<Field>,
     /// Methods declared inside the struct body. Each takes an implicit `self`
     /// unless it is `static`.
@@ -108,6 +120,8 @@ pub enum Type {
     U64,
     USize,
     Named(String),
+    /// A generic type applied to arguments: `Box<int>`, `Result<T, E>`.
+    Generic(String, Vec<Type>),
     Array(Box<Type>),
     Optional(Box<Type>),
     Function(Vec<Type>, Box<Type>),
@@ -437,6 +451,8 @@ pub struct VariantPattern {
 #[derive(Debug, Clone)]
 pub struct VariantDecl {
     pub name: String,
+    /// Generic parameters (`variant Option<T>`); empty for ordinary variants.
+    pub type_params: Vec<TypeParam>,
     pub cases: Vec<VariantCase>,
     pub is_pub: bool,
     pub span: Span,
@@ -473,6 +489,8 @@ pub struct ProtocolMethod {
 #[derive(Debug, Clone)]
 pub struct ExtensionDecl {
     pub target: String,
+    /// Type parameters when extending a generic type: `extension Box<T> { ... }`.
+    pub type_params: Vec<TypeParam>,
     pub protocols: Vec<String>,
     pub methods: Vec<FnDecl>,
     pub span: Span,

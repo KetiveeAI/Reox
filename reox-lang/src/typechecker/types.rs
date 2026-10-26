@@ -56,6 +56,12 @@ impl ResolvedType {
             crate::parser::Type::U64 => ResolvedType::U64,
             crate::parser::Type::USize => ResolvedType::USize,
             crate::parser::Type::Named(name) => ResolvedType::Struct(name.clone()),
+            // Without the checker's instance table the applied type can only be
+            // named; `TypeChecker::resolve_parser_type` instantiates it.
+            crate::parser::Type::Generic(name, args) => {
+                let args: Vec<ResolvedType> = args.iter().map(Self::from_parser_type).collect();
+                ResolvedType::Struct(mangle_instance(name, &args))
+            }
             crate::parser::Type::Array(inner) => {
                 ResolvedType::Array(Box::new(Self::from_parser_type(inner)))
             }
@@ -107,6 +113,40 @@ impl ResolvedType {
             ResolvedType::Map(_, _) | ResolvedType::Color | ResolvedType::Unknown | ResolvedType::Error => {
                 return None
             }
+        })
+    }
+
+    /// Name component used when this type is a generic argument: `Box<int>`
+    /// becomes `Box__int`, `Box<[int]>` becomes `Box__arr_int`.
+    pub fn mangle(&self) -> Option<String> {
+        Some(match self {
+            ResolvedType::Int => "int".to_string(),
+            ResolvedType::Float => "float".to_string(),
+            ResolvedType::String => "string".to_string(),
+            ResolvedType::Bool => "bool".to_string(),
+            ResolvedType::Void => "void".to_string(),
+            ResolvedType::I8 => "i8".to_string(),
+            ResolvedType::U8 => "u8".to_string(),
+            ResolvedType::I16 => "i16".to_string(),
+            ResolvedType::U16 => "u16".to_string(),
+            ResolvedType::I32 => "i32".to_string(),
+            ResolvedType::U32 => "u32".to_string(),
+            ResolvedType::I64 => "i64".to_string(),
+            ResolvedType::U64 => "u64".to_string(),
+            ResolvedType::USize => "usize".to_string(),
+            ResolvedType::Struct(name) => name.clone(),
+            ResolvedType::Array(inner) => format!("arr_{}", inner.mangle()?),
+            ResolvedType::Optional(inner) => format!("opt_{}", inner.mangle()?),
+            ResolvedType::Function { params, ret } => {
+                let ps: Vec<String> = params.iter().map(|p| p.mangle()).collect::<Option<Vec<_>>>()?;
+                format!("fn_{}_to_{}", ps.join("_"), ret.mangle()?)
+            }
+            ResolvedType::Tuple(elems) => {
+                let es: Vec<String> = elems.iter().map(|e| e.mangle()).collect::<Option<Vec<_>>>()?;
+                format!("tup_{}", es.join("_"))
+            }
+            ResolvedType::Color => "Color".to_string(),
+            ResolvedType::Map(_, _) | ResolvedType::Unknown | ResolvedType::Error => return None,
         })
     }
 
@@ -191,6 +231,17 @@ impl ResolvedType {
             ResolvedType::Error => "<error>".to_string(),
         }
     }
+}
+
+/// C-level name of a generic instance: `Box__int`, `Result__int__string`.
+/// Arguments that cannot be mangled (unknown types) fall back to `_`.
+pub fn mangle_instance(template: &str, args: &[ResolvedType]) -> String {
+    let mut name = template.to_string();
+    for arg in args {
+        name.push_str("__");
+        name.push_str(&arg.mangle().unwrap_or_else(|| "_".to_string()));
+    }
+    name
 }
 
 /// Symbol entry in symbol table

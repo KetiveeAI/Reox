@@ -16,7 +16,7 @@ use crate::parser::{
     FnDecl, StructDecl, ExternDecl, Block, Type, LetStmt,
     ReturnStmt, IfStmt, WhileStmt, ForStmt, GuardStmt, DeferStmt,
     TryCatchStmt, ThrowStmt, CompoundOp,
-    VariantDecl, ProtocolDecl, ExtensionDecl, LayerDecl, PanelDecl, ConstDecl,
+    VariantDecl, ProtocolDecl, ExtensionDecl, LayerDecl, PanelDecl, ConstDecl, TypeParam, Field,
 };
 use crate::lexer::Span;
 use lower::{Lowerer, Resolution, Resolutions, SiteKey, SiteKind};
@@ -75,6 +75,45 @@ const MAX_ALIAS_CHAIN: usize = 64;
 /// Stack reserved for type checking; see `check`.
 const CHECK_STACK_BYTES: usize = 64 * 1024 * 1024;
 
+/// Most instances one generic declaration may have. Reaching it almost always
+/// means a declaration instantiates itself with an ever-growing type.
+pub const MAX_INSTANTIATIONS: usize = 64;
+
+/// Generic declarations, kept aside until a use site instantiates them.
+#[derive(Default)]
+struct Templates {
+    structs: HashMap<String, StructDecl>,
+    variants: HashMap<String, VariantDecl>,
+    fns: HashMap<String, FnDecl>,
+    /// Methods added to a generic type by `extension Name<T> { ... }`.
+    extensions: HashMap<String, Vec<FnDecl>>,
+    /// Protocols a generic type conforms to through `extension Name<T> : P`.
+    conformances: HashMap<String, Vec<String>>,
+    /// Case name -> generic variants declaring it.
+    case_index: HashMap<String, Vec<String>>,
+}
+
+/// Where a generic declaration instance came from.
+#[derive(Debug, Clone)]
+struct Instance {
+    template: String,
+    args: Vec<ResolvedType>,
+}
+
+/// Which output declaration an instantiated body belongs to.
+#[derive(Debug, Clone)]
+enum BodyHome {
+    Function,
+    StructMethod(String),
+    ExtensionMethod(String),
+}
+
+/// A body produced by instantiation that still has to be checked and lowered.
+struct PendingBody {
+    home: BodyHome,
+    decl: FnDecl,
+}
+
 /// The method body being checked, when it has an implicit `self`.
 #[derive(Debug, Clone)]
 struct SelfContext {
@@ -105,6 +144,21 @@ pub struct TypeChecker {
     variants: HashMap<String, VariantInfo>,
     /// Bare case name -> the variants that declare a case of that name.
     case_index: HashMap<String, Vec<String>>,
+    /// Generic declarations and everything instantiated from them.
+    templates: Templates,
+    instances: HashMap<String, Instance>,
+    instance_order: Vec<String>,
+    instance_structs: HashMap<String, StructDecl>,
+    instance_variants: HashMap<String, VariantDecl>,
+    instance_fns: HashMap<String, FnDecl>,
+    instance_extensions: HashMap<String, ExtensionDecl>,
+    instantiation_counts: HashMap<String, usize>,
+    pending_bodies: Vec<PendingBody>,
+    /// Protocols each nominal type conforms to (declared through extensions).
+    conformances: HashMap<String, HashSet<String>>,
+    /// Type the enclosing context expects of the expression being inferred,
+    /// used to pick the type arguments of `None`, `Ok(x)` and friends.
+    expected: Option<ResolvedType>,
 }
 
 impl TypeChecker {
@@ -126,6 +180,589 @@ impl TypeChecker {
             resolutions: Resolutions::new(),
             variants: HashMap::new(),
             case_index: HashMap::new(),
+            templates: Templates::default(),
+            instances: HashMap::new(),
+            instance_order: Vec::new(),
+            instance_structs: HashMap::new(),
+            instance_variants: HashMap::new(),
+            instance_fns: HashMap::new(),
+            instance_extensions: HashMap::new(),
+            instantiation_counts: HashMap::new(),
+            pending_bodies: Vec::new(),
+            conformances: HashMap::new(),
+            expected: None,
+        }
+    }
+
+    /// Infer `expr` telling it which type the context expects.
+    fn infer_expecting(&mut self, expr: &Expr, expected: Option<&ResolvedType>) -> ResolvedType {
+        let saved = std::mem::replace(&mut self.expected, expected.cloned());
+        let ty = self.infer_expr_type(expr);
+        self.expected = saved;
+        ty
+    }
+
+    /// Resolve a parser type, instantiating generic types on the way.
+    fn resolve_parser_type(&mut self, ty: &Type, span: &Span) -> ResolvedType {
+        match ty {
+            Type::Generic(name, args) => {
+                let args: Vec<ResolvedType> = args.iter().map(|a| self.resolve_parser_type(a, span)).collect();
+                match self.instantiate_type(name, args, span) {
+                    Some(mangled) => ResolvedType::Struct(mangled),
+                    None => ResolvedType::Error,
+                }
+            }
+            Type::Named(name) if self.templates.structs.contains_key(name) || self.templates.variants.contains_key(name) => {
+                let arity = self.template_type_params(name).len();
+                self.errors.push(TypeError::new(
+                    format!("generic type '{}' needs {} type argument{}", name, arity, if arity == 1 { "" } else { "s" }),
+                    span,
+                ).with_hint(format!("write '{}<...>' with concrete types", name)));
+                ResolvedType::Error
+            }
+            Type::Array(inner) => ResolvedType::Array(Box::new(self.resolve_parser_type(inner, span))),
+            Type::Optional(inner) => ResolvedType::Optional(Box::new(self.resolve_parser_type(inner, span))),
+            Type::Function(params, ret) => ResolvedType::Function {
+                params: params.iter().map(|p| self.resolve_parser_type(p, span)).collect(),
+                ret: Box::new(self.resolve_parser_type(ret, span)),
+            },
+            Type::Tuple(elems) => ResolvedType::Tuple(elems.iter().map(|e| self.resolve_parser_type(e, span)).collect()),
+            other => ResolvedType::from_parser_type(other),
+        }
+    }
+
+    fn template_type_params(&self, name: &str) -> Vec<TypeParam> {
+        if let Some(s) = self.templates.structs.get(name) {
+            return s.type_params.clone();
+        }
+        if let Some(v) = self.templates.variants.get(name) {
+            return v.type_params.clone();
+        }
+        if let Some(f) = self.templates.fns.get(name) {
+            return f.type_params.clone();
+        }
+        Vec::new()
+    }
+
+    /// Common bookkeeping before a template is instantiated with `args`:
+    /// arity, usable argument types, the instantiation limit and bounds.
+    /// Returns the substitution map on success.
+    fn prepare_instantiation(&mut self, template: &str, type_params: &[TypeParam], args: &[ResolvedType], span: &Span) -> Option<HashMap<String, Type>> {
+        if args.len() != type_params.len() {
+            self.errors.push(TypeError::new(
+                format!(
+                    "'{}' expects {} type argument{}, found {}",
+                    template, type_params.len(), if type_params.len() == 1 { "" } else { "s" }, args.len()
+                ),
+                span,
+            ));
+            return None;
+        }
+        if args.iter().any(|a| matches!(a, ResolvedType::Error)) {
+            return None;
+        }
+        let mut map = HashMap::new();
+        for (param, arg) in type_params.iter().zip(args) {
+            match arg.to_parser_type() {
+                Some(ty) if !matches!(arg, ResolvedType::Unknown) => { map.insert(param.name.clone(), ty); }
+                _ => {
+                    self.errors.push(TypeError::new(
+                        format!("cannot instantiate '{}' with the unknown type of its argument for '{}'", template, param.name),
+                        span,
+                    ).with_hint("add a type annotation so the type argument is known"));
+                    return None;
+                }
+            }
+        }
+        let count = self.instantiation_counts.entry(template.to_string()).or_insert(0);
+        *count += 1;
+        if *count > MAX_INSTANTIATIONS {
+            self.errors.push(TypeError::new(
+                format!("'{}' has more than {} instantiations; a generic declaration probably instantiates itself with an ever-growing type", template, MAX_INSTANTIATIONS),
+                span,
+            ));
+            return None;
+        }
+        let mut ok = true;
+        for (param, arg) in type_params.iter().zip(args) {
+            for bound in &param.bounds {
+                if !self.check_bound(template, param, bound, arg, span) {
+                    ok = false;
+                }
+            }
+        }
+        if ok { Some(map) } else { None }
+    }
+
+    /// Whether `arg` satisfies the bound `T: bound` of `template`.
+    fn check_bound(&mut self, template: &str, param: &TypeParam, bound: &str, arg: &ResolvedType, span: &Span) -> bool {
+        if self.type_kinds.get(bound) != Some(&TypeKind::Protocol) {
+            self.errors.push(TypeError::new(
+                format!("undefined protocol '{}' in the bound of type parameter '{}' of '{}'", bound, param.name, template),
+                &param.span,
+            ));
+            return false;
+        }
+        if self.conforms(arg, bound) {
+            return true;
+        }
+        self.errors.push(TypeError::new(
+            format!(
+                "type '{}' does not conform to protocol '{}', required by type parameter '{}' of '{}'",
+                arg.display_name(), bound, param.name, template
+            ),
+            span,
+        ).with_hint(format!("declare 'extension {} : {} {{ ... }}' implementing the protocol's methods", arg.display_name(), bound)));
+        false
+    }
+
+    /// Whether a type is declared to conform to a protocol.
+    fn conforms(&self, ty: &ResolvedType, protocol: &str) -> bool {
+        match ty {
+            ResolvedType::Struct(name) => self.conformances.get(name).map(|p| p.contains(protocol)).unwrap_or(false),
+            ResolvedType::Error | ResolvedType::Unknown => true,
+            _ => false,
+        }
+    }
+
+    /// Instantiate the generic struct or variant `name` with `args`. Returns
+    /// the instance's name (`Box__int`), registering it on first use.
+    fn instantiate_type(&mut self, name: &str, args: Vec<ResolvedType>, span: &Span) -> Option<String> {
+        let mangled = mangle_instance(name, &args);
+        if self.instances.contains_key(&mangled) {
+            return Some(mangled);
+        }
+        let (struct_template, variant_template) = (self.templates.structs.get(name).cloned(), self.templates.variants.get(name).cloned());
+        let type_params = match (&struct_template, &variant_template) {
+            (Some(s), _) => s.type_params.clone(),
+            (_, Some(v)) => v.type_params.clone(),
+            (None, None) => {
+                self.errors.push(TypeError::new(format!("undefined generic type '{}'", name), span));
+                return None;
+            }
+        };
+        let map = self.prepare_instantiation(name, &type_params, &args, span)?;
+        self.instances.insert(mangled.clone(), Instance { template: name.to_string(), args });
+        self.instance_order.push(mangled.clone());
+        let empty = Resolutions::new();
+        let subst = Lowerer::with_subst(&empty, &map);
+        let subst_fields = |fields: &[Field]| -> Vec<Field> { subst.fields(fields) };
+
+        if let Some(s) = struct_template {
+            let methods: Vec<FnDecl> = s.methods.iter().map(|m| subst.fn_decl(m)).collect();
+            let inst = StructDecl {
+                name: mangled.clone(),
+                type_params: Vec::new(),
+                fields: subst_fields(&s.fields),
+                methods: Vec::new(),
+                is_pub: s.is_pub,
+                span: s.span,
+            };
+            self.register_struct(&inst);
+            for method in &methods {
+                self.register_method(&mangled, method);
+                self.pending_bodies.push(PendingBody { home: BodyHome::StructMethod(mangled.clone()), decl: method.clone() });
+            }
+            self.instance_structs.insert(mangled.clone(), inst);
+        } else if let Some(v) = variant_template {
+            let inst = VariantDecl {
+                name: mangled.clone(),
+                type_params: Vec::new(),
+                cases: v.cases.iter().map(|c| crate::parser::VariantCase {
+                    name: c.name.clone(),
+                    fields: subst_fields(&c.fields),
+                    span: c.span,
+                }).collect(),
+                is_pub: v.is_pub,
+                span: v.span,
+            };
+            self.register_variant_inner(&inst, true);
+            self.instance_variants.insert(mangled.clone(), inst);
+        }
+
+        // Methods and conformances contributed by `extension Name<T>`.
+        if let Some(methods) = self.templates.extensions.get(name).cloned() {
+            let methods: Vec<FnDecl> = methods.iter().map(|m| subst.fn_decl(m)).collect();
+            for method in &methods {
+                self.register_method(&mangled, method);
+                self.pending_bodies.push(PendingBody { home: BodyHome::ExtensionMethod(mangled.clone()), decl: method.clone() });
+            }
+            self.instance_extensions.insert(mangled.clone(), ExtensionDecl {
+                target: mangled.clone(),
+                type_params: Vec::new(),
+                protocols: self.templates.conformances.get(name).cloned().unwrap_or_default(),
+                methods: Vec::new(),
+                span: *span,
+            });
+        }
+        if let Some(protocols) = self.templates.conformances.get(name).cloned() {
+            self.conformances.entry(mangled.clone()).or_default().extend(protocols);
+        }
+        Some(mangled)
+    }
+
+    /// Instantiate the generic function `name` with `args`; returns the
+    /// instance name and its signature.
+    fn instantiate_fn(&mut self, name: &str, args: Vec<ResolvedType>, span: &Span) -> Option<(String, Vec<ResolvedType>, ResolvedType)> {
+        let template = self.templates.fns.get(name).cloned()?;
+        let mangled = mangle_instance(name, &args);
+        if !self.instances.contains_key(&mangled) {
+            let map = self.prepare_instantiation(name, &template.type_params, &args, span)?;
+            self.instances.insert(mangled.clone(), Instance { template: name.to_string(), args });
+            self.instance_order.push(mangled.clone());
+            let empty = Resolutions::new();
+            let inst = FnDecl {
+                name: mangled.clone(),
+                type_params: Vec::new(),
+                ..Lowerer::with_subst(&empty, &map).fn_decl(&template)
+            };
+            self.register_function(&inst);
+            self.pending_bodies.push(PendingBody { home: BodyHome::Function, decl: inst });
+        }
+        match self.symbols.lookup_function(&mangled).cloned() {
+            Some(ResolvedType::Function { params, ret }) => Some((mangled, params, *ret)),
+            _ => None,
+        }
+    }
+
+    /// Bind type parameters by matching a declared type against an actual one.
+    /// Returns false on a definite conflict (reported by the caller).
+    fn unify(&self, declared: &Type, actual: &ResolvedType, params: &[TypeParam], map: &mut HashMap<String, ResolvedType>) -> bool {
+        if matches!(actual, ResolvedType::Unknown | ResolvedType::Error) {
+            return true;
+        }
+        match declared {
+            Type::Named(name) if params.iter().any(|p| &p.name == name) => match map.get(name) {
+                Some(bound) => bound.is_assignable_from(actual) || actual.is_assignable_from(bound),
+                None => {
+                    map.insert(name.clone(), actual.clone());
+                    true
+                }
+            },
+            Type::Generic(name, declared_args) => match actual {
+                ResolvedType::Struct(instance) => match self.instances.get(instance) {
+                    Some(inst) if &inst.template == name && inst.args.len() == declared_args.len() => {
+                        let actual_args = inst.args.clone();
+                        declared_args.iter().zip(actual_args.iter()).all(|(d, a)| self.unify(d, a, params, map))
+                    }
+                    _ => false,
+                },
+                _ => false,
+            },
+            Type::Array(inner) => match actual {
+                ResolvedType::Array(a) => self.unify(inner, a, params, map),
+                _ => false,
+            },
+            Type::Optional(inner) => match actual {
+                ResolvedType::Optional(a) => self.unify(inner, a, params, map),
+                other => self.unify(inner, other, params, map),
+            },
+            Type::Function(ps, ret) => match actual {
+                ResolvedType::Function { params: aps, ret: aret } if aps.len() == ps.len() => {
+                    ps.iter().zip(aps.iter()).all(|(d, a)| self.unify(d, a, params, map)) && self.unify(ret, aret, params, map)
+                }
+                _ => false,
+            },
+            Type::Tuple(elems) => match actual {
+                ResolvedType::Tuple(aelems) if aelems.len() == elems.len() => {
+                    elems.iter().zip(aelems.iter()).all(|(d, a)| self.unify(d, a, params, map))
+                }
+                _ => false,
+            },
+            _ => true,
+        }
+    }
+
+    /// Type arguments of `expected` when it is an instance of `template`.
+    fn expected_instance_args(&self, expected: Option<&ResolvedType>, template: &str) -> Option<Vec<ResolvedType>> {
+        match expected {
+            Some(ResolvedType::Struct(name)) => {
+                let inst = self.instances.get(name)?;
+                if inst.template == template { Some(inst.args.clone()) } else { None }
+            }
+            _ => None,
+        }
+    }
+
+    /// Bind the type parameters of a generic declaration from the expected
+    /// type (when it is an instance of it), then from the argument expressions
+    /// matched against their declared types. Each argument is inferred once,
+    /// with the expectation its parameter gives when that is already known.
+    /// Returns the bound type arguments in declaration order and the inferred
+    /// argument types, or None after reporting what could not be inferred.
+    #[allow(clippy::too_many_arguments)]
+    fn infer_type_args(
+        &mut self,
+        template: &str,
+        type_params: &[TypeParam],
+        declared: &[Type],
+        args: &[Expr],
+        expected: Option<&ResolvedType>,
+        declared_ret: Option<&Type>,
+        span: &Span,
+    ) -> Option<(Vec<ResolvedType>, Vec<ResolvedType>)> {
+        let mut map: HashMap<String, ResolvedType> = HashMap::new();
+        if let Some(expected_args) = self.expected_instance_args(expected, template) {
+            for (param, arg) in type_params.iter().zip(expected_args) {
+                map.insert(param.name.clone(), arg);
+            }
+        } else if let (Some(ret), Some(expected)) = (declared_ret, expected) {
+            self.unify(ret, expected, type_params, &mut map);
+        }
+        if declared.len() != args.len() {
+            self.errors.push(TypeError::new(
+                format!("expected {} arguments, found {}", declared.len(), args.len()),
+                span,
+            ));
+            for arg in args {
+                self.infer_expr_type(arg);
+            }
+            return None;
+        }
+        let mut arg_types = Vec::with_capacity(args.len());
+        for (decl_ty, arg) in declared.iter().zip(args) {
+            let expectation = self.substitute_known(decl_ty, type_params, &map);
+            let arg_ty = self.infer_expecting(arg, expectation.as_ref());
+            if !self.unify(decl_ty, &arg_ty, type_params, &mut map) {
+                self.errors.push(TypeError::new(
+                    format!(
+                        "argument of type '{}' does not fit parameter type '{}' of '{}'",
+                        arg_ty.display_name(), Self::type_text(decl_ty), template
+                    ),
+                    &arg.span(),
+                ));
+                return None;
+            }
+            arg_types.push(arg_ty);
+        }
+        let mut type_args = Vec::with_capacity(type_params.len());
+        for param in type_params {
+            match map.get(&param.name) {
+                Some(ty) => type_args.push(ty.clone()),
+                None => {
+                    self.errors.push(TypeError::new(
+                        format!("cannot infer type parameter '{}' of '{}'", param.name, template),
+                        span,
+                    ).with_hint("add a type annotation to the variable, parameter or return type that receives this value"));
+                    return None;
+                }
+            }
+        }
+        Some((type_args, arg_types))
+    }
+
+    /// Resolve `declared` with the type parameters bound so far; None when it
+    /// still mentions an unbound parameter.
+    fn substitute_known(&mut self, declared: &Type, params: &[TypeParam], map: &HashMap<String, ResolvedType>) -> Option<ResolvedType> {
+        let mut subst: HashMap<String, Type> = HashMap::new();
+        for param in params {
+            let bound = map.get(&param.name)?;
+            subst.insert(param.name.clone(), bound.to_parser_type()?);
+        }
+        let empty = Resolutions::new();
+        let concrete = Lowerer::with_subst(&empty, &subst).ty(declared);
+        if Self::mentions_any(&concrete, params) {
+            return None;
+        }
+        let span = Span::default();
+        Some(self.resolve_parser_type(&concrete, &span))
+    }
+
+    fn mentions_any(ty: &Type, params: &[TypeParam]) -> bool {
+        match ty {
+            Type::Named(n) => params.iter().any(|p| &p.name == n),
+            Type::Generic(_, args) => args.iter().any(|a| Self::mentions_any(a, params)),
+            Type::Array(inner) | Type::Optional(inner) => Self::mentions_any(inner, params),
+            Type::Function(ps, ret) => ps.iter().any(|p| Self::mentions_any(p, params)) || Self::mentions_any(ret, params),
+            Type::Tuple(elems) => elems.iter().any(|e| Self::mentions_any(e, params)),
+            _ => false,
+        }
+    }
+
+    /// Source-like spelling of a parser type for diagnostics.
+    fn type_text(ty: &Type) -> String {
+        match ty {
+            Type::Named(n) => n.clone(),
+            Type::Generic(n, args) => format!("{}<{}>", n, args.iter().map(Self::type_text).collect::<Vec<_>>().join(", ")),
+            Type::Array(inner) => format!("[{}]", Self::type_text(inner)),
+            Type::Optional(inner) => format!("{}?", Self::type_text(inner)),
+            Type::Function(ps, ret) => format!("fn({}) -> {}", ps.iter().map(Self::type_text).collect::<Vec<_>>().join(", "), Self::type_text(ret)),
+            Type::Tuple(elems) => format!("({})", elems.iter().map(Self::type_text).collect::<Vec<_>>().join(", ")),
+            other => ResolvedType::from_parser_type(other).display_name(),
+        }
+    }
+
+    /// Compare precomputed argument types against parameter types.
+    fn check_arg_types(&mut self, params: &[ResolvedType], arg_types: &[ResolvedType], span: &Span) {
+        for (i, (param, arg_ty)) in params.iter().zip(arg_types).enumerate() {
+            if !param.is_assignable_from(arg_ty) {
+                self.errors.push(TypeError::new(
+                    format!(
+                        "argument {} type mismatch: expected '{}', found '{}'",
+                        i + 1, param.display_name(), arg_ty.display_name()
+                    ),
+                    span,
+                ));
+            }
+        }
+    }
+
+    /// A call of a generic function: infer its type arguments, instantiate
+    /// it and record the renamed callee.
+    fn check_generic_call(&mut self, name: &str, args: &[Expr], expected: Option<&ResolvedType>, span: &Span) -> ResolvedType {
+        let template = match self.templates.fns.get(name).cloned() {
+            Some(t) => t,
+            None => return ResolvedType::Error,
+        };
+        let declared: Vec<Type> = template.params.iter().map(|p| p.ty.clone()).collect();
+        let (type_args, arg_types) = match self.infer_type_args(name, &template.type_params, &declared, args, expected, template.return_type.as_ref(), span) {
+            Some(x) => x,
+            None => return ResolvedType::Error,
+        };
+        match self.instantiate_fn(name, type_args, span) {
+            Some((mangled, params, ret)) => {
+                self.check_arg_types(&params, &arg_types, span);
+                self.record(SiteKind::Call, *span, Resolution::StaticCall { mangled });
+                ret
+            }
+            None => ResolvedType::Error,
+        }
+    }
+
+    /// Construction of a case of a generic variant (`Some(1)`, `None`,
+    /// `Option.None`, `Result.Ok(x)`): infer the type arguments from the
+    /// payload and the expected type, instantiate, then construct.
+    fn check_generic_case(&mut self, template: &str, case_name: &str, args: Option<&[Expr]>, expected: Option<&ResolvedType>, kind: SiteKind, span: &Span) -> ResolvedType {
+        let v = match self.templates.variants.get(template).cloned() {
+            Some(v) => v,
+            None => return ResolvedType::Error,
+        };
+        let case = match v.cases.iter().find(|c| c.name == case_name).cloned() {
+            Some(c) => c,
+            None => {
+                self.errors.push(TypeError::new(format!("variant '{}' has no case '{}'", template, case_name), span));
+                return ResolvedType::Error;
+            }
+        };
+        let declared: Vec<Type> = case.fields.iter().map(|f| f.ty.clone()).collect();
+        let ret = Type::Generic(template.to_string(), v.type_params.iter().map(|p| Type::Named(p.name.clone())).collect());
+        let (type_args, arg_types) = match args {
+            Some(args) => match self.infer_type_args(template, &v.type_params, &declared, args, expected, Some(&ret), span) {
+                Some(x) => x,
+                None => return ResolvedType::Error,
+            },
+            None => {
+                if !case.fields.is_empty() {
+                    self.errors.push(TypeError::new(
+                        format!("case '{}' of '{}' carries {} value{}; construct it as '{}(...)'",
+                            case_name, template, case.fields.len(), if case.fields.len() == 1 { "" } else { "s" }, case_name),
+                        span,
+                    ));
+                    return ResolvedType::Error;
+                }
+                match self.infer_type_args(template, &v.type_params, &[], &[], expected, Some(&ret), span) {
+                    Some(x) => x,
+                    None => return ResolvedType::Error,
+                }
+            }
+        };
+        let mangled = match self.instantiate_type(template, type_args, span) {
+            Some(m) => m,
+            None => return ResolvedType::Error,
+        };
+        let variant = match self.variants.get(&mangled).cloned() {
+            Some(v) => v,
+            None => return ResolvedType::Error,
+        };
+        let case = match variant.case(case_name).cloned() {
+            Some(c) => c,
+            None => return ResolvedType::Error,
+        };
+        let ctor = variant.mangle_case(case_name);
+        match args {
+            Some(_) => {
+                let params: Vec<ResolvedType> = case.fields.iter().map(|(_, t)| t.clone()).collect();
+                self.check_arg_types(&params, &arg_types, span);
+                self.record(SiteKind::Call, *span, Resolution::StaticCall { mangled: ctor });
+            }
+            None => self.record(kind, *span, Resolution::Rename { mangled: ctor }),
+        }
+        ResolvedType::Struct(mangled)
+    }
+
+    /// A struct literal of a generic struct: infer the type arguments from
+    /// the field values, instantiate and record the renamed struct.
+    fn check_generic_struct_lit(&mut self, name: &str, fields: &[(String, Expr)], expected: Option<&ResolvedType>, span: &Span) -> ResolvedType {
+        let template = match self.templates.structs.get(name).cloned() {
+            Some(t) => t,
+            None => return ResolvedType::Error,
+        };
+        let mut declared = Vec::new();
+        let mut values = Vec::new();
+        for (field_name, value) in fields {
+            match template.fields.iter().find(|f| &f.name == field_name) {
+                Some(f) => { declared.push(f.ty.clone()); values.push(value.clone()); }
+                None => {
+                    self.errors.push(TypeError::new(format!("struct '{}' has no field '{}'", name, field_name), span));
+                    self.infer_expr_type(value);
+                }
+            }
+        }
+        let ret = Type::Generic(name.to_string(), template.type_params.iter().map(|p| Type::Named(p.name.clone())).collect());
+        let (type_args, value_types) = match self.infer_type_args(name, &template.type_params, &declared, &values, expected, Some(&ret), span) {
+            Some(x) => x,
+            None => return ResolvedType::Error,
+        };
+        let mangled = match self.instantiate_type(name, type_args, span) {
+            Some(m) => m,
+            None => return ResolvedType::Error,
+        };
+        let info = match self.symbols.lookup_struct(&mangled).cloned() {
+            Some(info) => info,
+            None => return ResolvedType::Error,
+        };
+        for ((field_name, _), value_ty) in fields.iter().zip(value_types) {
+            if let Some(expected_ty) = info.fields.get(field_name) {
+                if !expected_ty.is_assignable_from(&value_ty) {
+                    self.errors.push(TypeError::new(
+                        format!("field '{}' expects '{}', found '{}'", field_name, expected_ty.display_name(), value_ty.display_name()),
+                        span,
+                    ));
+                }
+            }
+        }
+        self.record(SiteKind::StructLit, *span, Resolution::Rename { mangled: mangled.clone() });
+        ResolvedType::Struct(mangled)
+    }
+
+    /// Check every instantiated body produced so far, including the ones
+    /// instantiation of those bodies produces in turn.
+    fn drain_pending_bodies(&mut self) {
+        loop {
+            let pending = std::mem::take(&mut self.pending_bodies);
+            if pending.is_empty() {
+                break;
+            }
+            for body in pending {
+                match body.home {
+                    BodyHome::Function => {
+                        let lowered = self.check_function(&body.decl);
+                        self.instance_fns.insert(body.decl.name.clone(), lowered);
+                    }
+                    BodyHome::StructMethod(owner) => {
+                        let lowered = self.check_method(&owner, &body.decl);
+                        if let Some(s) = self.instance_structs.get_mut(&owner) {
+                            s.methods.push(lowered);
+                        }
+                    }
+                    BodyHome::ExtensionMethod(owner) => {
+                        let lowered = self.check_method(&owner, &body.decl);
+                        if let Some(e) = self.instance_extensions.get_mut(&owner) {
+                            e.methods.push(lowered);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -149,6 +786,24 @@ impl TypeChecker {
         let variant = self.variants.get(&owners[0])?.clone();
         let case = variant.case(name)?.clone();
         Some((variant, case))
+    }
+
+    /// Resolve a bare case name of a generic variant (`Some`, `None`, `Ok`).
+    fn resolve_template_case(&mut self, name: &str, span: &Span) -> Option<String> {
+        let owners = self.templates.case_index.get(name)?.clone();
+        if owners.len() > 1 {
+            self.errors.push(TypeError::new(
+                format!(
+                    "ambiguous case '{}': it belongs to {}; qualify it as {}",
+                    name,
+                    owners.iter().map(|v| format!("'{}'", v)).collect::<Vec<_>>().join(" and "),
+                    owners.iter().map(|v| format!("'{}.{}'", v, name)).collect::<Vec<_>>().join(" or ")
+                ),
+                span,
+            ));
+            return None;
+        }
+        Some(owners[0].clone())
     }
 
     /// Type check a variant case construction and record how it lowers.
@@ -240,6 +895,10 @@ impl TypeChecker {
     fn check_method_call(&mut self, receiver: &Expr, method: &str, args: &[Expr], call_span: &Span, member_span: &Span) -> Option<ResolvedType> {
         // Static call on a type name: Type.method(args)
         if let Expr::Identifier(type_name, _) = receiver {
+            if self.symbols.lookup(type_name).is_none() && self.templates.variants.contains_key(type_name) {
+                let expected = self.expected.take();
+                return Some(self.check_generic_case(type_name, method, Some(args), expected.as_ref(), SiteKind::Call, call_span));
+            }
             if self.is_type_name(type_name) {
                 if let Some(variant) = self.variants.get(type_name).cloned() {
                     if let Some(case) = variant.case(method).cloned() {
@@ -323,7 +982,7 @@ impl TypeChecker {
             return;
         }
         for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
-            let arg_ty = self.infer_expr_type(arg);
+            let arg_ty = self.infer_expecting(arg, Some(param));
             if !param.is_assignable_from(&arg_ty) {
                 self.errors.push(TypeError::new(
                     format!(
@@ -352,17 +1011,72 @@ impl TypeChecker {
     /// resolved to `Expr::MethodCall`, static calls to their mangled function,
     /// and every `let` carrying its type.
     pub fn check_and_lower(&mut self, ast: &Ast) -> Result<Ast, Vec<TypeError>> {
+        // Pass 0: set generic declarations aside; they are checked per instance.
+        for decl in &ast.declarations {
+            let duplicate = match decl {
+                Decl::Struct(s) if !s.type_params.is_empty() => {
+                    self.templates.structs.insert(s.name.clone(), s.clone()).map(|_| ("struct", s.name.clone(), s.span))
+                }
+                Decl::Variant(v) if !v.type_params.is_empty() => {
+                    for case in &v.cases {
+                        let owners = self.templates.case_index.entry(case.name.clone()).or_default();
+                        if !owners.contains(&v.name) {
+                            owners.push(v.name.clone());
+                        }
+                    }
+                    self.templates.variants.insert(v.name.clone(), v.clone()).map(|_| ("variant", v.name.clone(), v.span))
+                }
+                Decl::Function(f) if !f.type_params.is_empty() => {
+                    self.templates.fns.insert(f.name.clone(), f.clone()).map(|_| ("function", f.name.clone(), f.span))
+                }
+                _ => None,
+            };
+            if let Some((what, name, span)) = duplicate {
+                self.errors.push(TypeError::new(format!("generic {} '{}' is declared twice", what, name), &span));
+            }
+        }
+        for decl in &ast.declarations {
+            if let Decl::Extension(ext) = decl {
+                if !ext.type_params.is_empty() {
+                    let declared = self.template_type_params(&ext.target);
+                    if declared.is_empty() {
+                        self.errors.push(TypeError::new(
+                            format!("extension of '{}' declares type parameters, but '{}' is not a generic type", ext.target, ext.target),
+                            &ext.span,
+                        ));
+                        continue;
+                    }
+                    let declared_names: Vec<&str> = declared.iter().map(|p| p.name.as_str()).collect();
+                    let ext_names: Vec<&str> = ext.type_params.iter().map(|p| p.name.as_str()).collect();
+                    if declared_names != ext_names {
+                        self.errors.push(TypeError::new(
+                            format!(
+                                "extension of '{}' must name its type parameters as declared: <{}>",
+                                ext.target, declared_names.join(", ")
+                            ),
+                            &ext.span,
+                        ));
+                        continue;
+                    }
+                    self.templates.extensions.entry(ext.target.clone()).or_default().extend(ext.methods.iter().cloned());
+                    self.templates.conformances.entry(ext.target.clone()).or_default().extend(ext.protocols.iter().cloned());
+                }
+            }
+        }
+
         // Pass 1a: nominal types, so that methods, extensions and signatures
         // declared earlier in the file can refer to types declared later.
         for decl in &ast.declarations {
             match decl {
+                Decl::Struct(s) if !s.type_params.is_empty() => {}
+                Decl::Variant(v) if !v.type_params.is_empty() => {}
                 Decl::Struct(s) => self.register_struct(s),
                 Decl::Variant(v) => self.register_variant(v),
                 Decl::Protocol(p) => self.register_protocol(p),
                 Decl::Layer(l) => self.register_layer(l),
                 Decl::Panel(p) => self.register_panel(p),
                 Decl::Typealias(t) => {
-                    let resolved = ResolvedType::from_parser_type(&t.target);
+                    let resolved = self.resolve_parser_type(&t.target, &t.span);
                     self.type_aliases.insert(t.name.clone(), resolved.clone());
                     let _ = self.symbols.define(Symbol {
                         name: t.name.clone(),
@@ -379,6 +1093,9 @@ impl TypeChecker {
         self.resolutions.clear();
         for decl in &ast.declarations {
             match decl {
+                Decl::Function(f) if !f.type_params.is_empty() => {}
+                Decl::Struct(s) if !s.type_params.is_empty() => {}
+                Decl::Extension(ext) if !ext.type_params.is_empty() => {}
                 Decl::Function(f) => self.register_function(f),
                 Decl::Extern(e) => self.register_extern(e),
                 Decl::Struct(s) => {
@@ -388,13 +1105,24 @@ impl TypeChecker {
                 }
                 Decl::Extension(ext) => {
                     if !self.type_kinds.contains_key(&ext.target) {
-                        self.errors.push(TypeError::new(
-                            format!("extension of undefined type '{}'", ext.target),
-                            &ext.span,
-                        ));
+                        let hint = if self.templates.structs.contains_key(&ext.target) || self.templates.variants.contains_key(&ext.target) {
+                            Some(format!("'{}' is generic; write 'extension {}<{}>'", ext.target,
+                                ext.target, self.template_type_params(&ext.target).iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(", ")))
+                        } else {
+                            None
+                        };
+                        let err = TypeError::new(format!("extension of undefined type '{}'", ext.target), &ext.span);
+                        self.errors.push(match hint { Some(h) => err.with_hint(h), None => err });
                     }
                     for method in &ext.methods {
                         self.register_method(&ext.target, method);
+                    }
+                    for protocol in &ext.protocols {
+                        if self.type_kinds.get(protocol) != Some(&TypeKind::Protocol) {
+                            self.errors.push(TypeError::new(format!("undefined protocol '{}'", protocol), &ext.span));
+                            continue;
+                        }
+                        self.conformances.entry(ext.target.clone()).or_default().insert(protocol.clone());
                     }
                 }
                 Decl::Layer(l) => {
@@ -408,8 +1136,8 @@ impl TypeChecker {
                     }
                 }
                 Decl::Const(c) => {
-                    let declared = c.ty.as_ref().map(ResolvedType::from_parser_type);
-                    let inferred = self.infer_expr_type(&c.value);
+                    let declared = c.ty.as_ref().map(|t| self.resolve_parser_type(t, &c.span));
+                    let inferred = self.infer_expecting(&c.value, declared.as_ref());
                     let ty = match declared {
                         Some(decl_ty) => {
                             if !decl_ty.is_assignable_from(&inferred) {
@@ -436,8 +1164,8 @@ impl TypeChecker {
                 }
                 Decl::GlobalVar(g) => {
                     let declared_type = g.ty.as_ref()
-                        .map(ResolvedType::from_parser_type);
-                    let inferred_type = g.init.as_ref().map(|e| self.infer_expr_type(e));
+                        .map(|t| self.resolve_parser_type(t, &g.span));
+                    let inferred_type = g.init.as_ref().map(|e| self.infer_expecting(e, declared_type.as_ref()));
                     let final_type = declared_type
                         .or(inferred_type)
                         .unwrap_or(ResolvedType::Unknown);
@@ -453,10 +1181,15 @@ impl TypeChecker {
         }
         let global_resolutions = std::mem::take(&mut self.resolutions);
 
-        // Pass 2: check and lower every body.
+        // Pass 2: check and lower every body. Generic declarations are left
+        // out; their instances are appended afterwards.
         let mut lowered: Vec<Decl> = Vec::with_capacity(ast.declarations.len());
         for decl in &ast.declarations {
             let out = match decl {
+                Decl::Function(f) if !f.type_params.is_empty() => continue,
+                Decl::Struct(s) if !s.type_params.is_empty() => continue,
+                Decl::Variant(v) if !v.type_params.is_empty() => continue,
+                Decl::Extension(ext) if !ext.type_params.is_empty() => continue,
                 Decl::Function(f) => Decl::Function(self.check_function(f)),
                 Decl::Struct(s) => Decl::Struct(StructDecl {
                     methods: s.methods.iter().map(|m| self.check_method(&s.name, m)).collect(),
@@ -484,6 +1217,52 @@ impl TypeChecker {
             lowered.push(out);
         }
 
+        // Signatures of the remaining declarations: name applied generic types
+        // by their instances so codegen only sees concrete type names.
+        let empty = Resolutions::new();
+        let normalize = Lowerer::new(&empty);
+        for decl in lowered.iter_mut() {
+            match decl {
+                Decl::Struct(s) => s.fields = normalize.fields(&s.fields),
+                Decl::Variant(v) => {
+                    for case in v.cases.iter_mut() {
+                        case.fields = normalize.fields(&case.fields);
+                    }
+                }
+                Decl::Layer(l) => l.fields = normalize.fields(&l.fields),
+                Decl::Extern(e) => {
+                    e.params = e.params.iter().map(|p| crate::parser::Param { name: p.name.clone(), ty: normalize.ty(&p.ty), span: p.span }).collect();
+                    e.return_type = e.return_type.as_ref().map(|t| normalize.ty(t));
+                }
+                Decl::Const(c) => c.ty = c.ty.as_ref().map(|t| normalize.ty(t)),
+                Decl::Typealias(t) => t.target = normalize.ty(&t.target),
+                Decl::Protocol(p) => {
+                    for m in p.methods.iter_mut() {
+                        m.params = m.params.iter().map(|p| crate::parser::Param { name: p.name.clone(), ty: normalize.ty(&p.ty), span: p.span }).collect();
+                        m.return_type = m.return_type.as_ref().map(|t| normalize.ty(t));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Instances created on the way, and the instances their bodies create.
+        self.drain_pending_bodies();
+        for name in std::mem::take(&mut self.instance_order) {
+            if let Some(s) = self.instance_structs.remove(&name) {
+                lowered.push(Decl::Struct(s));
+            }
+            if let Some(v) = self.instance_variants.remove(&name) {
+                lowered.push(Decl::Variant(v));
+            }
+            if let Some(f) = self.instance_fns.remove(&name) {
+                lowered.push(Decl::Function(f));
+            }
+            if let Some(e) = self.instance_extensions.remove(&name) {
+                lowered.push(Decl::Extension(e));
+            }
+        }
+
         if self.errors.is_empty() {
             Ok(Ast { declarations: lowered })
         } else {
@@ -506,6 +1285,12 @@ impl TypeChecker {
     }
 
     fn register_variant(&mut self, v: &VariantDecl) {
+        self.register_variant_inner(v, false);
+    }
+
+    /// Register a variant. Instances of generic variants are reached through
+    /// their template, so they stay out of the bare case index.
+    fn register_variant_inner(&mut self, v: &VariantDecl, is_instance: bool) {
         self.register_nominal(&v.name, TypeKind::Variant, HashMap::new(), &v.span);
         let mut cases = Vec::new();
         for case in &v.cases {
@@ -516,13 +1301,13 @@ impl TypeChecker {
                 ));
                 continue;
             }
-            cases.push(CaseInfo {
-                name: case.name.clone(),
-                fields: case.fields.iter().map(|f| (f.name.clone(), ResolvedType::from_parser_type(&f.ty))).collect(),
-            });
-            let owners = self.case_index.entry(case.name.clone()).or_default();
-            if !owners.contains(&v.name) {
-                owners.push(v.name.clone());
+            let fields = case.fields.iter().map(|f| (f.name.clone(), self.resolve_parser_type(&f.ty, &f.span))).collect();
+            cases.push(CaseInfo { name: case.name.clone(), fields });
+            if !is_instance {
+                let owners = self.case_index.entry(case.name.clone()).or_default();
+                if !owners.contains(&v.name) {
+                    owners.push(v.name.clone());
+                }
             }
         }
         self.variants.insert(v.name.clone(), VariantInfo { name: v.name.clone(), cases });
@@ -544,7 +1329,7 @@ impl TypeChecker {
                 });
             } else {
                 let param_types: Vec<ResolvedType> = case.fields.iter()
-                    .map(|f| ResolvedType::from_parser_type(&f.ty))
+                    .map(|f| self.resolve_parser_type(&f.ty, &f.span))
                     .collect();
                 let _ = self.symbols.define(Symbol {
                     name: case_symbol_name,
@@ -571,7 +1356,7 @@ impl TypeChecker {
 
     fn register_layer(&mut self, l: &LayerDecl) {
         let fields = l.fields.iter()
-            .map(|f| (f.name.clone(), ResolvedType::from_parser_type(&f.ty)))
+            .map(|f| (f.name.clone(), self.resolve_parser_type(&f.ty, &f.span)))
             .collect();
         self.register_nominal(&l.name, TypeKind::Layer, fields, &l.span);
         let _ = self.symbols.define(Symbol {
@@ -590,8 +1375,8 @@ impl TypeChecker {
     fn register_method(&mut self, type_name: &str, f: &FnDecl) {
         let info = MethodInfo {
             name: f.name.clone(),
-            params: f.params.iter().map(|p| ResolvedType::from_parser_type(&p.ty)).collect(),
-            ret: f.return_type.as_ref().map(ResolvedType::from_parser_type).unwrap_or(ResolvedType::Void),
+            params: f.params.iter().map(|p| self.resolve_parser_type(&p.ty, &p.span)).collect(),
+            ret: f.return_type.as_ref().map(|t| self.resolve_parser_type(t, &f.span)).unwrap_or(ResolvedType::Void),
             is_mut: f.is_mut,
             is_static: f.is_static,
             span: f.span,
@@ -620,7 +1405,7 @@ impl TypeChecker {
     fn register_struct(&mut self, s: &StructDecl) {
         let mut fields = std::collections::HashMap::new();
         for field in &s.fields {
-            let ty = ResolvedType::from_parser_type(&field.ty);
+            let ty = self.resolve_parser_type(&field.ty, &field.span);
             fields.insert(field.name.clone(), ty);
         }
 
@@ -630,12 +1415,12 @@ impl TypeChecker {
     fn register_function(&mut self, f: &FnDecl) {
         let params: Vec<ResolvedType> = f.params
             .iter()
-            .map(|p| ResolvedType::from_parser_type(&p.ty))
+            .map(|p| self.resolve_parser_type(&p.ty, &p.span))
             .collect();
 
         let ret = f.return_type
             .as_ref()
-            .map(ResolvedType::from_parser_type)
+            .map(|t| self.resolve_parser_type(t, &f.span))
             .unwrap_or(ResolvedType::Void);
 
         let fn_type = ResolvedType::Function {
@@ -659,12 +1444,12 @@ impl TypeChecker {
     fn register_function_named(&mut self, name: &str, f: &FnDecl) {
         let params: Vec<ResolvedType> = f.params
             .iter()
-            .map(|p| ResolvedType::from_parser_type(&p.ty))
+            .map(|p| self.resolve_parser_type(&p.ty, &p.span))
             .collect();
 
         let ret = f.return_type
             .as_ref()
-            .map(ResolvedType::from_parser_type)
+            .map(|t| self.resolve_parser_type(t, &f.span))
             .unwrap_or(ResolvedType::Void);
 
         let fn_type = ResolvedType::Function {
@@ -684,12 +1469,12 @@ impl TypeChecker {
     fn register_extern(&mut self, e: &ExternDecl) {
         let params: Vec<ResolvedType> = e.params
             .iter()
-            .map(|p| ResolvedType::from_parser_type(&p.ty))
+            .map(|p| self.resolve_parser_type(&p.ty, &p.span))
             .collect();
 
         let ret = e.return_type
             .as_ref()
-            .map(ResolvedType::from_parser_type)
+            .map(|t| self.resolve_parser_type(t, &e.span))
             .unwrap_or(ResolvedType::Void);
 
         let fn_type = ResolvedType::Function {
@@ -740,7 +1525,7 @@ impl TypeChecker {
 
         // Add parameters to scope
         for param in &f.params {
-            let ty = ResolvedType::from_parser_type(&param.ty);
+            let ty = self.resolve_parser_type(&param.ty, &param.span);
             let _ = self.symbols.define(Symbol {
                 name: param.name.clone(),
                 ty,
@@ -752,7 +1537,7 @@ impl TypeChecker {
         // Set expected return type
         self.current_return_type = f.return_type
             .as_ref()
-            .map(ResolvedType::from_parser_type);
+            .map(|t| self.resolve_parser_type(t, &f.span));
 
         // Check function body
         self.check_block(&f.body);
@@ -853,9 +1638,12 @@ impl TypeChecker {
 
     fn check_let(&mut self, l: &LetStmt) {
         let declared_type = l.ty.as_ref()
-            .map(|t| self.resolve_type(&ResolvedType::from_parser_type(t)));
-        
-        let inferred_type = l.init.as_ref().map(|e| self.infer_expr_type(e));
+            .map(|t| {
+                let resolved = self.resolve_parser_type(t, &l.span);
+                self.resolve_type(&resolved)
+            });
+
+        let inferred_type = l.init.as_ref().map(|e| self.infer_expecting(e, declared_type.as_ref()));
 
         let final_type = match (&declared_type, &inferred_type) {
             (Some(decl), Some(infer)) => {
@@ -893,8 +1681,9 @@ impl TypeChecker {
     }
 
     fn check_return(&mut self, r: &ReturnStmt) {
+        let expected = self.current_return_type.clone();
         let return_type = r.value.as_ref()
-            .map(|e| self.infer_expr_type(e))
+            .map(|e| self.infer_expecting(e, expected.as_ref()))
             .unwrap_or(ResolvedType::Void);
 
         if let Some(expected) = &self.current_return_type {
@@ -978,12 +1767,13 @@ impl TypeChecker {
             return ResolvedType::Error;
         }
         self.expr_depth += 1;
-        let ty = self.infer_expr_type_inner(expr);
+        let expected = self.expected.take();
+        let ty = self.infer_expr_type_inner(expr, expected.as_ref());
         self.expr_depth -= 1;
         ty
     }
 
-    fn infer_expr_type_inner(&mut self, expr: &Expr) -> ResolvedType {
+    fn infer_expr_type_inner(&mut self, expr: &Expr, expected: Option<&ResolvedType>) -> ResolvedType {
         match expr {
             Expr::Literal(lit) => self.infer_literal_type(lit),
             Expr::Identifier(name, span) => {
@@ -993,6 +1783,16 @@ impl TypeChecker {
                     self.check_case_construction(&variant, &case, None, SiteKind::Ident, span)
                 } else if self.case_index.contains_key(name) {
                     ResolvedType::Error // ambiguity already reported
+                } else if let Some(template) = self.resolve_template_case(name, span) {
+                    self.check_generic_case(&template, name, None, expected, SiteKind::Ident, span)
+                } else if self.templates.case_index.contains_key(name) {
+                    ResolvedType::Error
+                } else if self.templates.structs.contains_key(name) || self.templates.variants.contains_key(name) || self.templates.fns.contains_key(name) {
+                    self.errors.push(TypeError::new(
+                        format!("'{}' is generic and cannot be used as a value without instantiation", name),
+                        span,
+                    ));
+                    ResolvedType::Error
                 } else {
                     self.errors.push(TypeError::new(
                         format!("undefined variable '{}'", name),
@@ -1039,6 +1839,15 @@ impl TypeChecker {
                         if self.case_index.contains_key(name) {
                             return ResolvedType::Error;
                         }
+                        if self.templates.fns.contains_key(name) {
+                            return self.check_generic_call(name, args, expected, span);
+                        }
+                        if let Some(template) = self.resolve_template_case(name, ident_span) {
+                            return self.check_generic_case(&template, name, Some(args), expected, SiteKind::Call, span);
+                        }
+                        if self.templates.case_index.contains_key(name) {
+                            return ResolvedType::Error;
+                        }
                     }
                 }
                 if let Expr::Member(receiver, method, member_span) = callee.as_ref() {
@@ -1078,6 +1887,9 @@ impl TypeChecker {
             },
             Expr::Member(obj, field, span) => {
                 if let Expr::Identifier(type_name, _) = obj.as_ref() {
+                    if self.symbols.lookup(type_name).is_none() && self.templates.variants.contains_key(type_name) {
+                        return self.check_generic_case(type_name, field, None, expected, SiteKind::Member, span);
+                    }
                     if self.is_type_name(type_name) {
                         if let Some(variant) = self.variants.get(type_name).cloned() {
                             if let Some(case) = variant.case(field).cloned() {
@@ -1113,7 +1925,7 @@ impl TypeChecker {
             }
             Expr::Assign(target, value, span) => {
                 let target_ty = self.infer_expr_type(target);
-                let value_ty = self.infer_expr_type(value);
+                let value_ty = self.infer_expecting(value, Some(&target_ty));
                 self.check_assignable(target);
                 if !target_ty.is_assignable_from(&value_ty) {
                     self.errors.push(TypeError::new(
@@ -1128,13 +1940,17 @@ impl TypeChecker {
                 target_ty
             }
             Expr::StructLit(name, fields, span) => {
+                if self.templates.structs.contains_key(name) && self.symbols.lookup_struct(name).is_none() {
+                    return self.check_generic_struct_lit(name, fields, expected, span);
+                }
                 if let Some(struct_info) = self.symbols.lookup_struct(name) {
                     // Clone fields to avoid borrow conflict
                     let expected_fields = struct_info.fields.clone();
                     
                     // Check all fields are provided with correct types
                     for (field_name, value) in fields {
-                        let value_ty = self.infer_expr_type(value);
+                        let field_expectation = expected_fields.get(field_name).cloned();
+                        let value_ty = self.infer_expecting(value, field_expectation.as_ref());
                         if let Some(expected_ty) = expected_fields.get(field_name) {
                             if !expected_ty.is_assignable_from(&value_ty) {
                                 self.errors.push(TypeError::new(
@@ -1241,12 +2057,12 @@ impl TypeChecker {
                 // Range produces an array of integers
                 ResolvedType::Array(Box::new(ResolvedType::Int))
             }
-            Expr::Action(params, return_type, body, _span) => {
+            Expr::Action(params, return_type, body, span) => {
                 let param_types: Vec<ResolvedType> = params.iter()
-                    .map(|p| ResolvedType::from_parser_type(&p.ty))
+                    .map(|p| self.resolve_parser_type(&p.ty, &p.span))
                     .collect();
                 let ret = return_type.as_ref()
-                    .map(|t| ResolvedType::from_parser_type(t))
+                    .map(|t| self.resolve_parser_type(t, span))
                     .unwrap_or(ResolvedType::Void);
                 self.symbols.push_scope();
                 self.check_block(body);
@@ -1388,8 +2204,11 @@ impl TypeChecker {
                     }
                     return pattern.clone();
                 }
+                let names_instance = |checker: &Self, named: &str, v: &VariantInfo| {
+                    named == v.name || checker.instances.get(&v.name).map(|i| i.template == named).unwrap_or(false)
+                };
                 let v = match (&variant, &vp.type_name) {
-                    (Some(v), Some(named)) if named != &v.name => {
+                    (Some(v), Some(named)) if !names_instance(self, named, v) => {
                         self.errors.push(TypeError::new(
                             format!("pattern '{}.{}' cannot match a value of type '{}'", named, vp.case, ty.display_name()),
                             &vp.span,
@@ -1645,7 +2464,7 @@ impl TypeChecker {
                 }
 
                 for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
-                    let arg_ty = self.infer_expr_type(arg);
+                    let arg_ty = self.infer_expecting(arg, Some(param));
                     if !param.is_assignable_from(&arg_ty) {
                         self.errors.push(TypeError::new(
                             format!(
@@ -1905,6 +2724,7 @@ mod tests {
         let ast = Ast {
             declarations: vec![Decl::Function(FnDecl {
                 name: "main".into(),
+                type_params: vec![],
                 params: vec![],
                 return_type: None,
                 body: Block { statements: vec![Stmt::Expr(expr)], span },
@@ -2185,5 +3005,158 @@ mod tests {
         assert!(ok.is_ok(), "{:?}", ok.err());
         let msgs = messages(with_variants("fn f(r: Result) -> int { return match r { Ok(v) => { v } Err(_) => \"no\" }; }"));
         assert!(msgs[0].contains("match arms have incompatible types: 'int' and 'string'"), "{}", msgs[0]);
+    }
+
+    // === Generics ===
+
+    const GENERICS: &str = r#"
+        variant Option<T> { Some(T), None }
+        variant Result<T, E> { Ok(T), Err(E) }
+        struct Box<T> { value: T  fn get() -> T { return self.value; }  mut fn set(v: T) { self.value = v; } }
+        fn swap<T>(a: T, b: T) -> T { return b; }
+    "#;
+
+    fn with_generics(body: &str) -> Result<(), Vec<TypeError>> {
+        check_source(&format!("{}\n{}", GENERICS, body))
+    }
+
+    fn lowered(body: &str) -> Ast {
+        let tokens = tokenize(&format!("{}\n{}", GENERICS, body)).unwrap();
+        let ast = parse(&tokens).unwrap();
+        check(&ast).unwrap_or_else(|e| panic!("{:?}", e))
+    }
+
+    fn decl_names(ast: &Ast) -> Vec<String> {
+        ast.declarations.iter().filter_map(|d| match d {
+            Decl::Function(f) => Some(f.name.clone()),
+            Decl::Struct(s) => Some(s.name.clone()),
+            Decl::Variant(v) => Some(v.name.clone()),
+            Decl::Extension(e) => Some(format!("extension {}", e.target)),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn generic_functions_are_instantiated_per_argument_types() {
+        let ast = lowered("fn main() { let a: int = swap(1, 2); let b: string = swap(\"x\", \"y\"); let c = swap(3, 4); }");
+        let names = decl_names(&ast);
+        assert!(names.contains(&"swap__int".to_string()), "{:?}", names);
+        assert!(names.contains(&"swap__string".to_string()), "{:?}", names);
+        assert!(!names.contains(&"swap".to_string()), "{:?}", names);
+        assert_eq!(names.iter().filter(|n| n.as_str() == "swap__int").count(), 1);
+        let main = ast.declarations.iter().find_map(|d| match d { Decl::Function(f) if f.name == "main" => Some(f), _ => None }).unwrap();
+        match &main.body.statements[0] {
+            Stmt::Let(l) => assert!(matches!(&l.init, Some(Expr::Call(callee, _, _)) if matches!(callee.as_ref(), Expr::Identifier(n, _) if n == "swap__int"))),
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn generic_structs_and_variants_are_mangled_instances() {
+        let ast = lowered("fn main() { let b = Box { value: 1 }; let s: Box<string> = Box { value: \"s\" }; let o: Option<int> = Some(1); let r: Result<int, string> = Ok(1); let n: Option<Box<int>> = None; }");
+        let names = decl_names(&ast);
+        for expected in ["Box__int", "Box__string", "Option__int", "Result__int__string", "Option__Box__int"] {
+            assert!(names.contains(&expected.to_string()), "missing {} in {:?}", expected, names);
+        }
+        assert!(!names.contains(&"Box".to_string()));
+        let box_int = ast.declarations.iter().find_map(|d| match d { Decl::Struct(s) if s.name == "Box__int" => Some(s), _ => None }).unwrap();
+        assert_eq!(box_int.fields[0].ty, Type::Int);
+        assert_eq!(box_int.methods.len(), 2);
+        assert_eq!(box_int.methods[0].return_type, Some(Type::Int));
+        let main = ast.declarations.iter().find_map(|d| match d { Decl::Function(f) if f.name == "main" => Some(f), _ => None }).unwrap();
+        match &main.body.statements[0] {
+            Stmt::Let(l) => {
+                assert_eq!(l.ty, Some(Type::Named("Box__int".into())));
+                assert!(matches!(&l.init, Some(Expr::StructLit(n, _, _)) if n == "Box__int"));
+            }
+            other => panic!("{:?}", other),
+        }
+        match &main.body.statements[2] {
+            Stmt::Let(l) => assert!(matches!(&l.init, Some(Expr::Call(c, _, _)) if matches!(c.as_ref(), Expr::Identifier(n, _) if n == "Option__int_Some"))),
+            other => panic!("{:?}", other),
+        }
+        match &main.body.statements[4] {
+            Stmt::Let(l) => assert!(matches!(&l.init, Some(Expr::Identifier(n, _)) if n == "Option__Box__int_None")),
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn methods_of_instances_dispatch_and_check_with_substituted_types() {
+        assert!(with_generics("fn main() { let mut b = Box { value: 1 }; b.set(2); let v: int = b.get(); }").is_ok());
+        let msgs = messages(with_generics("fn main() { let mut b = Box { value: 1 }; b.set(\"s\"); }"));
+        assert!(msgs[0].contains("argument 1 type mismatch: expected 'int', found 'string'"), "{}", msgs[0]);
+        let msgs = messages(with_generics("fn main() { let b = Box { value: 1 }; let s: string = b.get(); }"));
+        assert!(msgs[0].contains("type mismatch: expected 'string', found 'int'"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn type_arguments_come_from_the_expected_type_when_needed() {
+        assert!(with_generics("fn f() -> Option<int> { return None; }").is_ok());
+        assert!(with_generics("fn f() -> Result<int, string> { return Ok(1); }").is_ok());
+        assert!(with_generics("fn g(o: Option<int>) { } fn f() { g(None); g(Some(1)); }").is_ok());
+        assert!(with_generics("fn f() { let o: Option<Option<int>> = Some(None); }").is_ok());
+        let errors = with_generics("fn f() { let n = None; }").unwrap_err();
+        assert_eq!(errors[0].message, "cannot infer type parameter 'T' of 'Option'");
+        assert!(errors[0].hint.is_some());
+        let errors = with_generics("fn f() { let r = Ok(1); }").unwrap_err();
+        assert_eq!(errors[0].message, "cannot infer type parameter 'E' of 'Result'");
+        let msgs = messages(with_generics("fn f() -> Option<int> { return Some(\"s\"); }"));
+        assert!(msgs[0].contains("argument of type 'string' does not fit parameter type 'T' of 'Option'"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn generic_type_misuse_is_reported() {
+        let msgs = messages(with_generics("fn f(b: Box) { }"));
+        assert!(msgs[0].contains("generic type 'Box' needs 1 type argument"), "{}", msgs[0]);
+        let msgs = messages(with_generics("fn f(b: Box<int, int>) { }"));
+        assert!(msgs[0].contains("'Box' expects 1 type argument, found 2"), "{}", msgs[0]);
+        let msgs = messages(with_generics("fn f() { let x = swap(1, \"a\"); }"));
+        assert!(msgs[0].contains("argument of type 'string' does not fit parameter type 'T' of 'swap'"), "{}", msgs[0]);
+        let msgs = messages(with_generics("fn f() { let x = swap; }"));
+        assert!(msgs[0].contains("'swap' is generic and cannot be used as a value"), "{}", msgs[0]);
+        let msgs = messages(with_generics("extension Box { fn h() { } }"));
+        assert!(msgs[0].contains("extension of undefined type 'Box'"), "{}", msgs[0]);
+        let msgs = messages(with_generics("extension Box<U> { fn h() { } }"));
+        assert!(msgs[0].contains("must name its type parameters as declared: <T>"), "{}", msgs[0]);
+        let msgs = messages(with_generics("fn show<T: Nope>(x: T) { } fn f() { show(1); }"));
+        assert!(msgs[0].contains("undefined protocol 'Nope' in the bound"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn protocol_bounds_are_checked_at_instantiation() {
+        let src = r#"
+            protocol Drawable { fn draw() -> string; }
+            struct Circle { r: int }
+            extension Circle : Drawable { fn draw() -> string { return "o"; } }
+            fn show<T: Drawable>(x: T) -> string { return x.draw(); }
+        "#;
+        assert!(check_source(&format!("{} fn main() {{ let s: string = show(Circle {{ r: 1 }}); }}", src)).is_ok());
+        let errors = check_source(&format!("{} fn main() {{ show(1); }}", src)).unwrap_err();
+        assert_eq!(errors[0].message, "type 'int' does not conform to protocol 'Drawable', required by type parameter 'T' of 'show'");
+        assert!(errors[0].hint.as_deref().unwrap_or("").contains("extension int : Drawable"));
+    }
+
+    #[test]
+    fn generic_extensions_apply_to_every_instance() {
+        let ast = lowered("extension Box<T> { fn same() -> Box<T> { return Box { value: self.value }; } } fn main() { let b = Box { value: 1 }.same(); let s = Box { value: \"x\" }.same(); }");
+        let names = decl_names(&ast);
+        assert!(names.contains(&"extension Box__int".to_string()), "{:?}", names);
+        assert!(names.contains(&"extension Box__string".to_string()), "{:?}", names);
+    }
+
+    #[test]
+    fn nested_patterns_on_generic_variants_check_and_lower() {
+        let ok = with_generics("fn f(o: Option<Result<int, string>>) -> int { return match o { Some(Ok(v)) => v, Some(Err(_)) => -1, None => 0 }; }");
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let errors = with_generics("fn f(o: Option<int>) -> int { return match o { Some(v) => v }; }").unwrap_err();
+        assert_eq!(errors[0].message, "match on 'Option__int' is not exhaustive; missing: None");
+        assert!(with_generics("fn f(o: Option<int>) -> int { return match o { Option.Some(v) => v, Option.None => 0 }; }").is_ok());
+    }
+
+    #[test]
+    fn runaway_instantiation_is_cut_off() {
+        let errors = with_generics("fn grow<T>(x: T) -> int { return grow(Box { value: x }); } fn main() { grow(1); }").unwrap_err();
+        assert!(errors.iter().any(|e| e.message.contains(&format!("more than {} instantiations", MAX_INSTANTIATIONS))), "{:?}", errors);
     }
 }
