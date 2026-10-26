@@ -1422,6 +1422,12 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
             let method_span = self.peek().span;
+            let is_static = self.match_token(&[TokenKind::Static]);
+            let is_mut = self.match_token(&[TokenKind::Mut]);
+            if is_mut && is_static {
+                return Err(ParseError::new("a static method cannot be 'mut'", method_span)
+                    .with_hint("static methods have no 'self' to mutate; remove 'mut' or 'static'"));
+            }
             self.consume(&TokenKind::Fn, "expected 'fn' in protocol body")?;
             let method_name = self.parse_identifier()?;
             self.consume(&TokenKind::LParen, "expected '('")?;
@@ -1436,10 +1442,18 @@ impl<'a> Parser<'a> {
 
             self.consume(&TokenKind::Semicolon, "expected ';' after protocol method")?;
 
+            if methods.iter().any(|m: &ProtocolMethod| m.name == method_name) {
+                return Err(ParseError::new(
+                    format!("protocol '{}' declares method '{}' twice", name, method_name),
+                    method_span,
+                ));
+            }
             methods.push(ProtocolMethod {
                 name: method_name,
                 params,
                 return_type,
+                is_mut,
+                is_static,
                 span: method_span,
             });
         }
@@ -2661,5 +2675,21 @@ mod tests {
         assert!(parse(&tokens).is_err());
         let tokens = tokenize("fn f(a: Box<int) { }").unwrap();
         assert!(parse(&tokens).unwrap_err().message.contains("expected '>' after type arguments"));
+    }
+
+    // === Protocols ===
+
+    #[test]
+    fn protocol_methods_take_static_and_mut_modifiers() {
+        let tokens = tokenize("protocol P { fn a(); mut fn b(x: int); static fn c() -> int; }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let p = match &ast.declarations[0] { Decl::Protocol(p) => p, other => panic!("{:?}", other) };
+        assert!(!p.methods[0].is_mut && !p.methods[0].is_static);
+        assert!(p.methods[1].is_mut);
+        assert!(p.methods[2].is_static);
+        let tokens = tokenize("protocol P { fn a(); fn a(); }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("declares method 'a' twice"));
+        let tokens = tokenize("protocol P { static mut fn a(); }").unwrap();
+        assert!(parse(&tokens).unwrap_err().message.contains("static method cannot be 'mut'"));
     }
 }

@@ -1896,4 +1896,20 @@ mod tests {
         let err = CodeGen::new().generate(&ast).unwrap_err();
         assert!(err.message.contains("generic declaration 'swap' must be instantiated"), "{}", err.message);
     }
+
+    // === Protocol conformance ===
+
+    #[test]
+    fn bounded_generic_calls_dispatch_statically() {
+        let c = compile(r#"
+            protocol Drawable { fn draw() -> string; }
+            struct Circle { r: int }
+            extension Circle : Drawable { fn draw() -> string { return "o"; } }
+            fn show<T: Drawable>(x: T) -> string { return x.draw(); }
+            fn main() { let s = show(Circle { r: 1 }); }
+        "#);
+        assert!(c.contains("const char* show__Circle(Circle x)"), "{}", c);
+        assert!(c.contains("return Circle_draw(&(x));"), "{}", c);
+        assert!(c.contains("const char* s = show__Circle((Circle){.r = 1});"), "{}", c);
+    }
 }

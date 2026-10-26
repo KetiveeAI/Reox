@@ -1830,4 +1830,20 @@ mod tests {
         "#;
         assert_eq!(run_checked(src).unwrap(), Value::Int(428));
     }
+
+    // === Protocol conformance ===
+
+    #[test]
+    fn bounded_generics_run_through_extension_methods() {
+        let src = r#"
+            protocol Area { fn area() -> int; }
+            struct Rect { w: int, h: int }
+            struct Square { s: int }
+            extension Rect : Area { fn area() -> int { return self.w * self.h; } }
+            extension Square : Area { fn area() -> int { return self.s * self.s; } }
+            fn total<T: Area>(a: T, b: T) -> int { return a.area() + b.area(); }
+            fn main() -> int { return total(Rect { w: 2, h: 3 }, Rect { w: 1, h: 1 }) * 100 + total(Square { s: 2 }, Square { s: 3 }); }
+        "#;
+        assert_eq!(run_checked(src).unwrap(), Value::Int(713));
+    }
 }

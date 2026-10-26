@@ -476,12 +476,14 @@ pub struct ProtocolDecl {
     pub span: Span,
 }
 
-/// Protocol method signature (no body)
+/// Protocol method signature (no body): `[static] [mut] fn name(params) [-> Type];`
 #[derive(Debug, Clone)]
 pub struct ProtocolMethod {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
+    pub is_mut: bool,
+    pub is_static: bool,
     pub span: Span,
 }
 

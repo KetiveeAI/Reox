@@ -316,6 +316,13 @@ impl VariantInfo {
     }
 }
 
+/// A protocol and the method signatures a conforming type must provide.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtocolInfo {
+    pub name: String,
+    pub methods: Vec<MethodInfo>,
+}
+
 /// Signature of a method attached to a nominal type. `params` excludes the
 /// implicit `self`.
 #[derive(Debug, Clone, PartialEq)]

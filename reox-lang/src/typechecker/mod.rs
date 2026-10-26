@@ -154,8 +154,11 @@ pub struct TypeChecker {
     instance_extensions: HashMap<String, ExtensionDecl>,
     instantiation_counts: HashMap<String, usize>,
     pending_bodies: Vec<PendingBody>,
-    /// Protocols each nominal type conforms to (declared through extensions).
+    /// Protocols each nominal type conforms to (declared through extensions
+    /// and verified against the protocol's method signatures).
     conformances: HashMap<String, HashSet<String>>,
+    /// Every protocol's required methods.
+    protocols: HashMap<String, ProtocolInfo>,
     /// Type the enclosing context expects of the expression being inferred,
     /// used to pick the type arguments of `None`, `Ok(x)` and friends.
     expected: Option<ResolvedType>,
@@ -190,8 +193,61 @@ impl TypeChecker {
             instantiation_counts: HashMap::new(),
             pending_bodies: Vec::new(),
             conformances: HashMap::new(),
+            protocols: HashMap::new(),
             expected: None,
         }
+    }
+
+    /// Verify that `type_name` implements every method of `protocol` with a
+    /// matching signature, reporting one diagnostic that lists every problem.
+    /// Records the conformance when the check passes.
+    fn check_conformance(&mut self, type_name: &str, protocol: &str, span: &Span) {
+        let info = match self.protocols.get(protocol).cloned() {
+            Some(info) => info,
+            None => {
+                self.errors.push(TypeError::new(format!("undefined protocol '{}'", protocol), span)
+                    .with_hint("declare it with 'protocol Name { fn method(...); }'"));
+                return;
+            }
+        };
+        let mut problems: Vec<String> = Vec::new();
+        for required in &info.methods {
+            let found = match self.lookup_method(type_name, &required.name) {
+                Some(found) => found.clone(),
+                None => {
+                    problems.push(format!("missing method '{}'", required.signature()));
+                    continue;
+                }
+            };
+            if found.params != required.params || found.ret != required.ret {
+                problems.push(format!(
+                    "method '{}' has signature '{}' but the protocol requires '{}'",
+                    required.name, found.signature(), required.signature()
+                ));
+                continue;
+            }
+            if found.is_static != required.is_static {
+                problems.push(format!(
+                    "method '{}' must {}be 'static' as in the protocol",
+                    required.name, if required.is_static { "" } else { "not " }
+                ));
+                continue;
+            }
+            if found.is_mut && !required.is_mut {
+                problems.push(format!(
+                    "method '{}' is 'mut fn' but the protocol declares it 'fn'",
+                    required.name
+                ));
+            }
+        }
+        if problems.is_empty() {
+            self.conformances.entry(type_name.to_string()).or_default().insert(protocol.to_string());
+            return;
+        }
+        self.errors.push(TypeError::new(
+            format!("type '{}' does not conform to protocol '{}': {}", type_name, protocol, problems.join("; ")),
+            span,
+        ).with_hint(format!("implement the listed methods in 'extension {} : {} {{ ... }}'", type_name, protocol)));
     }
 
     /// Infer `expr` telling it which type the context expects.
@@ -211,6 +267,13 @@ impl TypeChecker {
                     Some(mangled) => ResolvedType::Struct(mangled),
                     None => ResolvedType::Error,
                 }
+            }
+            Type::Named(name) if self.type_kinds.get(name) == Some(&TypeKind::Protocol) => {
+                self.errors.push(TypeError::new(
+                    format!("protocol '{}' cannot be used as a type", name),
+                    span,
+                ).with_hint(format!("protocols dispatch statically: take a generic parameter bounded by it, 'fn f<T: {}>(x: T)'", name)));
+                ResolvedType::Error
             }
             Type::Named(name) if self.templates.structs.contains_key(name) || self.templates.variants.contains_key(name) => {
                 let arity = self.template_type_params(name).len();
@@ -396,7 +459,9 @@ impl TypeChecker {
             });
         }
         if let Some(protocols) = self.templates.conformances.get(name).cloned() {
-            self.conformances.entry(mangled.clone()).or_default().extend(protocols);
+            for protocol in protocols {
+                self.check_conformance(&mangled, &protocol, span);
+            }
         }
         Some(mangled)
     }
@@ -1066,13 +1131,19 @@ impl TypeChecker {
 
         // Pass 1a: nominal types, so that methods, extensions and signatures
         // declared earlier in the file can refer to types declared later.
+        // Protocols first: a protocol name is not a type anywhere else.
+        for decl in &ast.declarations {
+            if let Decl::Protocol(p) = decl {
+                self.register_protocol(p);
+            }
+        }
         for decl in &ast.declarations {
             match decl {
+                Decl::Protocol(_) => {}
                 Decl::Struct(s) if !s.type_params.is_empty() => {}
                 Decl::Variant(v) if !v.type_params.is_empty() => {}
                 Decl::Struct(s) => self.register_struct(s),
                 Decl::Variant(v) => self.register_variant(v),
-                Decl::Protocol(p) => self.register_protocol(p),
                 Decl::Layer(l) => self.register_layer(l),
                 Decl::Panel(p) => self.register_panel(p),
                 Decl::Typealias(t) => {
@@ -1116,13 +1187,6 @@ impl TypeChecker {
                     }
                     for method in &ext.methods {
                         self.register_method(&ext.target, method);
-                    }
-                    for protocol in &ext.protocols {
-                        if self.type_kinds.get(protocol) != Some(&TypeKind::Protocol) {
-                            self.errors.push(TypeError::new(format!("undefined protocol '{}'", protocol), &ext.span));
-                            continue;
-                        }
-                        self.conformances.entry(ext.target.clone()).or_default().insert(protocol.clone());
                     }
                 }
                 Decl::Layer(l) => {
@@ -1180,6 +1244,17 @@ impl TypeChecker {
             }
         }
         let global_resolutions = std::mem::take(&mut self.resolutions);
+
+        // Pass 1c: protocol conformance, once every method of every type is known.
+        for decl in &ast.declarations {
+            if let Decl::Extension(ext) = decl {
+                if ext.type_params.is_empty() && self.type_kinds.contains_key(&ext.target) {
+                    for protocol in &ext.protocols {
+                        self.check_conformance(&ext.target, protocol, &ext.span);
+                    }
+                }
+            }
+        }
 
         // Pass 2: check and lower every body. Generic declarations are left
         // out; their instances are appended afterwards.
@@ -1346,6 +1421,15 @@ impl TypeChecker {
 
     fn register_protocol(&mut self, p: &ProtocolDecl) {
         self.register_nominal(&p.name, TypeKind::Protocol, HashMap::new(), &p.span);
+        let methods = p.methods.iter().map(|m| MethodInfo {
+            name: m.name.clone(),
+            params: m.params.iter().map(|param| self.resolve_parser_type(&param.ty, &param.span)).collect(),
+            ret: m.return_type.as_ref().map(|t| self.resolve_parser_type(t, &m.span)).unwrap_or(ResolvedType::Void),
+            is_mut: m.is_mut,
+            is_static: m.is_static,
+            span: m.span,
+        }).collect();
+        self.protocols.insert(p.name.clone(), ProtocolInfo { name: p.name.clone(), methods });
         let _ = self.symbols.define(Symbol {
             name: p.name.clone(),
             ty: ResolvedType::Struct(p.name.clone()),
@@ -3158,5 +3242,106 @@ mod tests {
     fn runaway_instantiation_is_cut_off() {
         let errors = with_generics("fn grow<T>(x: T) -> int { return grow(Box { value: x }); } fn main() { grow(1); }").unwrap_err();
         assert!(errors.iter().any(|e| e.message.contains(&format!("more than {} instantiations", MAX_INSTANTIATIONS))), "{:?}", errors);
+    }
+
+    // === Protocol conformance ===
+
+    const DRAWABLE: &str = r#"
+        struct Rect { w: int, h: int }
+        protocol Drawable { fn draw(scale: int) -> string; fn bounds() -> Rect; }
+        struct Circle { r: int }
+    "#;
+
+    fn with_drawable(body: &str) -> Result<(), Vec<TypeError>> {
+        check_source(&format!("{}\n{}", DRAWABLE, body))
+    }
+
+    #[test]
+    fn conforming_extension_is_accepted() {
+        let ok = with_drawable(r#"
+            extension Circle : Drawable {
+                fn draw(scale: int) -> string { return "o"; }
+                fn bounds() -> Rect { return Rect { w: self.r * 2, h: self.r * 2 }; }
+            }
+        "#);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        // Methods may come from the struct body or another extension.
+        let ok = with_drawable(r#"
+            struct Square { s: int  fn draw(scale: int) -> string { return "[]"; } }
+            extension Square { fn bounds() -> Rect { return Rect { w: self.s, h: self.s }; } }
+            extension Square : Drawable { }
+        "#);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+    }
+
+    #[test]
+    fn missing_and_mismatched_methods_are_listed_in_one_diagnostic() {
+        let errors = with_drawable(r#"
+            extension Circle : Drawable {
+                fn draw(scale: string) -> string { return "o"; }
+            }
+        "#).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].message,
+            "type 'Circle' does not conform to protocol 'Drawable': method 'draw' has signature 'draw(string) -> string' but the protocol requires 'draw(int) -> string'; missing method 'bounds() -> Rect'"
+        );
+        assert_eq!(errors[0].hint.as_deref(), Some("implement the listed methods in 'extension Circle : Drawable { ... }'"));
+    }
+
+    #[test]
+    fn mutability_and_staticness_must_match_the_protocol() {
+        let errors = with_drawable(r#"
+            extension Circle : Drawable {
+                mut fn draw(scale: int) -> string { self.r = scale; return "o"; }
+                static fn bounds() -> Rect { return Rect { w: 1, h: 1 }; }
+            }
+        "#).unwrap_err();
+        assert!(errors[0].message.contains("method 'draw' is 'mut fn' but the protocol declares it 'fn'"), "{}", errors[0].message);
+        assert!(errors[0].message.contains("method 'bounds' must not be 'static' as in the protocol"), "{}", errors[0].message);
+        let ok = check_source("protocol Counter { mut fn bump(); } struct C { n: int } extension C : Counter { fn bump() { } }");
+        assert!(ok.is_ok(), "a non-mut method satisfies a mut requirement: {:?}", ok.err());
+    }
+
+    #[test]
+    fn failed_conformance_does_not_satisfy_bounds() {
+        let errors = with_drawable(r#"
+            extension Circle : Drawable { }
+            fn show<T: Drawable>(x: T) { }
+            fn main() { show(Circle { r: 1 }); }
+        "#).unwrap_err();
+        assert!(errors.iter().any(|e| e.message.starts_with("type 'Circle' does not conform to protocol 'Drawable': missing method")), "{:?}", errors);
+        assert!(errors.iter().any(|e| e.message == "type 'Circle' does not conform to protocol 'Drawable', required by type parameter 'T' of 'show'"), "{:?}", errors);
+        let errors = with_drawable("extension Circle : Nope { }").unwrap_err();
+        assert_eq!(errors[0].message, "undefined protocol 'Nope'");
+    }
+
+    #[test]
+    fn generic_extension_conformance_is_checked_per_instance() {
+        let src = r#"
+            protocol Show { fn show() -> string; }
+            struct Box<T> { value: T }
+            extension Box<T> : Show { fn show() -> string { return "box"; } }
+            fn describe<T: Show>(x: T) -> string { return x.show(); }
+            fn main() { let s: string = describe(Box { value: 1 }); }
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src).err());
+        let bad = r#"
+            protocol Show { fn show() -> string; }
+            struct Box<T> { value: T }
+            extension Box<T> : Show { fn show() -> int { return 1; } }
+            fn main() { let b: Box<int> = Box { value: 1 }; }
+        "#;
+        let errors = check_source(bad).unwrap_err();
+        assert!(errors[0].message.starts_with("type 'Box__int' does not conform to protocol 'Show': method 'show' has signature 'show() -> int'"), "{}", errors[0].message);
+    }
+
+    #[test]
+    fn protocols_are_not_types() {
+        let errors = with_drawable("fn f(d: Drawable) { }").unwrap_err();
+        assert_eq!(errors[0].message, "protocol 'Drawable' cannot be used as a type");
+        assert!(errors[0].hint.as_deref().unwrap_or("").contains("fn f<T: Drawable>(x: T)"));
+        let errors = with_drawable("fn f() { let d: Drawable = 1; }").unwrap_err();
+        assert_eq!(errors[0].message, "protocol 'Drawable' cannot be used as a type");
     }
 }
