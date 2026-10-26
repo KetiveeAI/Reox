@@ -125,7 +125,7 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn fields(&self, fields: &[Field]) -> Vec<Field> {
-        fields.iter().map(|f| Field { name: f.name.clone(), ty: self.ty(&f.ty), span: f.span }).collect()
+        fields.iter().map(|f| Field { name: f.name.clone(), ty: self.ty(&f.ty), is_weak: f.is_weak, span: f.span }).collect()
     }
 
     fn params(&self, params: &[Param]) -> Vec<Param> {
@@ -170,6 +170,7 @@ impl<'a> Lowerer<'a> {
             }),
             Stmt::If(i) => Stmt::If(IfStmt {
                 condition: self.expr(&i.condition),
+                binding: i.binding.clone(),
                 then_block: self.block(&i.then_block),
                 else_block: i.else_block.as_ref().map(|b| self.block(b)),
                 span: i.span,
@@ -197,6 +198,7 @@ impl<'a> Lowerer<'a> {
             Stmt::TryCatch(t) => Stmt::TryCatch(TryCatchStmt {
                 try_block: self.block(&t.try_block),
                 catch_var: t.catch_var.clone(),
+                catch_type: t.catch_type.as_ref().map(|ty| self.ty(ty)),
                 catch_block: self.block(&t.catch_block),
                 span: t.span,
             }),
@@ -283,6 +285,7 @@ impl<'a> Lowerer<'a> {
                 Expr::TrailingClosure(Box::new(self.expr(callee)), Box::new(self.block(body)), *s)
             }
             Expr::Await(x, s) => Expr::Await(Box::new(self.expr(x)), *s),
+            Expr::Try(x, s) => Expr::Try(Box::new(self.expr(x)), *s),
             Expr::Range(a, b, s) => Expr::Range(Box::new(self.expr(a)), Box::new(self.expr(b)), *s),
             Expr::Action(params, ret, body, s) => Expr::Action(
                 self.params(params),

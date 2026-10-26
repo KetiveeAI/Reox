@@ -1,0 +1,21 @@
+// Reassigning a reference releases the previous value.
+// expect: third
+// expect: 2
+ref struct Box { label: string }
+fn main() -> int {
+    let mut s: string = "first";
+    s = "second";
+    s = s + "!";
+    s = "third";
+    println(s);
+    let mut b = Box { label: "one" };
+    b = Box { label: "two" };
+    b = Box { label: "three" };
+    let mut count: int = 0;
+    let mut items: [string] = ["x"];
+    items[0] = "y";
+    push(items, "z");
+    count = len(items);
+    println(count);
+    return 0;
+}

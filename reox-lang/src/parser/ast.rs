@@ -46,6 +46,9 @@ pub struct FnDecl {
     pub return_type: Option<Type>,
     pub body: Block,
     pub is_async: bool,
+    /// `fn f() throws -> T`: the function returns `Result<T, Error>` and
+    /// callers must use `try`.
+    pub throws: bool,
     pub is_pub: bool,
     pub is_static: bool,
     /// `mut fn`: the method may assign through `self`. Only meaningful for
@@ -69,6 +72,8 @@ pub struct StructDecl {
     /// Generic parameters (`struct Box<T>`); empty for ordinary structs.
     pub type_params: Vec<TypeParam>,
     pub fields: Vec<Field>,
+    /// `ref struct`: instances live on the heap and are reference counted.
+    pub is_ref: bool,
     /// Methods declared inside the struct body. Each takes an implicit `self`
     /// unless it is `static`.
     pub methods: Vec<FnDecl>,
@@ -81,6 +86,8 @@ pub struct StructDecl {
 pub struct Field {
     pub name: String,
     pub ty: Type,
+    /// `weak name: T`: a non-owning reference that reads as `T?`.
+    pub is_weak: bool,
     pub span: Span,
 }
 
@@ -123,6 +130,8 @@ pub enum Type {
     /// A generic type applied to arguments: `Box<int>`, `Result<T, E>`.
     Generic(String, Vec<Type>),
     Array(Box<Type>),
+    /// `[K: V]` string keyed map
+    Map(Box<Type>, Box<Type>),
     Optional(Box<Type>),
     Function(Vec<Type>, Box<Type>),
     Tuple(Vec<Type>),
@@ -162,6 +171,8 @@ pub struct LetStmt {
     pub ty: Option<Type>,
     pub init: Option<Expr>,
     pub is_bind: bool,
+    /// `weak let`: a non-owning reference that reads as `T?`.
+    pub is_weak: bool,
     pub span: Span,
 }
 
@@ -176,6 +187,9 @@ pub struct ReturnStmt {
 #[derive(Debug, Clone)]
 pub struct IfStmt {
     pub condition: Expr,
+    /// `if let name = condition { ... }`: the then block runs with `name`
+    /// bound to the unwrapped value when `condition` is not nil.
+    pub binding: Option<String>,
     pub then_block: Block,
     pub else_block: Option<Block>,
     pub span: Span,
@@ -218,6 +232,9 @@ pub struct DeferStmt {
 pub struct TryCatchStmt {
     pub try_block: Block,
     pub catch_var: Option<String>,
+    /// `catch e as MyError`: only errors of this type are caught here;
+    /// any other error propagates.
+    pub catch_type: Option<Type>,
     pub catch_block: Block,
     pub span: Span,
 }
@@ -258,6 +275,8 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>, Span),             // start..end (inclusive)
     // Closure/lambda expression
     Action(Vec<Param>, Option<Box<Type>>, Box<Block>, Span), // action (params) -> Type { body }
+    /// `try f()`: call a throwing function and propagate its error
+    Try(Box<Expr>, Span),
     /// `self` inside a method body
     SelfRef(Span),
     /// `{ statements }` used as an expression (match arm bodies). Its value is
@@ -299,6 +318,7 @@ impl Expr {
             | Expr::Await(_, s)
             | Expr::Range(_, _, s)
             | Expr::Action(_, _, _, s)
+            | Expr::Try(_, s) => *s,
             | Expr::SelfRef(s)
             | Expr::Block(_, s)
             | Expr::Typed(_, _, s)

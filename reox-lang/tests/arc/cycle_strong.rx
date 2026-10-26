@@ -1,0 +1,12 @@
+// A strong cycle is the programmer's responsibility: this program breaks it
+// by hand before the objects go out of scope, so nothing leaks.
+// expect: broken
+ref struct Node { value: int, next: Node? }
+fn main() -> int {
+    let mut a = Node { value: 1, next: nil };
+    let b = Node { value: 2, next: a };
+    a.next = b;
+    a.next = nil;
+    println("broken");
+    return 0;
+}

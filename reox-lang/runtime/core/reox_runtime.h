@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <stdarg.h>
 
+#include "rx_object.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -59,20 +61,64 @@ typedef double rx_float;
 typedef const char* rx_string;
 typedef bool rx_bool;
 
-/* String object (heap allocated). data == NULL means "allocation failed". */
+/* ----------------------------------------------------------------------------
+ * Reference counted heap objects
+ *
+ * rx_str, rx_array and rx_map all begin with an rx_object header and are
+ * handled through pointers. A function documented as returning "+1" hands
+ * the caller one strong reference that it must eventually rx_release; a
+ * pointer parameter is borrowed for the duration of the call unless stated
+ * otherwise. NULL means "allocation failed" wherever an object is returned.
+ * -------------------------------------------------------------------------- */
+
+/* Immutable or growable byte string, always NUL terminated.
+ * capacity == 0 marks storage the object does not own (string literals). */
 typedef struct rx_str {
+    rx_object header;
     char* data;
     size_t len;
     size_t capacity;
 } rx_str;
 
-/* Array header. data == NULL means "allocation failed"; len stays 0. */
+/* Initialiser for a static, immortal string literal object:
+ *   static rx_str lit = RX_STR_LIT_INIT("text"); */
+#define RX_STR_LIT_INIT(text) \
+    { { RX_REFCOUNT_IMMORTAL, RX_TYPE_STR, NULL }, (char*)(text), sizeof(text) - 1, 0 }
+
+/* How a container retains and releases the values stored in its slots.
+ * NULL ops mean the elements are plain data (ints, floats, value structs
+ * without references). */
+typedef struct rx_elem_ops {
+    void (*retain)(void* slot);
+    void (*release)(void* slot);
+} rx_elem_ops;
+
+/* Ops for slots that hold one strong object pointer (rx_str*, rx_array*,
+ * ref struct instances, ...). */
+extern const rx_elem_ops rx_ref_elem_ops;
+
+/* Growable array of fixed-size elements. */
 typedef struct rx_array {
+    rx_object header;
     void* data;
     size_t len;
     size_t capacity;
     size_t elem_size;
+    const rx_elem_ops* ops;
 } rx_array;
+
+/* Insertion-ordered map from string keys to fixed-size values. Lookups are
+ * linear in the number of entries; it is meant for small configuration-sized
+ * maps, not for large tables. */
+typedef struct rx_map {
+    rx_object header;
+    rx_str** keys;          /* strong references */
+    void* values;
+    size_t len;
+    size_t capacity;
+    size_t elem_size;
+    const rx_elem_ops* ops;
+} rx_map;
 
 /* ============================================================================
  * Print Functions (standard output through the platform layer)
@@ -84,6 +130,13 @@ extern void print_int(rx_int n);
 extern void print_float(rx_float n);
 extern void print_bool(rx_bool b);
 extern void printf_rx(rx_string fmt, ...) RX_PRINTF(1, 2);
+
+/* Object-aware printing used by compiled REOX code. NULL prints "(null)". */
+extern void print_str(const rx_str* s);
+extern void println_str(const rx_str* s);
+extern void println_int(rx_int n);
+extern void println_float(rx_float n);
+extern void println_bool(rx_bool b);
 
 /* ============================================================================
  * Inline Math Functions
@@ -151,26 +204,34 @@ extern RX_PURE rx_float trunc_float(rx_float x);
  * String Object Functions
  * ============================================================================ */
 
-extern rx_str str_new(const char* s);
-extern rx_str str_with_capacity(size_t capacity);
-extern void str_free(rx_str* s);
+/* Constructors return +1. */
+extern rx_str* str_new(const char* s);
+extern rx_str* str_from_bytes(const char* bytes, size_t len);
+extern rx_str* str_with_capacity(size_t capacity);
+/* Borrowed C view of the contents; "" for NULL. Valid while s is alive and
+ * unmodified. */
+extern RX_PURE const char* str_cstr(const rx_str* s);
 extern RX_PURE size_t str_len(const rx_str* s);
-extern rx_str str_concat(const rx_str* a, const rx_str* b);
-/* Returns false when the append failed (out of memory); s is unchanged. */
+extern rx_str* str_concat(const rx_str* a, const rx_str* b);             /* +1 */
+/* In-place append. Returns false on out of memory or when s is a literal
+ * (unowned storage); s is unchanged in both cases. */
 extern bool str_append(rx_str* s, const char* suffix);
+extern bool str_append_str(rx_str* s, const rx_str* suffix);
 extern RX_PURE int str_cmp(const rx_str* a, const rx_str* b);
 extern RX_PURE bool str_eq(const rx_str* a, const rx_str* b);
-extern rx_str str_substr(const rx_str* s, size_t start, size_t len);
+extern rx_str* str_substr(const rx_str* s, size_t start, size_t len);    /* +1 */
 extern RX_PURE int64_t str_find(const rx_str* s, const char* needle);
 extern RX_PURE bool str_contains(const rx_str* s, const char* needle);
 extern RX_PURE bool str_starts_with(const rx_str* s, const char* prefix);
 extern RX_PURE bool str_ends_with(const rx_str* s, const char* suffix);
-extern rx_str str_to_upper(const rx_str* s);
-extern rx_str str_to_lower(const rx_str* s);
-extern rx_str str_trim(const rx_str* s);
-extern rx_array str_split(const rx_str* s, char delimiter);
-extern rx_str int_to_str(rx_int n);
-extern rx_str float_to_str(rx_float n);
+extern rx_str* str_to_upper(const rx_str* s);                            /* +1 */
+extern rx_str* str_to_lower(const rx_str* s);                            /* +1 */
+extern rx_str* str_trim(const rx_str* s);                                /* +1 */
+/* Array of rx_str* (ref elements), +1. */
+extern rx_array* str_split(const rx_str* s, char delimiter);
+extern rx_str* int_to_str(rx_int n);                                     /* +1 */
+extern rx_str* float_to_str(rx_float n);                                 /* +1 */
+extern rx_str* bool_to_str(rx_bool b);                                   /* +1 */
 extern RX_PURE rx_int str_to_int(const rx_str* s);
 extern RX_PURE rx_float str_to_float(const rx_str* s);
 
@@ -256,14 +317,25 @@ extern void rx_sort(void* base, size_t count, size_t size,
  * Array Functions
  * ============================================================================ */
 
-extern rx_array array_new(size_t elem_size, size_t initial_capacity);
-extern void array_free(rx_array* arr);
+/* +1. ops may be NULL for plain data elements. */
+extern rx_array* array_new(size_t elem_size, size_t initial_capacity, const rx_elem_ops* ops);
 extern RX_PURE size_t array_len(const rx_array* arr);
-/* Returns false when the element could not be stored (out of memory). */
+/* Copy elem into the array, retaining it through ops. Returns false when the
+ * element could not be stored (out of memory). */
 extern bool array_push(rx_array* arr, const void* elem);
-extern void array_pop(rx_array* arr, void* out_elem);
+/* Move the last element into out_elem (ownership transfers, no retain) or
+ * release it when out_elem is NULL. Returns false when the array is empty. */
+extern bool array_pop(rx_array* arr, void* out_elem);
+/* Borrowed pointer to the element, NULL when out of range. */
 extern RX_HOT void* array_get(rx_array* arr, size_t index);
+/* Borrowed pointer to the element; aborts the program when out of range. */
+extern RX_HOT void* array_at(rx_array* arr, size_t index);
+/* Replace an element: the new value is retained, the old one released. */
 extern void array_set(rx_array* arr, size_t index, const void* elem);
+/* Release every element and set len to 0. */
+extern void array_clear(rx_array* arr);
+/* Remove the element at index, releasing it. */
+extern bool array_remove(rx_array* arr, size_t index);
 
 RX_INLINE RX_PURE size_t array_len_fast(const rx_array* arr) {
     return arr ? arr->len : 0;
@@ -272,6 +344,28 @@ RX_INLINE RX_PURE size_t array_len_fast(const rx_array* arr) {
 RX_INLINE RX_HOT void* array_get_unchecked(rx_array* arr, size_t index) {
     return (char*)arr->data + (index * arr->elem_size);
 }
+
+/* ============================================================================
+ * Map Functions (string keys)
+ * ============================================================================ */
+
+/* +1. ops may be NULL for plain data values. */
+extern rx_map* map_new(size_t elem_size, const rx_elem_ops* ops);
+extern RX_PURE size_t map_len(const rx_map* m);
+/* Insert or replace. The key is retained; the value is copied and retained
+ * through ops. Returns false on out of memory. */
+extern bool map_set(rx_map* m, rx_str* key, const void* value);
+/* Borrowed pointer to the value, NULL when absent. */
+extern void* map_get(rx_map* m, const rx_str* key);
+/* Borrowed pointer to the value; aborts the program when the key is absent. */
+extern void* rx_map_at(rx_map* m, const rx_str* key);
+extern RX_PURE bool map_has(const rx_map* m, const rx_str* key);
+/* Remove the entry, releasing key and value. Returns false when absent. */
+extern bool map_remove(rx_map* m, const rx_str* key);
+/* Release every entry. */
+extern void map_clear(rx_map* m);
+/* Array of rx_str* holding the keys in insertion order, +1. */
+extern rx_array* map_keys(const rx_map* m);
 
 /* ============================================================================
  * Utility Functions

@@ -23,6 +23,16 @@
  */
 
 // ============================================================================
+// CORE: Errors
+// ============================================================================
+
+/// Every thrown value conforms to Error. Error types are `ref struct`s that
+/// declare conformance with `extension MyError: Error { }`; see reox-spec.md
+/// "Error Model". The compiler knows this protocol even when the prelude is
+/// not imported.
+protocol Error {}
+
+// ============================================================================
 // CORE: Option and Result
 // ============================================================================
 
@@ -457,14 +467,10 @@ pub struct Map { handle: int, size: int }
 // generic and cannot be declared as REOX externs; the C backend reaches it
 // through the compiler's own array lowering.
 
-extern fn map_new() -> Map;
-extern fn map_set(m: Map, key: string, value: string) -> void;
-extern fn map_get(m: Map, key: string) -> string;
-extern fn map_has(m: Map, key: string) -> bool;
-extern fn map_remove(m: Map, key: string) -> void;
-extern fn map_size(m: Map) -> int;
-extern fn map_clear(m: Map) -> void;
-extern fn map_keys(m: Map) -> Array;
+// map_new / map_set / map_get / map_has / map_remove / map_size / map_keys are
+// compiler builtins over the runtime's reference counted rx_map (declare the
+// value type: `let m: [string: int] = map_new();`); the interpreter provides
+// them as natives.
 
 // ============================================================================
 // TIMER & ASYNC

@@ -77,23 +77,27 @@ int main(void) {
     if (rx_strrchr("a/b/c", '/') != strrchr("a/b/c", '/')) { puts("FAIL strrchr"); failures++; }
 
     /* rx_str */
-    rx_str s = str_new("Hello");
-    if (!str_append(&s, ", World") || s.len != 12) { puts("FAIL append"); failures++; }
-    rx_str up = str_to_upper(&s);
-    expect_str("to_upper", up.data, "HELLO, WORLD");
-    rx_str sub = str_substr(&s, 7, 100);
-    expect_str("substr", sub.data, "World");
-    rx_str t = str_new("  pad  ");
-    rx_str trimmed = str_trim(&t);
-    expect_str("trim", trimmed.data, "pad");
-    rx_array parts = str_split(&s, ',');
-    if (array_len(&parts) != 2) { puts("FAIL split"); failures++; }
-    for (size_t i = 0; i < array_len(&parts); i++) str_free((rx_str*)array_get(&parts, i));
-    array_free(&parts);
-    str_free(&s); str_free(&up); str_free(&sub); str_free(&t); str_free(&trimmed);
-    rx_str f = float_to_str(2.5);
-    expect_str("float_to_str", f.data, "2.5");
-    str_free(&f);
+    rx_str* s = str_new("Hello");
+    if (!str_append(s, ", World") || s->len != 12) { puts("FAIL append"); failures++; }
+    rx_str* up = str_to_upper(s);
+    expect_str("to_upper", up->data, "HELLO, WORLD");
+    rx_str* sub = str_substr(s, 7, 100);
+    expect_str("substr", sub->data, "World");
+    rx_str* t = str_new("  pad  ");
+    rx_str* trimmed = str_trim(t);
+    expect_str("trim", trimmed->data, "pad");
+    rx_array* parts = str_split(s, ',');
+    if (array_len(parts) != 2) { puts("FAIL split"); failures++; }
+    if (rx_refcount(*(rx_str**)array_get(parts, 0)) != 1) { puts("FAIL split refcount"); failures++; }
+    rx_release(parts);
+    rx_release(s); rx_release(up); rx_release(sub); rx_release(t); rx_release(trimmed);
+    rx_str* f = float_to_str(2.5);
+    expect_str("float_to_str", f->data, "2.5");
+    rx_release(f);
+    { static rx_str lit = RX_STR_LIT_INIT("lit\n");
+      if (lit.len != 4 || str_append(&lit, "x") || rx_refcount(&lit) != RX_REFCOUNT_IMMORTAL) { puts("FAIL literal"); failures++; }
+      rx_retain(&lit); rx_release(&lit);
+      if (rx_refcount(&lit) != RX_REFCOUNT_IMMORTAL) { puts("FAIL immortal"); failures++; } }
 
     /* sort */
     int v[] = { 5, 3, 9, 1, 7, 2, 8, 6, 4, 0 };
@@ -102,10 +106,41 @@ int main(void) {
     for (int i = 0; i < 10; i++) if (v[i] != i) { puts("FAIL sort"); failures++; break; }
 
     /* array growth */
-    rx_array arr = array_new(sizeof(int), 1);
-    for (int i = 0; i < 1000; i++) if (!array_push(&arr, &i)) { puts("FAIL push"); failures++; break; }
-    if (array_len(&arr) != 1000 || *(int*)array_get(&arr, 999) != 999) { puts("FAIL array"); failures++; }
-    array_free(&arr);
+    rx_array* arr = array_new(sizeof(int), 1, NULL);
+    for (int i = 0; i < 1000; i++) if (!array_push(arr, &i)) { puts("FAIL push"); failures++; break; }
+    if (array_len(arr) != 1000 || *(int*)array_get(arr, 999) != 999) { puts("FAIL array"); failures++; }
+    if (!array_remove(arr, 0) || *(int*)array_at(arr, 0) != 1 || array_len(arr) != 999) { puts("FAIL remove"); failures++; }
+    rx_release(arr);
+
+    /* arrays of references retain their elements */
+    rx_str* elem = str_new("elem");
+    rx_array* refs = array_new(sizeof(rx_str*), 2, &rx_ref_elem_ops);
+    array_push(refs, &elem); array_push(refs, &elem);
+    if (rx_refcount(elem) != 3) { puts("FAIL ref push"); failures++; }
+    rx_str* other = str_new("other");
+    array_set(refs, 0, &other);
+    if (rx_refcount(elem) != 2 || rx_refcount(other) != 2) { puts("FAIL ref set"); failures++; }
+    rx_str* popped = NULL;
+    array_pop(refs, &popped);
+    if (popped != elem || rx_refcount(elem) != 2) { puts("FAIL ref pop"); failures++; }
+    rx_release(popped);
+    rx_release(refs);
+    if (rx_refcount(elem) != 1 || rx_refcount(other) != 1) { puts("FAIL ref release"); failures++; }
+    rx_release(elem); rx_release(other);
+
+    /* map */
+    rx_map* m = map_new(sizeof(int64_t), NULL);
+    rx_str* ka = str_new("a"); rx_str* kb = str_new("b");
+    int64_t one = 1, two = 2, three = 3;
+    map_set(m, ka, &one); map_set(m, kb, &two); map_set(m, ka, &three);
+    if (map_len(m) != 2 || *(int64_t*)map_get(m, ka) != 3 || !map_has(m, kb)) { puts("FAIL map"); failures++; }
+    rx_array* keys = map_keys(m);
+    if (array_len(keys) != 2 || !str_eq(*(rx_str**)array_get(keys, 1), kb)) { puts("FAIL map keys"); failures++; }
+    rx_release(keys);
+    if (!map_remove(m, ka) || map_has(m, ka) || map_len(m) != 1) { puts("FAIL map remove"); failures++; }
+    rx_release(m);
+    if (rx_refcount(ka) != 1 || rx_refcount(kb) != 1) { puts("FAIL map key refcount"); failures++; }
+    rx_release(ka); rx_release(kb);
 
     printf("%s (%d failures)\n", failures ? "test_core: FAILED" : "test_core: ok", failures);
     return failures ? 1 : 0;

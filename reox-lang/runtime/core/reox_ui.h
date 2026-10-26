@@ -322,6 +322,7 @@ typedef struct rx_view_vtable {
 
 /* Base view structure */
 typedef struct rx_view {
+    rx_object header;       /* reference count; see rx_object.h */
     rx_view_kind kind;
     rx_box box;
     rx_layout layout;
@@ -345,10 +346,13 @@ typedef struct rx_view {
     rx_view_vtable* vtable;
 } rx_view;
 
-/* View lifecycle */
+/* View lifecycle. Views are reference counted: every constructor returns +1,
+ * a parent holds one reference to each child, and view_free is rx_release. */
 extern rx_view* view_new(rx_view_kind kind);
 extern void view_free(rx_view* view);
+/* Retains child. */
 extern void view_add_child(rx_view* parent, rx_view* child);
+/* Releases child. */
 extern void view_remove_child(rx_view* parent, rx_view* child);
 extern void view_layout(rx_view* view, rx_size available);
 extern void view_render(rx_view* view, void* context);
@@ -572,6 +576,7 @@ extern rx_view* divider_new(bool horizontal);
  * ============================================================================ */
 
 typedef struct rx_window {
+    rx_object header;
     const char* title;
     rx_size size;
     rx_point position;
@@ -582,13 +587,16 @@ typedef struct rx_window {
 } rx_window;
 
 typedef struct rx_app {
+    rx_object header;
     const char* name;
     rx_window** windows;
     size_t window_count;
     bool running;
 } rx_app;
 
+/* +1. */
 extern rx_app* app_new(const char* name);
+/* Borrowed: the app owns its windows and releases them when it is freed. */
 extern rx_window* app_create_window(rx_app* app, const char* title, int width, int height);
 extern void app_run(rx_app* app);
 extern void app_quit(rx_app* app);

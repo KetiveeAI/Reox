@@ -271,7 +271,12 @@ pub fn type_to_string(ty: &Type) -> String {
         Type::U64 => "u64".to_string(),
         Type::USize => "usize".to_string(),
         Type::Named(name) => name.clone(),
+        Type::Generic(name, args) => {
+            let args: Vec<String> = args.iter().map(type_to_string).collect();
+            format!("{}<{}>", name, args.join(", "))
+        }
         Type::Array(inner) => format!("[{}]", type_to_string(inner)),
+        Type::Map(key, value) => format!("[{}: {}]", type_to_string(key), type_to_string(value)),
         Type::Optional(inner) => format!("{}?", type_to_string(inner)),
         Type::Function(params, ret) => {
             let params: Vec<String> = params.iter().map(type_to_string).collect();
@@ -714,7 +719,15 @@ impl<'a> Indexer<'a> {
 
     fn expr(&mut self, expr: &Expr, parent: Option<usize>) {
         match expr {
-            Expr::Literal(_) | Expr::Identifier(..) | Expr::Nil(_) => {}
+            Expr::Literal(_) | Expr::Identifier(..) | Expr::Nil(_) | Expr::SelfRef(_) => {}
+            Expr::Try(e, _) | Expr::Typed(e, _, _) => self.expr(e, parent),
+            Expr::Block(block, _) => self.block(block, parent),
+            Expr::MethodCall(recv, _, _, args, _) => {
+                self.expr(recv, parent);
+                for a in args {
+                    self.expr(a, parent);
+                }
+            }
             Expr::Binary(l, _, r, _)
             | Expr::Index(l, r, _)
             | Expr::Assign(l, r, _)

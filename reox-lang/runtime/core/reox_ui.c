@@ -99,11 +99,22 @@ void box_set_shadow(rx_box* box, rx_shadow s) {
  * View Functions
  * ============================================================================ */
 
+static void view_dealloc(void* p);
+
+/* Initialise the shared part of every view (the header and defaults). */
+static void view_init_base(rx_view* v, rx_view_kind kind) {
+    rx_object_init(&v->header, RX_TYPE_VIEW, view_dealloc);
+    v->kind = kind;
+    v->box = box_new();
+    v->visible = true;
+    v->enabled = true;
+}
+
 rx_view* view_new(rx_view_kind kind) {
     rx_view* v = (rx_view*)rx_calloc(1, sizeof(rx_view));
     if (!v) return NULL;
     
-    v->kind = kind;
+    view_init_base(v, kind);
     v->box = box_new();
     v->layout = vstack(0);
     v->visible = true;
@@ -118,12 +129,13 @@ rx_view* view_new(rx_view_kind kind) {
     return v;
 }
 
-void view_free(rx_view* view) {
-    if (!view) return;
-    
-    /* Free children recursively */
+static void view_dealloc(void* p) {
+    rx_view* view = (rx_view*)p;
+
+    /* Drop the references held on the children */
     for (size_t i = 0; i < view->child_count; i++) {
-        view_free(view->children[i]);
+        if (view->children[i]) view->children[i]->parent = NULL;
+        rx_release(view->children[i]);
     }
     rx_free(view->children);
     
@@ -131,8 +143,24 @@ void view_free(rx_view* view) {
     if (view->vtable && view->vtable->destroy) {
         view->vtable->destroy(view);
     }
+
+    /* Kind-specific owned strings */
+    switch (view->kind) {
+        case RX_VIEW_TEXT:   rx_free(((rx_text_view*)view)->text); break;
+        case RX_VIEW_BUTTON: rx_free(((rx_button_view*)view)->label); break;
+        case RX_VIEW_INPUT:
+            rx_free(((rx_input_view*)view)->placeholder);
+            rx_free(((rx_input_view*)view)->value);
+            break;
+        case RX_VIEW_IMAGE:  rx_free((void*)((rx_image_view*)view)->source); break;
+        default: break;
+    }
     
     rx_free(view);
+}
+
+void view_free(rx_view* view) {
+    rx_release(view);
 }
 
 void view_add_child(rx_view* parent, rx_view* child) {
@@ -148,7 +176,7 @@ void view_add_child(rx_view* parent, rx_view* child) {
         parent->child_capacity = new_capacity;
     }
     
-    parent->children[parent->child_count++] = child;
+    parent->children[parent->child_count++] = (rx_view*)rx_retain(child);
     child->parent = parent;
 }
 
@@ -163,6 +191,7 @@ void view_remove_child(rx_view* parent, rx_view* child) {
             }
             parent->child_count--;
             child->parent = NULL;
+            rx_release(child);
             break;
         }
     }
@@ -255,10 +284,7 @@ rx_text_view* text_view_new(const char* text) {
     rx_text_view* v = (rx_text_view*)rx_calloc(1, sizeof(rx_text_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_TEXT;
-    v->base.box = box_new();
-    v->base.visible = true;
-    v->base.enabled = true;
+    view_init_base(&v->base, RX_VIEW_TEXT);
     
     if (text) {
         v->text = rx_strdup(text);
@@ -300,12 +326,9 @@ rx_button_view* button_view_new(const char* label) {
     rx_button_view* v = (rx_button_view*)rx_calloc(1, sizeof(rx_button_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_BUTTON;
-    v->base.box = box_new();
+    view_init_base(&v->base, RX_VIEW_BUTTON);
     v->base.box.padding = insets_symmetric(8, 16);
     v->base.box.corner_radius = corners_all(8);
-    v->base.visible = true;
-    v->base.enabled = true;
     
     if (label) {
         v->label = rx_strdup(label);
@@ -337,14 +360,11 @@ rx_input_view* input_view_new(const char* placeholder) {
     rx_input_view* v = (rx_input_view*)rx_calloc(1, sizeof(rx_input_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_INPUT;
-    v->base.box = box_new();
+    view_init_base(&v->base, RX_VIEW_INPUT);
     v->base.box.padding = insets_all(8);
     v->base.box.background = RX_COLOR_SURFACE;
     v->base.box.corner_radius = corners_all(4);
     v->base.box.border = box_border_all(border(1, RX_COLOR_GRAY));
-    v->base.visible = true;
-    v->base.enabled = true;
     
     if (placeholder) {
         v->placeholder = rx_strdup(placeholder);
@@ -385,10 +405,7 @@ rx_image_view* image_view_new(const char* source) {
     rx_image_view* v = (rx_image_view*)rx_calloc(1, sizeof(rx_image_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_IMAGE;
-    v->base.box = box_new();
-    v->base.visible = true;
-    v->base.enabled = true;
+    view_init_base(&v->base, RX_VIEW_IMAGE);
     
     if (source) {
         v->source = rx_strdup(source);
@@ -406,6 +423,23 @@ rx_image_view* image_view_new(const char* source) {
  * Application Functions
  * ============================================================================ */
 
+static void window_dealloc(void* p) {
+    rx_window* win = (rx_window*)p;
+    rx_release(win->root_view);
+    rx_free((void*)win->title);
+    rx_free(win);
+}
+
+static void app_dealloc(void* p) {
+    rx_app* app = (rx_app*)p;
+    for (size_t i = 0; i < app->window_count; i++) {
+        rx_release(app->windows[i]);
+    }
+    rx_free(app->windows);
+    rx_free((void*)app->name);
+    rx_free(app);
+}
+
 rx_app* app_new(const char* name) {
     rx_app* app = (rx_app*)rx_calloc(1, sizeof(rx_app));
     if (!app) return NULL;
@@ -415,6 +449,7 @@ rx_app* app_new(const char* name) {
         rx_free(app);
         return NULL;
     }
+    rx_object_init(&app->header, RX_TYPE_APP, app_dealloc);
     app->running = false;
     
     return app;
@@ -431,6 +466,7 @@ rx_window* app_create_window(rx_app* app, const char* title, int width, int heig
         rx_free(win);
         return NULL;
     }
+    rx_object_init(&win->header, RX_TYPE_WINDOW, window_dealloc);
     win->size = size((float)width, (float)height);
     win->position = point(100, 100);
     win->resizable = true;
@@ -476,12 +512,9 @@ rx_switch_view* switch_view_new(bool initial_value) {
     rx_switch_view* v = (rx_switch_view*)rx_calloc(1, sizeof(rx_switch_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_CUSTOM;
-    v->base.box = box_new();
+    view_init_base(&v->base, RX_VIEW_CUSTOM);
     v->base.box.width = 50;
     v->base.box.height = 26;
-    v->base.visible = true;
-    v->base.enabled = true;
     
     v->value = initial_value;
     v->on_color = RX_COLOR_PRIMARY;
@@ -509,11 +542,8 @@ rx_progress_view* progress_view_new(float initial_value) {
     rx_progress_view* v = (rx_progress_view*)rx_calloc(1, sizeof(rx_progress_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_CUSTOM;
-    v->base.box = box_new();
+    view_init_base(&v->base, RX_VIEW_CUSTOM);
     v->base.box.height = 4;
-    v->base.visible = true;
-    v->base.enabled = true;
     
     v->value = initial_value < 0 ? 0 : (initial_value > 1 ? 1 : initial_value);
     v->indeterminate = false;
@@ -542,10 +572,7 @@ rx_list_view* list_view_new(int item_count, float item_height) {
     rx_list_view* v = (rx_list_view*)rx_calloc(1, sizeof(rx_list_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_LIST;
-    v->base.box = box_new();
-    v->base.visible = true;
-    v->base.enabled = true;
+    view_init_base(&v->base, RX_VIEW_LIST);
     
     v->item_count = item_count;
     v->item_height = item_height;
@@ -586,10 +613,7 @@ rx_tab_view* tab_view_new(void) {
     rx_tab_view* v = (rx_tab_view*)rx_calloc(1, sizeof(rx_tab_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_CUSTOM;
-    v->base.box = box_new();
-    v->base.visible = true;
-    v->base.enabled = true;
+    view_init_base(&v->base, RX_VIEW_CUSTOM);
     
     v->selected_index = 0;
     v->show_icons = false;
@@ -653,8 +677,7 @@ rx_menu_view* menu_view_new(void) {
     rx_menu_view* v = (rx_menu_view*)rx_calloc(1, sizeof(rx_menu_view));
     if (!v) return NULL;
     
-    v->base.kind = RX_VIEW_CUSTOM;
-    v->base.box = box_new();
+    view_init_base(&v->base, RX_VIEW_CUSTOM);
     v->base.box.background = RX_COLOR_SURFACE;
     v->base.box.corner_radius = corners_all(8);
     v->base.box.padding = insets_symmetric(8, 0);
