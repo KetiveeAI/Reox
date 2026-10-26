@@ -1,8 +1,8 @@
 {
     "name": "reox-language",
     "displayName": "REOX Programming Language",
-    "description": "Syntax highlighting, snippets, IntelliSense, and theme for REOX - the modern UI framework language for NeolyxOS",
-    "version": "1.2.3",
+    "description": "Syntax highlighting, snippets, themes, language server (diagnostics, hover, go to definition, completion) and formatter for REOX - the modern UI framework language for NeolyxOS",
+    "version": "1.3.0",
     "publisher": "ketiveeai",
     "author": "ketiveeai",
     "license": "Apache-2.0",
@@ -19,7 +19,7 @@
     },
     "main": "./out/extension.js",
     "activationEvents": [
-       
+        "onLanguage:reox"
     ],
     "scripts": {
         "vscode:prepublish": "npm run compile",
@@ -82,11 +82,59 @@
                 "language": "reox",
                 "path": "./snippets/reox.json"
             }
-        ]
+        ],
+        "commands": [
+            {
+                "command": "reox.formatDocument",
+                "title": "Reox: Format Document"
+            },
+            {
+                "command": "reox.restartLanguageServer",
+                "title": "Reox: Restart Language Server"
+            }
+        ],
+        "configuration": {
+            "title": "REOX",
+            "properties": {
+                "reox.languageServer.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Start reox-lsp for REOX files (diagnostics, hover, go to definition, document symbols, completion)."
+                },
+                "reox.languageServer.path": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Path to the reox-lsp executable. Empty means look it up on PATH."
+                },
+                "reox.languageServer.preludePath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Path to stdlib/prelude.rx used for completion of prelude externs. Empty uses the copy bundled in reox-lsp."
+                },
+                "reox.reoxcPath": {
+                    "type": "string",
+                    "default": "reoxc",
+                    "description": "Path to the reoxc compiler, used by Reox: Format Document (reoxc fmt --stdin)."
+                },
+                "reox.trace.server": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "messages",
+                        "verbose"
+                    ],
+                    "default": "off",
+                    "description": "Trace the LSP traffic between VS Code and reox-lsp in the REOX Language Server output channel."
+                }
+            }
+        }
     },
     "devDependencies": {
         "@types/node": "^25.0.9",
         "@types/vscode": "^1.60.0",
         "typescript": "^5.9.3"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
     }
 }

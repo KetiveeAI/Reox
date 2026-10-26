@@ -125,6 +125,26 @@ ai assistant {
 
 ---
 
+## Language Server and Formatter
+
+Version 1.3.0 adds a client for `reox-lsp`, the REOX language server that ships with the
+compiler. With it on your `PATH` (or set `reox.languageServer.path`) you get:
+
+- compiler diagnostics as you type (lexer, parser and type checker)
+- hover with signatures, inferred `let` types and `///` documentation
+- go to definition, document outline and symbol-aware completion
+- `Reox: Format Document` (and Format On Save) through `reoxc fmt --stdin`; set
+  `reox.reoxcPath` if `reoxc` is not on `PATH`
+
+Build both tools from the REOX repository:
+
+```bash
+cargo build --release -p reox-lsp        # target/release/reox-lsp
+cargo build --release -p reoxc           # target/release/reoxc
+```
+
+Without `reox-lsp` the extension falls back to its built-in keyword and stdlib completion.
+
 ## Installation
 
 ### Via VS Code Marketplace
