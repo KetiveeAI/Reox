@@ -652,6 +652,11 @@ impl<'a> Parser<'a> {
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, ParseError> {
         let expr = self.parse_expression()?;
+        // A match used as a statement may end with its closing brace, and the
+        // last expression of a block may omit its ';' (the block's value).
+        if !self.check(&TokenKind::Semicolon) && (matches!(expr, Expr::Match(..)) || self.check(&TokenKind::RBrace)) {
+            return Ok(Stmt::Expr(expr));
+        }
         self.consume(&TokenKind::Semicolon, "expected ';' after expression")?;
         Ok(Stmt::Expr(expr))
     }
@@ -1202,15 +1207,12 @@ impl<'a> Parser<'a> {
         let pattern = self.parse_pattern()?;
         self.consume(&TokenKind::FatArrow, "expected '=>' after pattern")?;
         
-        // Body can be a single expression or a block
+        // Body can be a single expression or a block whose last expression
+        // statement is its value
         let body = if self.check(&TokenKind::LBrace) {
-            // Block body - parse statements and use last as value
+            let block_span = self.peek().span;
             let block = self.parse_block()?;
-            if let Some(Stmt::Expr(expr)) = block.statements.last() {
-                expr.clone()
-            } else {
-                Expr::Nil(span)
-            }
+            Expr::Block(block, block_span)
         } else {
             self.parse_expression()?
         };
@@ -1244,13 +1246,39 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.advance();
                 if name == "_" {
-                    Ok(Pattern::Wildcard)
-                } else {
-                    Ok(Pattern::Identifier(name))
+                    return Ok(Pattern::Wildcard);
                 }
+                // Type.Case or Type.Case(args)
+                if self.match_token(&[TokenKind::Dot]) {
+                    let case = self.parse_identifier()?;
+                    let args = if self.check(&TokenKind::LParen) { self.parse_pattern_args()? } else { Vec::new() };
+                    return Ok(Pattern::Variant(VariantPattern { type_name: Some(name), case, args, span: token.span }));
+                }
+                // Case(args)
+                if self.check(&TokenKind::LParen) {
+                    let args = self.parse_pattern_args()?;
+                    return Ok(Pattern::Variant(VariantPattern { type_name: None, case: name, args, span: token.span }));
+                }
+                Ok(Pattern::Identifier(name))
             }
             _ => Err(self.error_here("expected pattern")),
         }
+    }
+
+    /// `( pattern, pattern, ... )` after a variant case name.
+    fn parse_pattern_args(&mut self) -> Result<Vec<Pattern>, ParseError> {
+        self.consume(&TokenKind::LParen, "expected '(' after case name")?;
+        let mut args = Vec::new();
+        if !self.check(&TokenKind::RParen) {
+            loop {
+                args.push(self.nested("pattern", |p| p.parse_pattern())?);
+                if !self.match_token(&[TokenKind::Comma]) {
+                    break;
+                }
+            }
+        }
+        self.consume(&TokenKind::RParen, "expected ')' after case patterns")?;
+        Ok(args)
     }
 
     // === UI-Specific Declaration Parsing ===
@@ -1271,7 +1299,7 @@ impl<'a> Parser<'a> {
                 let mut f = Vec::new();
                 if !self.check(&TokenKind::RParen) {
                     loop {
-                        f.push(self.parse_field()?);
+                        f.push(self.parse_variant_field(f.len())?);
                         if !self.match_token(&[TokenKind::Comma]) {
                             break;
                         }
@@ -1292,6 +1320,18 @@ impl<'a> Parser<'a> {
 
         self.consume(&TokenKind::RBrace, "expected '}'")?;
         Ok(VariantDecl { name, cases, is_pub, span })
+    }
+
+    /// A variant payload field: `name: Type`, or a bare `Type` named `_<index>`.
+    fn parse_variant_field(&mut self, index: usize) -> Result<Field, ParseError> {
+        let span = self.peek().span;
+        let named = matches!(self.peek_kind(), TokenKind::Ident(_))
+            && matches!(self.tokens.get(self.current + 1).map(|t| &t.kind), Some(TokenKind::Colon));
+        if named {
+            return self.parse_field();
+        }
+        let ty = self.parse_type()?;
+        Ok(Field { name: format!("_{}", index), ty, span })
     }
 
     /// Parse: protocol Name { fn method(params) -> Type; ... }
@@ -2430,5 +2470,68 @@ mod tests {
         assert!(matches!(&ast.declarations[2], Decl::Panel(p) if p.methods[0].is_mut));
         let tokens = tokenize("extension P { let x = 1; }").unwrap();
         assert!(parse(&tokens).unwrap_err().message.contains("expected a method in extension body"));
+    }
+
+    // === Variant patterns ===
+
+    #[test]
+    fn variant_patterns_parse_bare_qualified_and_nested() {
+        let tokens = tokenize("fn f() { match r { Ok(v) => v, Result.Err(msg) => 0, Maybe.Nothing => 1, Some(Ok(x)) => x, _ => 2 } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let f = match &ast.declarations[0] { Decl::Function(f) => f, other => panic!("{:?}", other) };
+        let arms = match &f.body.statements[0] { Stmt::Expr(Expr::Match(_, arms, _)) => arms, other => panic!("{:?}", other) };
+        assert_eq!(arms.len(), 5);
+        match &arms[0].pattern {
+            Pattern::Variant(vp) => { assert_eq!(vp.type_name, None); assert_eq!(vp.case, "Ok"); assert_eq!(vp.args, vec![Pattern::Identifier("v".into())]); }
+            other => panic!("{:?}", other),
+        }
+        match &arms[1].pattern {
+            Pattern::Variant(vp) => { assert_eq!(vp.type_name.as_deref(), Some("Result")); assert_eq!(vp.case, "Err"); }
+            other => panic!("{:?}", other),
+        }
+        match &arms[2].pattern {
+            Pattern::Variant(vp) => { assert_eq!(vp.type_name.as_deref(), Some("Maybe")); assert!(vp.args.is_empty()); }
+            other => panic!("{:?}", other),
+        }
+        match &arms[3].pattern {
+            Pattern::Variant(vp) => assert!(matches!(&vp.args[0], Pattern::Variant(inner) if inner.case == "Ok")),
+            other => panic!("{:?}", other),
+        }
+        assert_eq!(arms[4].pattern, Pattern::Wildcard);
+    }
+
+    #[test]
+    fn match_statement_and_block_arm_bodies() {
+        let tokens = tokenize("fn f() { match x { 1 => { println(\"a\"); 10 } _ => 0 } let y = 1; }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let f = match &ast.declarations[0] { Decl::Function(f) => f, other => panic!("{:?}", other) };
+        assert_eq!(f.body.statements.len(), 2);
+        let arms = match &f.body.statements[0] { Stmt::Expr(Expr::Match(_, arms, _)) => arms, other => panic!("{:?}", other) };
+        match &arms[0].body {
+            Expr::Block(block, _) => {
+                assert_eq!(block.statements.len(), 2);
+                assert!(matches!(block.statements[1], Stmt::Expr(Expr::Literal(Literal::Int(10, _)))));
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn variant_payloads_may_be_positional_or_named() {
+        let tokens = tokenize("variant Result { Ok(int), Err(message: string), Pair(int, bool) }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let v = match &ast.declarations[0] { Decl::Variant(v) => v, other => panic!("{:?}", other) };
+        assert_eq!(v.cases[0].fields[0].name, "_0");
+        assert_eq!(v.cases[0].fields[0].ty, Type::Int);
+        assert_eq!(v.cases[1].fields[0].name, "message");
+        assert_eq!(v.cases[2].fields[1].name, "_1");
+        assert_eq!(v.cases[2].fields[1].ty, Type::Bool);
+    }
+
+    #[test]
+    fn unclosed_pattern_args_are_reported() {
+        let tokens = tokenize("fn f() { match r { Ok(v => 1 } }").unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("expected ')' after case patterns"), "{}", err.message);
     }
 }

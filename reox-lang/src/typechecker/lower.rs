@@ -18,6 +18,9 @@ use crate::parser::*;
 pub(crate) enum SiteKind {
     Let,
     Call,
+    Match,
+    Ident,
+    Member,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -42,8 +45,15 @@ pub(crate) enum Resolution {
     LetType(Type),
     /// `receiver.method(args)` dispatches statically to a method of `type_name`.
     MethodCall { type_name: String },
-    /// `Type.method(args)` is a static method call of the function `mangled`.
+    /// `Type.method(args)`, `Case(args)` or `Type.Case(args)` is a call of the
+    /// plain function `mangled` (a static method or a variant constructor).
     StaticCall { mangled: String },
+    /// An identifier or `Type.Case` member that names the constant `mangled`
+    /// (a payload-less variant case).
+    Rename { mangled: String },
+    /// A match expression: the scrutinee and result types codegen needs, and
+    /// every arm's pattern with variant cases resolved.
+    Match { scrutinee: Option<Type>, result: Option<Type>, patterns: Vec<Pattern> },
 }
 
 pub(crate) type Resolutions = HashMap<SiteKey, Resolution>;
@@ -135,14 +145,23 @@ impl<'a> Lowerer<'a> {
 
     pub(crate) fn expr(&self, e: &Expr) -> Expr {
         match e {
-            Expr::Literal(_) | Expr::Identifier(_, _) | Expr::Nil(_) | Expr::SelfRef(_) => e.clone(),
+            Expr::Literal(_) | Expr::Nil(_) | Expr::SelfRef(_) => e.clone(),
+            Expr::Identifier(_, s) => match self.lookup(SiteKind::Ident, *s) {
+                Some(Resolution::Rename { mangled }) => Expr::Identifier(mangled.clone(), *s),
+                _ => e.clone(),
+            },
+            Expr::Block(b, s) => Expr::Block(self.block(b), *s),
+            Expr::Typed(inner, ty, s) => Expr::Typed(Box::new(self.expr(inner)), ty.clone(), *s),
             Expr::Binary(l, op, r, s) => Expr::Binary(Box::new(self.expr(l)), *op, Box::new(self.expr(r)), *s),
             Expr::Unary(op, x, s) => Expr::Unary(*op, Box::new(self.expr(x)), *s),
             Expr::Call(callee, args, s) => self.call(callee, args, *s),
             Expr::MethodCall(recv, ty, m, args, s) => {
                 Expr::MethodCall(Box::new(self.expr(recv)), ty.clone(), m.clone(), self.exprs(args), *s)
             }
-            Expr::Member(obj, name, s) => Expr::Member(Box::new(self.expr(obj)), name.clone(), *s),
+            Expr::Member(obj, name, s) => match self.lookup(SiteKind::Member, *s) {
+                Some(Resolution::Rename { mangled }) => Expr::Identifier(mangled.clone(), *s),
+                _ => Expr::Member(Box::new(self.expr(obj)), name.clone(), *s),
+            },
             Expr::Index(a, i, s) => Expr::Index(Box::new(self.expr(a)), Box::new(self.expr(i)), *s),
             Expr::Assign(t, v, s) => Expr::Assign(Box::new(self.expr(t)), Box::new(self.expr(v)), *s),
             Expr::StructLit(name, fields, s) => Expr::StructLit(
@@ -151,13 +170,38 @@ impl<'a> Lowerer<'a> {
                 *s,
             ),
             Expr::ArrayLit(elems, s) => Expr::ArrayLit(self.exprs(elems), *s),
-            Expr::Match(scrutinee, arms, s) => Expr::Match(
-                Box::new(self.expr(scrutinee)),
-                arms.iter()
-                    .map(|arm| MatchArm { pattern: arm.pattern.clone(), body: self.expr(&arm.body), span: arm.span })
-                    .collect(),
-                *s,
-            ),
+            Expr::Match(scrutinee, arms, s) => {
+                let scrutinee = self.expr(scrutinee);
+                match self.lookup(SiteKind::Match, *s) {
+                    Some(Resolution::Match { scrutinee: scrutinee_ty, result, patterns }) => {
+                        let scrutinee = match scrutinee_ty {
+                            Some(ty) => Expr::Typed(Box::new(scrutinee), ty.clone(), *s),
+                            None => scrutinee,
+                        };
+                        let arms = arms
+                            .iter()
+                            .enumerate()
+                            .map(|(i, arm)| MatchArm {
+                                pattern: patterns.get(i).cloned().unwrap_or_else(|| arm.pattern.clone()),
+                                body: self.expr(&arm.body),
+                                span: arm.span,
+                            })
+                            .collect();
+                        let matched = Expr::Match(Box::new(scrutinee), arms, *s);
+                        match result {
+                            Some(ty) => Expr::Typed(Box::new(matched), ty.clone(), *s),
+                            None => matched,
+                        }
+                    }
+                    _ => Expr::Match(
+                        Box::new(scrutinee),
+                        arms.iter()
+                            .map(|arm| MatchArm { pattern: arm.pattern.clone(), body: self.expr(&arm.body), span: arm.span })
+                            .collect(),
+                        *s,
+                    ),
+                }
+            }
             Expr::CompoundAssign(t, op, v, s) => {
                 Expr::CompoundAssign(Box::new(self.expr(t)), *op, Box::new(self.expr(v)), *s)
             }
@@ -186,6 +230,9 @@ impl<'a> Lowerer<'a> {
             }
             (Expr::Member(_, _, member_span), Some(Resolution::StaticCall { mangled })) => {
                 Expr::Call(Box::new(Expr::Identifier(mangled.clone(), *member_span)), args, span)
+            }
+            (Expr::Identifier(_, ident_span), Some(Resolution::StaticCall { mangled })) => {
+                Expr::Call(Box::new(Expr::Identifier(mangled.clone(), *ident_span)), args, span)
             }
             _ => Expr::Call(Box::new(self.expr(callee)), args, span),
         }

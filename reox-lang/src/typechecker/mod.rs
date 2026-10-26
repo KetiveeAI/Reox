@@ -26,6 +26,8 @@ use lower::{Lowerer, Resolution, Resolutions, SiteKey, SiteKind};
 pub struct TypeError {
     pub message: String,
     pub span: Span,
+    /// Optional suggestion on how to fix the error.
+    pub hint: Option<String>,
 }
 
 impl TypeError {
@@ -33,7 +35,13 @@ impl TypeError {
         Self {
             message: message.into(),
             span: *span,
+            hint: None,
         }
+    }
+
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 
     pub fn line(&self) -> u32 {
@@ -93,6 +101,10 @@ pub struct TypeChecker {
     current_self: Option<SelfContext>,
     /// Resolutions recorded while checking the current body; consumed by lowering.
     resolutions: Resolutions,
+    /// Variant types and their cases.
+    variants: HashMap<String, VariantInfo>,
+    /// Bare case name -> the variants that declare a case of that name.
+    case_index: HashMap<String, Vec<String>>,
 }
 
 impl TypeChecker {
@@ -112,7 +124,59 @@ impl TypeChecker {
             methods: HashMap::new(),
             current_self: None,
             resolutions: Resolutions::new(),
+            variants: HashMap::new(),
+            case_index: HashMap::new(),
         }
+    }
+
+    /// Resolve a bare case name such as `Ok` or `None` to its variant. An
+    /// ambiguous name is reported and yields `None`.
+    fn resolve_bare_case(&mut self, name: &str, span: &Span) -> Option<(VariantInfo, CaseInfo)> {
+        let owners = self.case_index.get(name)?.clone();
+        if owners.len() > 1 {
+            let qualified: Vec<String> = owners.iter().map(|v| format!("'{}.{}'", v, name)).collect();
+            self.errors.push(TypeError::new(
+                format!(
+                    "ambiguous case '{}': it belongs to {}; qualify it as {}",
+                    name,
+                    owners.iter().map(|v| format!("'{}'", v)).collect::<Vec<_>>().join(" and "),
+                    qualified.join(" or ")
+                ),
+                span,
+            ));
+            return None;
+        }
+        let variant = self.variants.get(&owners[0])?.clone();
+        let case = variant.case(name)?.clone();
+        Some((variant, case))
+    }
+
+    /// Type check a variant case construction and record how it lowers.
+    /// `args` is `None` for a bare `Case` / `Type.Case` without parentheses.
+    fn check_case_construction(&mut self, variant: &VariantInfo, case: &CaseInfo, args: Option<&[Expr]>, kind: SiteKind, span: &Span) -> ResolvedType {
+        let mangled = variant.mangle_case(&case.name);
+        match args {
+            None if case.fields.is_empty() => {
+                self.record(kind, *span, Resolution::Rename { mangled });
+            }
+            None => {
+                self.errors.push(TypeError::new(
+                    format!(
+                        "case '{}' of '{}' carries {} value{}; construct it as '{}({})'",
+                        case.name, variant.name, case.fields.len(), if case.fields.len() == 1 { "" } else { "s" },
+                        case.name, case.fields.iter().map(|(_, t)| t.display_name()).collect::<Vec<_>>().join(", ")
+                    ),
+                    span,
+                ));
+                return ResolvedType::Error;
+            }
+            Some(args) => {
+                let params: Vec<ResolvedType> = case.fields.iter().map(|(_, t)| t.clone()).collect();
+                self.check_args(&params, args, span);
+                self.record(SiteKind::Call, *span, Resolution::StaticCall { mangled });
+            }
+        }
+        ResolvedType::Struct(variant.name.clone())
     }
 
     fn record(&mut self, kind: SiteKind, span: Span, resolution: Resolution) {
@@ -177,6 +241,11 @@ impl TypeChecker {
         // Static call on a type name: Type.method(args)
         if let Expr::Identifier(type_name, _) = receiver {
             if self.is_type_name(type_name) {
+                if let Some(variant) = self.variants.get(type_name).cloned() {
+                    if let Some(case) = variant.case(method).cloned() {
+                        return Some(self.check_case_construction(&variant, &case, Some(args), SiteKind::Call, call_span));
+                    }
+                }
                 let info = self.lookup_method(type_name, method).cloned();
                 return Some(match info {
                     Some(info) if info.is_static => {
@@ -438,6 +507,25 @@ impl TypeChecker {
 
     fn register_variant(&mut self, v: &VariantDecl) {
         self.register_nominal(&v.name, TypeKind::Variant, HashMap::new(), &v.span);
+        let mut cases = Vec::new();
+        for case in &v.cases {
+            if cases.iter().any(|c: &CaseInfo| c.name == case.name) {
+                self.errors.push(TypeError::new(
+                    format!("case '{}' is declared twice in variant '{}'", case.name, v.name),
+                    &case.span,
+                ));
+                continue;
+            }
+            cases.push(CaseInfo {
+                name: case.name.clone(),
+                fields: case.fields.iter().map(|f| (f.name.clone(), ResolvedType::from_parser_type(&f.ty))).collect(),
+            });
+            let owners = self.case_index.entry(case.name.clone()).or_default();
+            if !owners.contains(&v.name) {
+                owners.push(v.name.clone());
+            }
+        }
+        self.variants.insert(v.name.clone(), VariantInfo { name: v.name.clone(), cases });
         let _ = self.symbols.define(Symbol {
             name: v.name.clone(),
             ty: ResolvedType::Struct(v.name.clone()),
@@ -556,10 +644,7 @@ impl TypeChecker {
         };
 
         if let Err(e) = self.symbols.define_function(f.name.clone(), fn_type.clone()) {
-            self.errors.push(TypeError {
-                message: e,
-                span: f.span,
-            });
+            self.errors.push(TypeError::new(e, &f.span));
         }
 
         // Also add to symbol table for lookup
@@ -613,10 +698,7 @@ impl TypeChecker {
         };
 
         if let Err(e_msg) = self.symbols.define_function(e.name.clone(), fn_type.clone()) {
-            self.errors.push(TypeError {
-                message: e_msg,
-                span: e.span,
-            });
+            self.errors.push(TypeError::new(e_msg, &e.span));
         }
 
         let _ = self.symbols.define(Symbol {
@@ -707,10 +789,7 @@ impl TypeChecker {
             Stmt::Guard(g) => {
                 let cond_type = self.infer_expr_type(&g.condition);
                 if cond_type != ResolvedType::Bool {
-                    self.errors.push(TypeError {
-                        message: format!("guard condition must be bool, found '{}'", cond_type.display_name()),
-                        span: g.span,
-                    });
+                    self.errors.push(TypeError::new(format!("guard condition must be bool, found '{}'", cond_type.display_name()), &g.span));
                 }
                 self.symbols.push_scope();
                 self.check_block(&g.else_block);
@@ -781,24 +860,18 @@ impl TypeChecker {
         let final_type = match (&declared_type, &inferred_type) {
             (Some(decl), Some(infer)) => {
                 if !decl.is_assignable_from(infer) {
-                    self.errors.push(TypeError {
-                        message: format!(
+                    self.errors.push(TypeError::new(format!(
                             "type mismatch: expected '{}', found '{}'",
                             decl.display_name(),
                             infer.display_name()
-                        ),
-                        span: l.span,
-                    });
+                        ), &l.span));
                 }
                 decl.clone()
             }
             (Some(decl), None) => decl.clone(),
             (None, Some(infer)) => infer.clone(),
             (None, None) => {
-                self.errors.push(TypeError {
-                    message: "cannot infer type without initializer".to_string(),
-                    span: l.span,
-                });
+                self.errors.push(TypeError::new("cannot infer type without initializer".to_string(), &l.span));
                 ResolvedType::Error
             }
         };
@@ -815,10 +888,7 @@ impl TypeChecker {
             mutable: l.mutable,
             kind: SymbolKind::Variable,
         }) {
-            self.errors.push(TypeError {
-                message: e,
-                span: l.span,
-            });
+            self.errors.push(TypeError::new(e, &l.span));
         }
     }
 
@@ -829,14 +899,11 @@ impl TypeChecker {
 
         if let Some(expected) = &self.current_return_type {
             if !expected.is_assignable_from(&return_type) {
-                self.errors.push(TypeError {
-                    message: format!(
+                self.errors.push(TypeError::new(format!(
                         "return type mismatch: expected '{}', found '{}'",
                         expected.display_name(),
                         return_type.display_name()
-                    ),
-                    span: r.span,
-                });
+                    ), &r.span));
             }
         }
     }
@@ -844,13 +911,10 @@ impl TypeChecker {
     fn check_if(&mut self, i: &IfStmt) {
         let cond_type = self.infer_expr_type(&i.condition);
         if cond_type != ResolvedType::Bool {
-            self.errors.push(TypeError {
-                message: format!(
+            self.errors.push(TypeError::new(format!(
                     "if condition must be bool, found '{}'",
                     cond_type.display_name()
-                ),
-                span: i.span,
-            });
+                ), &i.span));
         }
 
         self.symbols.push_scope();
@@ -867,13 +931,10 @@ impl TypeChecker {
     fn check_while(&mut self, w: &WhileStmt) {
         let cond_type = self.infer_expr_type(&w.condition);
         if cond_type != ResolvedType::Bool {
-            self.errors.push(TypeError {
-                message: format!(
+            self.errors.push(TypeError::new(format!(
                     "while condition must be bool, found '{}'",
                     cond_type.display_name()
-                ),
-                span: w.span,
-            });
+                ), &w.span));
         }
 
         self.symbols.push_scope();
@@ -888,13 +949,10 @@ impl TypeChecker {
             ResolvedType::Array(inner) => *inner,
             ResolvedType::Int => ResolvedType::Int, // For range-like iteration
             _ => {
-                self.errors.push(TypeError {
-                    message: format!(
+                self.errors.push(TypeError::new(format!(
                         "cannot iterate over '{}'",
                         iter_type.display_name()
-                    ),
-                    span: f.span,
-                });
+                    ), &f.span));
                 ResolvedType::Error
             }
         };
@@ -931,6 +989,10 @@ impl TypeChecker {
             Expr::Identifier(name, span) => {
                 if let Some(sym) = self.symbols.lookup(name) {
                     sym.ty.clone()
+                } else if let Some((variant, case)) = self.resolve_bare_case(name, span) {
+                    self.check_case_construction(&variant, &case, None, SiteKind::Ident, span)
+                } else if self.case_index.contains_key(name) {
+                    ResolvedType::Error // ambiguity already reported
                 } else {
                     self.errors.push(TypeError::new(
                         format!("undefined variable '{}'", name),
@@ -938,6 +1000,19 @@ impl TypeChecker {
                     ));
                     ResolvedType::Error
                 }
+            }
+            Expr::Typed(inner, _, _) => self.infer_expr_type(inner),
+            Expr::Block(block, _) => {
+                self.symbols.push_scope();
+                let mut ty = ResolvedType::Void;
+                for (i, stmt) in block.statements.iter().enumerate() {
+                    match stmt {
+                        Stmt::Expr(e) if i + 1 == block.statements.len() => ty = self.infer_expr_type(e),
+                        other => self.check_statement(other),
+                    }
+                }
+                self.symbols.pop_scope();
+                ty
             }
             Expr::Binary(left, op, right, span) => {
                 let left_ty = self.infer_expr_type(left);
@@ -949,13 +1024,21 @@ impl TypeChecker {
                 self.check_unary_op(op, &operand_ty, span)
             }
             Expr::Call(callee, args, span) => {
-                if let Expr::Identifier(name, _) = callee.as_ref() {
+                if let Expr::Identifier(name, ident_span) = callee.as_ref() {
                     if self.is_builtin(name) {
                         // Natives are variadic and dynamically typed; still check the arguments.
                         for arg in args {
                             self.infer_expr_type(arg);
                         }
                         return ResolvedType::Unknown;
+                    }
+                    if self.symbols.lookup(name).is_none() {
+                        if let Some((variant, case)) = self.resolve_bare_case(name, ident_span) {
+                            return self.check_case_construction(&variant, &case, Some(args), SiteKind::Call, span);
+                        }
+                        if self.case_index.contains_key(name) {
+                            return ResolvedType::Error;
+                        }
                     }
                 }
                 if let Expr::Member(receiver, method, member_span) = callee.as_ref() {
@@ -996,6 +1079,11 @@ impl TypeChecker {
             Expr::Member(obj, field, span) => {
                 if let Expr::Identifier(type_name, _) = obj.as_ref() {
                     if self.is_type_name(type_name) {
+                        if let Some(variant) = self.variants.get(type_name).cloned() {
+                            if let Some(case) = variant.case(field).cloned() {
+                                return self.check_case_construction(&variant, &case, None, SiteKind::Member, span);
+                            }
+                        }
                         let msg = match self.lookup_method(type_name, field) {
                             Some(info) if info.is_static => format!("'{}.{}' is a static method; call it with parentheses", type_name, field),
                             Some(_) => format!("'{}' is an instance method of '{}'; call it on a value", field, type_name),
@@ -1083,46 +1171,7 @@ impl TypeChecker {
                     ResolvedType::Array(Box::new(elem_ty))
                 }
             }
-            Expr::Match(scrutinee, arms, span) => {
-                // Infer the type being matched on
-                let _scrutinee_ty = self.infer_expr_type(scrutinee);
-                
-                if arms.is_empty() {
-                    return ResolvedType::Void;
-                }
-                
-                // Infer types from all arm bodies and find common type
-                let mut common_type: Option<ResolvedType> = None;
-                
-                for arm in arms {
-                    let arm_ty = self.infer_expr_type(&arm.body);
-                    
-                    match &common_type {
-                        None => {
-                            common_type = Some(arm_ty);
-                        }
-                        Some(existing) => {
-                            // Check if types are compatible
-                            if !existing.is_assignable_from(&arm_ty) && !arm_ty.is_assignable_from(existing) {
-                                self.errors.push(TypeError::new(
-                                    format!(
-                                        "match arms have incompatible types: '{}' and '{}'",
-                                        existing.display_name(),
-                                        arm_ty.display_name()
-                                    ),
-                                    span,
-                                ));
-                            }
-                            // Use the more general type if one is assignable from the other
-                            if arm_ty.is_assignable_from(existing) {
-                                common_type = Some(arm_ty);
-                            }
-                        }
-                    }
-                }
-                
-                common_type.unwrap_or(ResolvedType::Void)
-            }
+            Expr::Match(scrutinee, arms, span) => self.check_match(scrutinee, arms, span),
             // Swift/C++ style expressions
             Expr::CompoundAssign(target, _op, value, span) => {
                 let target_ty = self.infer_expr_type(target);
@@ -1207,6 +1256,250 @@ impl TypeChecker {
                     ret: Box::new(ret),
                 }
             }
+        }
+    }
+
+    /// Check a match: every arm's pattern against the scrutinee type, the
+    /// bindings in scope for the arm body, a common result type, and
+    /// exhaustiveness. Records the resolved patterns and types for lowering.
+    fn check_match(&mut self, scrutinee: &Expr, arms: &[crate::parser::MatchArm], span: &Span) -> ResolvedType {
+        let inferred = self.infer_expr_type(scrutinee);
+        let scrutinee_ty = self.resolve_type(&inferred);
+
+        let mut patterns = Vec::with_capacity(arms.len());
+        let mut result: Option<ResolvedType> = None;
+        for arm in arms {
+            self.symbols.push_scope();
+            let pattern = self.check_pattern(&arm.pattern, &scrutinee_ty, &arm.span);
+            let arm_ty = self.infer_expr_type(&arm.body);
+            self.symbols.pop_scope();
+            patterns.push(pattern);
+
+            result = Some(match result {
+                None => arm_ty,
+                Some(existing) => {
+                    if existing.is_assignable_from(&arm_ty) {
+                        existing
+                    } else if arm_ty.is_assignable_from(&existing) {
+                        arm_ty
+                    } else {
+                        self.errors.push(TypeError::new(
+                            format!(
+                                "match arms have incompatible types: '{}' and '{}'",
+                                existing.display_name(),
+                                arm_ty.display_name()
+                            ),
+                            &arm.span,
+                        ));
+                        ResolvedType::Error
+                    }
+                }
+            });
+        }
+
+        if arms.is_empty() {
+            self.errors.push(TypeError::new("match has no arms", span).with_hint("a match needs at least one arm"));
+        } else if !matches!(scrutinee_ty, ResolvedType::Error | ResolvedType::Unknown) {
+            let missing = self.missing_cases(&patterns.iter().collect::<Vec<_>>(), &scrutinee_ty);
+            if !missing.is_empty() {
+                self.errors.push(TypeError::new(
+                    format!(
+                        "match on '{}' is not exhaustive; missing: {}",
+                        scrutinee_ty.display_name(),
+                        missing.join(", ")
+                    ),
+                    span,
+                ).with_hint(if self.variants.contains_key(&scrutinee_ty.display_name()) {
+                    "add an arm for each missing case, or a wildcard arm '_ => ...'".to_string()
+                } else {
+                    "add a wildcard arm '_ => ...' to cover the remaining values".to_string()
+                }));
+            }
+        }
+
+        let result = result.unwrap_or(ResolvedType::Void);
+        // Arms of unknown type (native calls) make the match a statement in C.
+        let result_annotation = match &result {
+            ResolvedType::Unknown | ResolvedType::Error => Some(Type::Void),
+            other => other.to_parser_type(),
+        };
+        self.record(SiteKind::Match, *span, Resolution::Match {
+            scrutinee: scrutinee_ty.to_parser_type(),
+            result: result_annotation,
+            patterns,
+        });
+        result
+    }
+
+    /// Check one pattern against `ty`, define its bindings in the current
+    /// scope and return the pattern with variant cases resolved.
+    fn check_pattern(&mut self, pattern: &crate::parser::Pattern, ty: &ResolvedType, span: &Span) -> crate::parser::Pattern {
+        use crate::parser::{Pattern, VariantPattern};
+        let unchecked = matches!(ty, ResolvedType::Error | ResolvedType::Unknown);
+        let variant = match ty {
+            ResolvedType::Struct(name) => self.variants.get(name).cloned(),
+            _ => None,
+        };
+        match pattern {
+            Pattern::Wildcard => Pattern::Wildcard,
+            Pattern::Literal(lit) => {
+                let lit_ty = self.infer_literal_type(lit);
+                if !unchecked && !ty.is_assignable_from(&lit_ty) {
+                    self.errors.push(TypeError::new(
+                        format!("pattern of type '{}' cannot match a value of type '{}'", lit_ty.display_name(), ty.display_name()),
+                        &lit.span(),
+                    ));
+                }
+                pattern.clone()
+            }
+            Pattern::Identifier(name) => {
+                if let Some(v) = &variant {
+                    if let Some(case) = v.case(name) {
+                        if !case.fields.is_empty() {
+                            self.errors.push(TypeError::new(
+                                format!(
+                                    "case '{}' of '{}' carries {} value{}; destructure it as '{}({})'",
+                                    name, v.name, case.fields.len(), if case.fields.len() == 1 { "" } else { "s" },
+                                    name, case.fields.iter().map(|_| "_").collect::<Vec<_>>().join(", ")
+                                ),
+                                span,
+                            ));
+                        }
+                        return Pattern::Variant(VariantPattern {
+                            type_name: Some(v.name.clone()),
+                            case: name.clone(),
+                            args: Vec::new(),
+                            span: *span,
+                        });
+                    }
+                }
+                let _ = self.symbols.define(Symbol {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    mutable: false,
+                    kind: SymbolKind::Variable,
+                });
+                pattern.clone()
+            }
+            Pattern::Variant(vp) => {
+                if unchecked {
+                    for arg in &vp.args {
+                        self.check_pattern(arg, &ResolvedType::Unknown, &vp.span);
+                    }
+                    return pattern.clone();
+                }
+                let v = match (&variant, &vp.type_name) {
+                    (Some(v), Some(named)) if named != &v.name => {
+                        self.errors.push(TypeError::new(
+                            format!("pattern '{}.{}' cannot match a value of type '{}'", named, vp.case, ty.display_name()),
+                            &vp.span,
+                        ));
+                        return pattern.clone();
+                    }
+                    (Some(v), _) => v.clone(),
+                    (None, _) => {
+                        self.errors.push(TypeError::new(
+                            format!("pattern '{}(..)' needs a variant value, found '{}'", vp.case, ty.display_name()),
+                            &vp.span,
+                        ));
+                        return pattern.clone();
+                    }
+                };
+                let case = match v.case(&vp.case) {
+                    Some(case) => case.clone(),
+                    None => {
+                        let cases: Vec<&str> = v.cases.iter().map(|c| c.name.as_str()).collect();
+                        self.errors.push(TypeError::new(
+                            format!("variant '{}' has no case '{}'; its cases are {}", v.name, vp.case, cases.join(", ")),
+                            &vp.span,
+                        ));
+                        return pattern.clone();
+                    }
+                };
+                if case.fields.len() != vp.args.len() {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "case '{}' of '{}' carries {} value{}, but the pattern has {}",
+                            case.name, v.name, case.fields.len(), if case.fields.len() == 1 { "" } else { "s" }, vp.args.len()
+                        ),
+                        &vp.span,
+                    ));
+                }
+                let args = vp.args.iter().enumerate()
+                    .map(|(i, arg)| {
+                        let field_ty = case.fields.get(i).map(|(_, t)| t.clone()).unwrap_or(ResolvedType::Error);
+                        self.check_pattern(arg, &field_ty, &vp.span)
+                    })
+                    .collect();
+                Pattern::Variant(VariantPattern {
+                    type_name: Some(v.name.clone()),
+                    case: vp.case.clone(),
+                    args,
+                    span: vp.span,
+                })
+            }
+        }
+    }
+
+    /// The values of `ty` that none of `patterns` matches, rendered as
+    /// patterns the user could add. Empty when the patterns are exhaustive.
+    fn missing_cases(&self, patterns: &[&crate::parser::Pattern], ty: &ResolvedType) -> Vec<String> {
+        use crate::parser::{Literal, Pattern};
+        if patterns.iter().any(|p| p.is_irrefutable()) {
+            return Vec::new();
+        }
+        let variant = match ty {
+            ResolvedType::Struct(name) => self.variants.get(name),
+            _ => None,
+        };
+        if let Some(variant) = variant {
+            let mut missing = Vec::new();
+            for case in &variant.cases {
+                let rows: Vec<&Pattern> = patterns.iter().copied()
+                    .filter(|p| matches!(p, Pattern::Variant(vp) if vp.case == case.name))
+                    .collect();
+                let placeholder = || if case.fields.is_empty() {
+                    case.name.clone()
+                } else {
+                    format!("{}({})", case.name, case.fields.iter().map(|_| "_").collect::<Vec<_>>().join(", "))
+                };
+                if rows.is_empty() {
+                    missing.push(placeholder());
+                    continue;
+                }
+                if case.fields.is_empty() {
+                    continue;
+                }
+                let args_of = |p: &Pattern| match p {
+                    Pattern::Variant(vp) => vp.args.clone(),
+                    _ => Vec::new(),
+                };
+                if rows.iter().any(|p| args_of(p).iter().all(|a| a.is_irrefutable())) {
+                    continue;
+                }
+                if case.fields.len() == 1 {
+                    let subs: Vec<Pattern> = rows.iter().filter_map(|p| args_of(p).into_iter().next()).collect();
+                    let sub_refs: Vec<&Pattern> = subs.iter().collect();
+                    for m in self.missing_cases(&sub_refs, &case.fields[0].1) {
+                        missing.push(format!("{}({})", case.name, m));
+                    }
+                } else {
+                    // Several payload fields: only an arm that binds every field
+                    // counts as covering the case.
+                    missing.push(placeholder());
+                }
+            }
+            return missing;
+        }
+        match ty {
+            ResolvedType::Bool => {
+                let has = |value: bool| patterns.iter().any(|p| matches!(p, Pattern::Literal(Literal::Bool(b, _)) if *b == value));
+                let mut missing = Vec::new();
+                if !has(true) { missing.push("true".to_string()); }
+                if !has(false) { missing.push("false".to_string()); }
+                missing
+            }
+            _ => vec!["_".to_string()],
         }
     }
 
@@ -1464,7 +1757,7 @@ pub fn check(ast: &Ast) -> Result<Ast, Vec<TypeError>> {
 mod tests {
     use super::*;
     use crate::lexer::tokenize;
-    use crate::parser::parse;
+    use crate::parser::{parse, Pattern};
 
     fn check_source(source: &str) -> Result<(), Vec<TypeError>> {
         let tokens = tokenize(source).unwrap();
@@ -1775,5 +2068,122 @@ mod tests {
             Stmt::Let(l) => assert_eq!(l.ty, Some(Type::Int)),
             other => panic!("{:?}", other),
         }
+    }
+
+    // === Variant patterns and exhaustiveness ===
+
+    const RESULT: &str = r#"
+        variant Result { Ok(int), Err(message: string) }
+        variant Maybe { Some(Result), Nothing }
+    "#;
+
+    fn with_variants(body: &str) -> Result<(), Vec<TypeError>> {
+        check_source(&format!("{}\n{}", RESULT, body))
+    }
+
+    #[test]
+    fn payload_patterns_bind_typed_values() {
+        let ok = with_variants("fn f(r: Result) -> int { return match r { Ok(v) => v + 1, Err(m) => len(m) }; }");
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let msgs = messages(with_variants("fn f(r: Result) -> int { return match r { Ok(v) => v + \"x\", Err(m) => 0 }; }"));
+        assert!(msgs[0].contains("cannot apply operator to 'int' and 'string'"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn missing_cases_are_listed_with_a_hint() {
+        let errors = with_variants("fn f(r: Result) -> int { return match r { Ok(v) => v }; }").unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message, "match on 'Result' is not exhaustive; missing: Err(_)");
+        assert!(errors[0].hint.as_deref().unwrap_or("").contains("wildcard arm"));
+        let errors = with_variants("fn f(m: Maybe) -> int { return match m { Some(Ok(v)) => v, Nothing => 0 }; }").unwrap_err();
+        assert_eq!(errors[0].message, "match on 'Maybe' is not exhaustive; missing: Some(Err(_))");
+        let errors = with_variants("fn f(m: Maybe) -> int { return match m { Some(Ok(1)) => 1, Some(Err(_)) => 2 }; }").unwrap_err();
+        assert_eq!(errors[0].message, "match on 'Maybe' is not exhaustive; missing: Some(Ok(_)), Nothing");
+        assert!(with_variants("fn f(m: Maybe) -> int { return match m { Some(Ok(v)) => v, Some(Err(_)) => -1, Maybe.Nothing => 0 }; }").is_ok());
+        assert!(with_variants("fn f(m: Maybe) -> int { return match m { Some(r) => 1, other => 0 }; }").is_ok());
+    }
+
+    #[test]
+    fn non_variant_matches_need_a_wildcard_or_both_booleans() {
+        let errors = check_source("fn f(x: int) -> int { return match x { 1 => 1, 2 => 2 }; }").unwrap_err();
+        assert_eq!(errors[0].message, "match on 'int' is not exhaustive; missing: _");
+        assert!(errors[0].hint.is_some());
+        assert!(check_source("fn f(x: int) -> int { return match x { 1 => 1, _ => 0 }; }").is_ok());
+        assert!(check_source("fn f(b: bool) -> int { return match b { true => 1, false => 0 }; }").is_ok());
+        let errors = check_source("fn f(b: bool) -> int { return match b { true => 1 }; }").unwrap_err();
+        assert_eq!(errors[0].message, "match on 'bool' is not exhaustive; missing: false");
+        let errors = check_source("fn f(s: string) -> int { return match s { 1 => 1, _ => 0 }; }").unwrap_err();
+        assert!(errors[0].message.contains("pattern of type 'int' cannot match a value of type 'string'"), "{}", errors[0].message);
+    }
+
+    #[test]
+    fn pattern_shape_errors() {
+        let msgs = messages(with_variants("fn f(r: Result) -> int { return match r { Ok(a, b) => a, Err(_) => 0 }; }"));
+        assert!(msgs[0].contains("case 'Ok' of 'Result' carries 1 value, but the pattern has 2"), "{}", msgs[0]);
+        let msgs = messages(with_variants("fn f(r: Result) -> int { return match r { Ok => 1, Err(_) => 0 }; }"));
+        assert!(msgs[0].contains("case 'Ok' of 'Result' carries 1 value; destructure it as 'Ok(_)'"), "{}", msgs[0]);
+        let msgs = messages(with_variants("fn f(r: Result) -> int { return match r { Nope(x) => 1, _ => 0 }; }"));
+        assert!(msgs[0].contains("variant 'Result' has no case 'Nope'; its cases are Ok, Err"), "{}", msgs[0]);
+        let msgs = messages(with_variants("fn f(r: Result) -> int { return match r { Maybe.Some(x) => 1, _ => 0 }; }"));
+        assert!(msgs[0].contains("pattern 'Maybe.Some' cannot match a value of type 'Result'"), "{}", msgs[0]);
+        let msgs = messages(check_source("fn f(x: int) -> int { return match x { Ok(v) => v, _ => 0 }; }"));
+        assert!(msgs[0].contains("pattern 'Ok(..)' needs a variant value, found 'int'"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn case_constructors_bare_qualified_and_legacy() {
+        let ok = with_variants(r#"
+            fn main() {
+                let a: Result = Ok(1);
+                let b = Result.Err("x");
+                let c = Result_Ok(2);
+                let d: Maybe = Nothing;
+                let e = Maybe.Nothing;
+                let f = Some(a);
+            }
+        "#);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let msgs = messages(with_variants("fn main() { let a = Ok(\"s\"); }"));
+        assert!(msgs[0].contains("argument 1 type mismatch: expected 'int', found 'string'"), "{}", msgs[0]);
+        let msgs = messages(with_variants("fn main() { let a = Ok; }"));
+        assert!(msgs[0].contains("case 'Ok' of 'Result' carries 1 value; construct it as 'Ok(int)'"), "{}", msgs[0]);
+        let msgs = messages(with_variants("fn main() { let a = Nothing(1); }"));
+        assert!(msgs[0].contains("expected 0 arguments, found 1"), "{}", msgs[0]);
+        let msgs = messages(check_source("variant A { None } variant B { None } fn main() { let x = None; }"));
+        assert!(msgs[0].contains("ambiguous case 'None': it belongs to 'A' and 'B'; qualify it as 'A.None' or 'B.None'"), "{}", msgs[0]);
+        assert!(check_source("variant A { None } variant B { None } fn main() { let x: A = A.None; }").is_ok());
+    }
+
+    #[test]
+    fn match_lowering_resolves_cases_and_annotates_types() {
+        let tokens = tokenize(&format!("{}\nfn f(m: Maybe) -> int {{ return match m {{ Some(Ok(v)) => v, Some(Err(_)) => -1, Nothing => 0 }}; }}", RESULT)).unwrap();
+        let ast = parse(&tokens).unwrap();
+        let lowered = check(&ast).unwrap();
+        let f = match &lowered.declarations[2] { Decl::Function(f) => f, other => panic!("{:?}", other) };
+        let ret = match &f.body.statements[0] { Stmt::Return(r) => r.value.as_ref().unwrap(), other => panic!("{:?}", other) };
+        let (scrutinee, arms) = match ret {
+            Expr::Typed(inner, Type::Int, _) => match inner.as_ref() {
+                Expr::Match(s, arms, _) => (s, arms),
+                other => panic!("{:?}", other),
+            },
+            other => panic!("{:?}", other),
+        };
+        assert!(matches!(scrutinee.as_ref(), Expr::Typed(_, Type::Named(n), _) if n == "Maybe"));
+        match &arms[0].pattern {
+            Pattern::Variant(vp) => {
+                assert_eq!(vp.type_name.as_deref(), Some("Maybe"));
+                assert!(matches!(&vp.args[0], Pattern::Variant(inner) if inner.type_name.as_deref() == Some("Result")));
+            }
+            other => panic!("{:?}", other),
+        }
+        assert!(matches!(&arms[2].pattern, Pattern::Variant(vp) if vp.case == "Nothing" && vp.type_name.as_deref() == Some("Maybe")));
+    }
+
+    #[test]
+    fn block_arm_bodies_take_the_value_of_their_last_expression() {
+        let ok = with_variants("fn f(r: Result) -> int { return match r { Ok(v) => { let d = v * 2; d } Err(_) => -1 }; }");
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let msgs = messages(with_variants("fn f(r: Result) -> int { return match r { Ok(v) => { v } Err(_) => \"no\" }; }"));
+        assert!(msgs[0].contains("match arms have incompatible types: 'int' and 'string'"), "{}", msgs[0]);
     }
 }

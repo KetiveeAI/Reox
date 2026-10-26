@@ -246,6 +246,12 @@ pub enum Expr {
     Action(Vec<Param>, Option<Box<Type>>, Box<Block>, Span), // action (params) -> Type { body }
     /// `self` inside a method body
     SelfRef(Span),
+    /// `{ statements }` used as an expression (match arm bodies). Its value is
+    /// the last expression statement, or nothing.
+    Block(Block, Span),
+    /// Type ascription inserted by the type checker where codegen needs the
+    /// type of a sub-expression (match scrutinee and result). Never parsed.
+    Typed(Box<Expr>, Type, Span),
     /// Statically dispatched method call, produced by the type checker from
     /// `receiver.method(args)`: (receiver, type name, method name, args, span).
     /// Codegen emits `TypeName_method(&receiver, args)`.
@@ -280,6 +286,8 @@ impl Expr {
             | Expr::Range(_, _, s)
             | Expr::Action(_, _, _, s)
             | Expr::SelfRef(s)
+            | Expr::Block(_, s)
+            | Expr::Typed(_, _, s)
             | Expr::MethodCall(_, _, _, _, s) => *s,
         }
     }
@@ -315,7 +323,7 @@ impl Literal {
 }
 
 /// Literal values
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Int(i64, Span),
     Float(f64, Span),
@@ -395,11 +403,32 @@ pub struct MatchArm {
 }
 
 /// Match patterns
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Literal(Literal),
+    /// A binding, or a payload-less variant case once the checker has resolved it.
     Identifier(String),
     Wildcard,
+    /// `Case(p1, p2)` or `Type.Case(p1, p2)`; `Type.Case` without parentheses
+    /// has no args.
+    Variant(VariantPattern),
+}
+
+impl Pattern {
+    /// Whether the pattern matches every value (a wildcard or a plain binding).
+    pub fn is_irrefutable(&self) -> bool {
+        matches!(self, Pattern::Wildcard | Pattern::Identifier(_))
+    }
+}
+
+/// Variant case pattern. `type_name` is `None` for a bare `Case(...)` until
+/// the type checker resolves it from the scrutinee type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantPattern {
+    pub type_name: Option<String>,
+    pub case: String,
+    pub args: Vec<Pattern>,
+    pub span: Span,
 }
 
 // === UI-specific AST Nodes ===
@@ -413,7 +442,8 @@ pub struct VariantDecl {
     pub span: Span,
 }
 
-/// A single variant case
+/// A single variant case. Positional payloads (`Some(T)`) get the field
+/// names `_0`, `_1`, ...; named payloads (`Err(message: string)`) keep theirs.
 #[derive(Debug, Clone)]
 pub struct VariantCase {
     pub name: String,

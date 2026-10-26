@@ -3,7 +3,7 @@
 // Zero external dependencies
 
 use crate::parser::{
-    Ast, Decl, Stmt, Expr, Literal, BinOp, UnaryOp, CompoundOp,
+    Ast, Decl, Stmt, Expr, Literal, BinOp, UnaryOp, CompoundOp, MatchArm, Pattern,
     FnDecl, StructDecl, ExternDecl, Block, Type, LetStmt,
     ReturnStmt, IfStmt, WhileStmt, ForStmt, GuardStmt, DeferStmt,
     TryCatchStmt, ThrowStmt,
@@ -11,6 +11,7 @@ use crate::parser::{
     ConstDecl, TypealiasDecl,
 };
 use crate::lexer::Span;
+use std::collections::HashMap;
 use std::io::Write;
 
 /// Code generation error, located by a source span when one is known
@@ -50,6 +51,11 @@ pub struct CodeGen {
     closure_counter: usize,
     closure_defs: String,
     expr_depth: usize,
+    /// Counter for the temporaries a match expression introduces.
+    match_counter: usize,
+    /// Payload field names of every variant case, by (variant, case), in
+    /// declaration order. Patterns are positional; the C union is not.
+    variant_fields: HashMap<(String, String), Vec<String>>,
 }
 
 impl CodeGen {
@@ -61,6 +67,8 @@ impl CodeGen {
             closure_counter: 0,
             closure_defs: String::new(),
             expr_depth: 0,
+            match_counter: 0,
+            variant_fields: HashMap::new(),
         }
     }
 
@@ -105,6 +113,16 @@ impl CodeGen {
         self.emit_line("#include \"reox_runtime.h\"");
         self.emit_line("#include \"reox_nxrender_bridge.h\"");  // NXRender integration
         self.emit_line("");
+
+        // Payload layout of every variant, needed to destructure patterns.
+        for decl in &ast.declarations {
+            if let Decl::Variant(v) = decl {
+                for case in &v.cases {
+                    let names = case.fields.iter().map(|f| f.name.clone()).collect();
+                    self.variant_fields.insert((v.name.clone(), case.name.clone()), names);
+                }
+            }
+        }
 
         // Forward declarations for structs and variants
         for decl in &ast.declarations {
@@ -353,7 +371,7 @@ impl CodeGen {
         self.indent();
         for (i, case) in v.cases.iter().enumerate() {
             let suffix = if i < v.cases.len() - 1 { "," } else { "" };
-            self.emit_line(&format!("{}_{}{}", v.name.to_uppercase(), case.name.to_uppercase(), suffix));
+            self.emit_line(&format!("{}{}", Self::variant_tag(&v.name, &case.name), suffix));
         }
         self.dedent();
         self.emit_line(&format!("}} {}_Tag;", v.name));
@@ -378,7 +396,7 @@ impl CodeGen {
                         self.emit_line(&format!("{} {};", c_type, field.name));
                     }
                     self.dedent();
-                    self.emit_line(&format!("}} {};", case.name.to_lowercase()));
+                    self.emit_line(&format!("}} {};", Self::case_member(&case.name)));
                 }
             }
             self.dedent();
@@ -387,6 +405,39 @@ impl CodeGen {
 
         self.dedent();
         self.emit_line("};");
+
+        // Constructors: a function per case with a payload, a constant otherwise.
+        for case in &v.cases {
+            let ctor = format!("{}_{}", v.name, case.name);
+            let tag = Self::variant_tag(&v.name, &case.name);
+            if case.fields.is_empty() {
+                self.emit_line(&format!("static const {} {} = {{ .tag = {} }};", v.name, ctor, tag));
+                continue;
+            }
+            let params: Vec<String> = case.fields.iter()
+                .map(|f| format!("{} {}", self.type_to_c(&f.ty), f.name))
+                .collect();
+            self.emit_line(&format!("static inline {} {}({}) {{", v.name, ctor, params.join(", ")));
+            self.indent();
+            self.emit_line(&format!("{} _rx_v;", v.name));
+            self.emit_line(&format!("_rx_v.tag = {};", tag));
+            for field in &case.fields {
+                self.emit_line(&format!("_rx_v.data.{}.{} = {};", Self::case_member(&case.name), field.name, field.name));
+            }
+            self.emit_line("return _rx_v;");
+            self.dedent();
+            self.emit_line("}");
+        }
+    }
+
+    /// C enumerator of a variant case tag.
+    fn variant_tag(variant: &str, case: &str) -> String {
+        format!("{}_{}", variant.to_uppercase(), case.to_uppercase())
+    }
+
+    /// Name of the union member that holds a case's payload.
+    fn case_member(case: &str) -> String {
+        case.to_lowercase()
     }
 
     fn gen_protocol(&mut self, p: &ProtocolDecl) {
@@ -980,60 +1031,16 @@ impl CodeGen {
                 }
                 self.emit("}");
             }
-            Expr::Match(scrutinee, arms, _) => {
-                // Generate match as a series of if-else chains
-                // For simple integer patterns, could use switch but if-else is more general
+            Expr::Match(scrutinee, arms, span) => self.gen_match(scrutinee, arms, None, *span)?,
+            Expr::Typed(inner, ty, span) => match inner.as_ref() {
+                Expr::Match(scrutinee, arms, _) => self.gen_match(scrutinee, arms, Some(ty), *span)?,
+                other => self.gen_expr(other)?,
+            },
+            Expr::Block(block, _) => {
+                // A block used as a value: GNU statement expression.
                 self.emit("({\n");
                 self.indent();
-                
-                // Store scrutinee in temporary variable
-                self.emit_indent();
-                self.emit("__auto_type _match_val = ");
-                self.gen_expr(scrutinee)?;
-                self.emit(";\n");
-                
-                // Default result variable
-                self.emit_line("typeof(_match_val) _match_result = 0;");
-                
-                for (i, arm) in arms.iter().enumerate() {
-                    self.emit_indent();
-                    if i == 0 {
-                        self.emit("if (");
-                    } else {
-                        self.emit("} else if (");
-                    }
-                    
-                    // Generate pattern condition
-                    match &arm.pattern {
-                        crate::parser::Pattern::Literal(lit) => {
-                            self.emit("_match_val == ");
-                            self.gen_literal(lit);
-                        }
-                        crate::parser::Pattern::Identifier(name) => {
-                            // Binding pattern - always matches
-                            self.emit("1 /* bind ");
-                            self.emit(name);
-                            self.emit(" */");
-                        }
-                        crate::parser::Pattern::Wildcard => {
-                            self.emit("1 /* wildcard */");
-                        }
-                    }
-                    
-                    self.emit(") {\n");
-                    self.indent();
-                    self.emit_indent();
-                    self.emit("_match_result = ");
-                    self.gen_expr(&arm.body)?;
-                    self.emit(";\n");
-                    self.dedent();
-                }
-                
-                if !arms.is_empty() {
-                    self.emit_line("}");
-                }
-                
-                self.emit_line("_match_result;");
+                self.gen_block(block)?;
                 self.dedent();
                 self.emit_indent();
                 self.emit("})");
@@ -1137,6 +1144,202 @@ impl CodeGen {
         }
         Ok(())
     }
+    /// Emit a match expression. `result_ty` is the type the checker inferred
+    /// for the arms (`None` for an unchecked AST, where only literal patterns
+    /// are supported). Flat variant matches become a `switch` on the tag;
+    /// nested or literal patterns become an if-else chain.
+    fn gen_match(&mut self, scrutinee: &Expr, arms: &[MatchArm], result_ty: Option<&Type>, span: Span) -> Result<(), CodegenError> {
+        let id = self.match_counter;
+        self.match_counter += 1;
+        let m = format!("_rx_m{}", id);
+        let r = format!("_rx_r{}", id);
+
+        let (scrutinee, scrutinee_ty) = match scrutinee {
+            Expr::Typed(inner, ty, _) => (inner.as_ref(), Some(ty)),
+            other => (other, None),
+        };
+        let uses_variants = arms.iter().any(|a| matches!(a.pattern, Pattern::Variant(_)));
+        if uses_variants && (scrutinee_ty.is_none() || result_ty.is_none()) {
+            return Err(CodegenError::new(
+                "match on a variant needs type information; run the type checker before code generation",
+                span,
+            ));
+        }
+        let scrutinee_c = scrutinee_ty.map(|t| self.type_to_c(t)).unwrap_or_else(|| "__auto_type".to_string());
+        let is_string = matches!(scrutinee_ty, Some(Type::String));
+        // Void (or unknown) result: the match is a statement, nothing is produced.
+        let value_mode = match result_ty {
+            Some(Type::Void) => false,
+            Some(_) => true,
+            None => true,
+        };
+        let result_var = if value_mode { Some(r.as_str()) } else { None };
+
+        self.emit("({\n");
+        self.indent();
+        self.emit_indent();
+        self.emit(&format!("{} {} = ", scrutinee_c, m));
+        self.gen_expr(scrutinee)?;
+        self.emit(";\n");
+        if value_mode {
+            match result_ty {
+                Some(ty) => {
+                    let c = self.type_to_c(ty);
+                    self.emit_line(&format!("{} {};", c, r));
+                }
+                None => self.emit_line(&format!("__typeof__({}) {} = 0;", m, r)),
+            }
+        }
+
+        let flat = arms.iter().all(|a| Self::is_flat_pattern(&a.pattern));
+        let mut seen_cases: Vec<&str> = Vec::new();
+        let unique_cases = arms.iter().all(|a| match &a.pattern {
+            Pattern::Variant(vp) => {
+                if seen_cases.contains(&vp.case.as_str()) { false } else { seen_cases.push(&vp.case); true }
+            }
+            _ => true,
+        });
+
+        if uses_variants && flat && unique_cases {
+            self.emit_line(&format!("switch ({}.tag) {{", m));
+            let mut has_default = false;
+            for arm in arms {
+                match &arm.pattern {
+                    Pattern::Variant(vp) => {
+                        let type_name = vp.type_name.clone().unwrap_or_default();
+                        self.emit_line(&format!("case {}: {{", Self::variant_tag(&type_name, &vp.case)));
+                        self.indent();
+                        let (_, binds) = self.pattern_test(&arm.pattern, &m, is_string)?;
+                        for b in binds { self.emit_line(&b); }
+                        self.gen_arm_body(&arm.body, result_var)?;
+                        self.emit_line("break;");
+                        self.dedent();
+                        self.emit_line("}");
+                    }
+                    other => {
+                        if has_default { break; }
+                        has_default = true;
+                        self.emit_line("default: {");
+                        self.indent();
+                        let (_, binds) = self.pattern_test(other, &m, is_string)?;
+                        for b in binds { self.emit_line(&b); }
+                        self.gen_arm_body(&arm.body, result_var)?;
+                        self.emit_line("break;");
+                        self.dedent();
+                        self.emit_line("}");
+                    }
+                }
+            }
+            if !has_default {
+                self.emit_line("default: break;");
+            }
+            self.emit_line("}");
+        } else {
+            for (i, arm) in arms.iter().enumerate() {
+                let (conds, binds) = self.pattern_test(&arm.pattern, &m, is_string)?;
+                let cond = if conds.is_empty() { "1".to_string() } else { conds.join(" && ") };
+                self.emit_indent();
+                if i == 0 {
+                    self.emit(&format!("if ({}) {{\n", cond));
+                } else {
+                    self.emit(&format!("}} else if ({}) {{\n", cond));
+                }
+                self.indent();
+                for b in binds { self.emit_line(&b); }
+                self.gen_arm_body(&arm.body, result_var)?;
+                self.dedent();
+            }
+            if !arms.is_empty() {
+                self.emit_line("}");
+            }
+        }
+
+        if value_mode {
+            self.emit_line(&format!("{};", r));
+        }
+        self.dedent();
+        self.emit_indent();
+        self.emit("})");
+        Ok(())
+    }
+
+    /// A pattern a `switch` can dispatch on: a variant case whose payload is
+    /// only bound or ignored, a wildcard, or a binding.
+    fn is_flat_pattern(p: &Pattern) -> bool {
+        match p {
+            Pattern::Wildcard | Pattern::Identifier(_) => true,
+            Pattern::Variant(vp) => vp.args.iter().all(|a| a.is_irrefutable()),
+            Pattern::Literal(_) => false,
+        }
+    }
+
+    /// Conditions that must hold for `access` to match `pattern`, and the
+    /// binding declarations to emit once it does.
+    fn pattern_test(&mut self, pattern: &Pattern, access: &str, is_string: bool) -> Result<(Vec<String>, Vec<String>), CodegenError> {
+        let mut conds = Vec::new();
+        let mut binds = Vec::new();
+        match pattern {
+            Pattern::Wildcard => {}
+            Pattern::Identifier(name) => binds.push(format!("__auto_type {} = {};", name, access)),
+            Pattern::Literal(lit) => {
+                let mut lit_gen = CodeGen::new();
+                lit_gen.gen_literal(lit);
+                if is_string || matches!(lit, Literal::String(..)) {
+                    conds.push(format!("(rx_strcmp({}, {}) == 0)", access, lit_gen.output));
+                } else {
+                    conds.push(format!("({} == {})", access, lit_gen.output));
+                }
+            }
+            Pattern::Variant(vp) => {
+                let type_name = vp.type_name.clone().ok_or_else(|| CodegenError::new(
+                    format!("pattern '{}(..)' was not resolved to a variant; run the type checker before code generation", vp.case),
+                    vp.span,
+                ))?;
+                conds.push(format!("({}.tag == {})", access, Self::variant_tag(&type_name, &vp.case)));
+                let fields = self.variant_fields.get(&(type_name.clone(), vp.case.clone())).cloned()
+                    .ok_or_else(|| CodegenError::new(
+                        format!("variant '{}' has no case '{}'", type_name, vp.case),
+                        vp.span,
+                    ))?;
+                for (i, arg) in vp.args.iter().enumerate() {
+                    let field = fields.get(i).ok_or_else(|| CodegenError::new(
+                        format!("case '{}' of '{}' has {} field(s), pattern has {}", vp.case, type_name, fields.len(), vp.args.len()),
+                        vp.span,
+                    ))?;
+                    let sub_access = format!("{}.data.{}.{}", access, Self::case_member(&vp.case), field);
+                    let (c, b) = self.pattern_test(arg, &sub_access, false)?;
+                    conds.extend(c);
+                    binds.extend(b);
+                }
+            }
+        }
+        Ok((conds, binds))
+    }
+
+    /// Emit a match arm body, storing its value in `result_var` when the match
+    /// produces one. Block bodies run their statements first.
+    fn gen_arm_body(&mut self, body: &Expr, result_var: Option<&str>) -> Result<(), CodegenError> {
+        let (stmts, value): (&[Stmt], Option<&Expr>) = match body {
+            Expr::Block(block, _) => match block.statements.split_last() {
+                Some((Stmt::Expr(last), rest)) => (rest, Some(last)),
+                _ => (&block.statements, None),
+            },
+            other => (&[], Some(other)),
+        };
+        for stmt in stmts {
+            self.gen_statement(stmt)?;
+        }
+        if let Some(value) = value {
+            self.emit_indent();
+            if let Some(var) = result_var {
+                self.emit(&format!("{} = ", var));
+            }
+            self.gen_expr(value)?;
+            self.emit(";\n");
+        }
+        Ok(())
+    }
+
     /// `TypeName_method(&receiver, args)`. `self` is already a pointer; a
     /// temporary receiver is materialised first so its address can be taken.
     fn gen_method_call(&mut self, receiver: &Expr, type_name: &str, method: &str, args: &[Expr]) -> Result<(), CodegenError> {
@@ -1494,5 +1697,64 @@ mod tests {
         assert!(c.contains("const char* Button_title(Button* self)"), "{}", c);
         assert!(c.contains("typedef struct Main Main;"), "{}", c);
         assert!(c.contains("int64_t Main_root(Main* self)"), "{}", c);
+    }
+
+    // === Variant patterns ===
+
+    const RESULT: &str = r#"
+        variant Result { Ok(int), Err(message: string) }
+        variant Maybe { Some(Result), Nothing }
+    "#;
+
+    #[test]
+    fn variants_get_constructors() {
+        let c = compile(RESULT);
+        assert!(c.contains("static inline Result Result_Ok(int64_t _0) {"), "{}", c);
+        assert!(c.contains("_rx_v.tag = RESULT_OK;"), "{}", c);
+        assert!(c.contains("_rx_v.data.ok._0 = _0;"), "{}", c);
+        assert!(c.contains("static inline Result Result_Err(const char* message) {"), "{}", c);
+        assert!(c.contains("static const Maybe Maybe_Nothing = { .tag = MAYBE_NOTHING };"), "{}", c);
+    }
+
+    #[test]
+    fn flat_variant_match_is_a_switch_on_the_tag() {
+        let c = compile(&format!("{}\nfn f(r: Result) -> int {{ return match r {{ Ok(v) => v * 2, Err(m) => {{ println(m); -1 }} }}; }}", RESULT));
+        assert!(c.contains("Result _rx_m0 = r;"), "{}", c);
+        assert!(c.contains("int64_t _rx_r0;"), "{}", c);
+        assert!(c.contains("switch (_rx_m0.tag) {"), "{}", c);
+        assert!(c.contains("case RESULT_OK: {"), "{}", c);
+        assert!(c.contains("__auto_type v = _rx_m0.data.ok._0;"), "{}", c);
+        assert!(c.contains("_rx_r0 = (v * 2);"), "{}", c);
+        assert!(c.contains("__auto_type m = _rx_m0.data.err.message;"), "{}", c);
+        assert!(c.contains("println(m);"), "{}", c);
+        assert!(c.contains("_rx_r0 = -1;"), "{}", c);
+        assert!(c.contains("default: break;"), "{}", c);
+    }
+
+    #[test]
+    fn nested_patterns_become_an_if_chain_with_tag_tests() {
+        let c = compile(&format!("{}\nfn f(m: Maybe) -> int {{ return match m {{ Some(Ok(v)) => v, Some(Err(_)) => -1, Nothing => 0 }}; }}", RESULT));
+        assert!(c.contains("if ((_rx_m0.tag == MAYBE_SOME) && (_rx_m0.data.some._0.tag == RESULT_OK)) {"), "{}", c);
+        assert!(c.contains("__auto_type v = _rx_m0.data.some._0.data.ok._0;"), "{}", c);
+        assert!(c.contains("} else if ((_rx_m0.tag == MAYBE_NOTHING)) {"), "{}", c);
+    }
+
+    #[test]
+    fn string_patterns_compare_with_rx_strcmp_and_void_matches_are_statements() {
+        let c = compile(r#"fn f(s: string) -> int { return match s { "save" => 1, _ => 0 }; }"#);
+        assert!(c.contains("const char* _rx_m0 = s;"), "{}", c);
+        assert!(c.contains("if ((rx_strcmp(_rx_m0, \"save\") == 0)) {"), "{}", c);
+        let c = compile(&format!("{}\nfn f(m: Maybe) {{ match m {{ Some(_) => println(\"s\"), Nothing => println(\"n\") }} }}", RESULT));
+        assert!(!c.contains("_rx_r0"), "{}", c);
+        assert!(c.contains("case MAYBE_SOME: {"), "{}", c);
+        assert!(c.contains("println(\"s\");"), "{}", c);
+    }
+
+    #[test]
+    fn variant_match_without_type_info_is_a_codegen_error() {
+        let tokens = tokenize(&format!("{}\nfn f(r: Result) -> int {{ return match r {{ Ok(v) => v, Err(_) => 0 }}; }}", RESULT)).unwrap();
+        let ast = parse(&tokens).unwrap();
+        let err = CodeGen::new().generate(&ast).unwrap_err();
+        assert!(err.message.contains("run the type checker"), "{}", err.message);
     }
 }

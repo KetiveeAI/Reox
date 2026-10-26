@@ -159,7 +159,11 @@ impl From<crate::parser::ParseError> for Diagnostic {
 
 impl From<crate::typechecker::TypeError> for Diagnostic {
     fn from(e: crate::typechecker::TypeError) -> Self {
-        Diagnostic::error(e.message, e.span)
+        let diag = Diagnostic::error(e.message, e.span);
+        match e.hint {
+            Some(hint) => diag.with_hint(hint),
+            None => diag,
+        }
     }
 }
 

@@ -240,6 +240,31 @@ impl TypeKind {
     }
 }
 
+/// One case of a variant and its payload fields, in declaration order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseInfo {
+    pub name: String,
+    pub fields: Vec<(String, ResolvedType)>,
+}
+
+/// A variant type and its cases.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantInfo {
+    pub name: String,
+    pub cases: Vec<CaseInfo>,
+}
+
+impl VariantInfo {
+    pub fn case(&self, name: &str) -> Option<&CaseInfo> {
+        self.cases.iter().find(|c| c.name == name)
+    }
+
+    /// C symbol of a case constructor: `Variant_Case`.
+    pub fn mangle_case(&self, case: &str) -> String {
+        format!("{}_{}", self.name, case)
+    }
+}
+
 /// Signature of a method attached to a nominal type. `params` excludes the
 /// implicit `self`.
 #[derive(Debug, Clone, PartialEq)]
