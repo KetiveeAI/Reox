@@ -239,6 +239,66 @@ pub enum Expr {
     Action(Vec<Param>, Option<Box<Type>>, Box<Block>, Span), // action (params) -> Type { body }
 }
 
+impl Expr {
+    /// Source location of the expression, for diagnostics.
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Literal(lit) => lit.span(),
+            Expr::Identifier(_, s)
+            | Expr::Binary(_, _, _, s)
+            | Expr::Unary(_, _, s)
+            | Expr::Call(_, _, s)
+            | Expr::Member(_, _, s)
+            | Expr::Index(_, _, s)
+            | Expr::Assign(_, _, s)
+            | Expr::StructLit(_, _, s)
+            | Expr::ArrayLit(_, s)
+            | Expr::Match(_, _, s)
+            | Expr::CompoundAssign(_, _, _, s)
+            | Expr::PreIncrement(_, s)
+            | Expr::PreDecrement(_, s)
+            | Expr::PostIncrement(_, s)
+            | Expr::PostDecrement(_, s)
+            | Expr::NullCoalesce(_, _, s)
+            | Expr::OptionalChain(_, _, s)
+            | Expr::TrailingClosure(_, _, s)
+            | Expr::Nil(s)
+            | Expr::Await(_, s)
+            | Expr::Range(_, _, s)
+            | Expr::Action(_, _, _, s) => *s,
+        }
+    }
+}
+
+impl Stmt {
+    /// Source location of the statement, for diagnostics.
+    pub fn span(&self) -> Span {
+        match self {
+            Stmt::Let(l) => l.span,
+            Stmt::Expr(e) => e.span(),
+            Stmt::Return(r) => r.span,
+            Stmt::If(i) => i.span,
+            Stmt::While(w) => w.span,
+            Stmt::For(f) => f.span,
+            Stmt::Block(b) => b.span,
+            Stmt::Break(s) | Stmt::Continue(s) => *s,
+            Stmt::Guard(g) => g.span,
+            Stmt::Defer(d) => d.span,
+            Stmt::TryCatch(t) => t.span,
+            Stmt::Throw(t) => t.span,
+        }
+    }
+}
+
+impl Literal {
+    /// Source location of the literal, for diagnostics.
+    pub fn span(&self) -> Span {
+        match self {
+            Literal::Int(_, s) | Literal::Float(_, s) | Literal::String(_, s) | Literal::Bool(_, s) => *s,
+        }
+    }
+}
+
 /// Literal values
 #[derive(Debug, Clone)]
 pub enum Literal {

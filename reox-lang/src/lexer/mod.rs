@@ -8,28 +8,51 @@ mod token;
 
 pub use token::{Token, TokenKind, Span, StringPart};
 
-/// Lexer error
+/// Lexer error, located by a source span
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexError {
     pub message: String,
-    pub line: u32,
-    pub column: u32,
+    pub span: Span,
 }
 
 impl LexError {
-    pub fn new(message: impl Into<String>, line: u32, column: u32) -> Self {
+    pub fn new(message: impl Into<String>, span: Span) -> Self {
         Self {
             message: message.into(),
-            line,
-            column,
+            span,
         }
+    }
+
+    /// Build an error that points at a single source position
+    pub fn at(message: impl Into<String>, line: u32, column: u32, pos: usize) -> Self {
+        Self::new(message, Span::new(line, column, pos, pos + 1))
+    }
+
+    pub fn line(&self) -> u32 {
+        self.span.line
+    }
+
+    pub fn column(&self) -> u32 {
+        self.span.column
     }
 
     /// Format error for display
     pub fn display(&self) -> String {
-        format!("error[{}:{}]: {}", self.line, self.column, self.message)
+        format!("error[{}:{}]: {}", self.span.line, self.span.column, self.message)
     }
 }
+
+impl std::fmt::Display for LexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display())
+    }
+}
+
+impl std::error::Error for LexError {}
+
+/// Longest source accepted by the lexer, in bytes. Spans store byte offsets as
+/// `usize`, so this is a sanity bound rather than a technical one.
+pub const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// REOX Lexer
 pub struct Lexer<'a> {
@@ -79,8 +102,8 @@ impl<'a> Lexer<'a> {
         iter.peek().map(|(_, ch)| *ch)
     }
 
-    /// Skip whitespace and comments
-    fn skip_whitespace_and_comments(&mut self) {
+    /// Skip whitespace and comments. An unterminated block comment is an error.
+    fn skip_whitespace_and_comments(&mut self) -> Result<(), LexError> {
         loop {
             match self.peek() {
                 Some(' ') | Some('\t') | Some('\r') | Some('\n') => {
@@ -98,7 +121,10 @@ impl<'a> Lexer<'a> {
                             self.advance();
                         }
                     } else if self.peek_next() == Some('*') {
-                        // Block comment
+                        // Block comment (nestable)
+                        let start_line = self.line;
+                        let start_col = self.column;
+                        let start_pos = self.chars.peek().map(|(p, _)| *p).unwrap_or(self.current_pos);
                         self.advance(); // /
                         self.advance(); // *
                         let mut depth = 1;
@@ -112,7 +138,12 @@ impl<'a> Lexer<'a> {
                                     self.advance();
                                     depth += 1;
                                 }
-                                None => break,
+                                None => {
+                                    return Err(LexError::new(
+                                        "unterminated block comment",
+                                        Span::new(start_line, start_col, start_pos, start_pos + 2),
+                                    ));
+                                }
                                 _ => {}
                             }
                         }
@@ -123,24 +154,31 @@ impl<'a> Lexer<'a> {
                 _ => break,
             }
         }
+        Ok(())
     }
 
     /// Scan an identifier or keyword
     fn scan_identifier(&mut self, start_pos: usize, start_line: u32, start_col: u32) -> Token {
-        let mut end_pos = start_pos;
+        // `end` is the byte offset one past the last character of the identifier.
+        // Identifiers may contain multi-byte letters, so track the full width.
+        let mut end = self.source[start_pos..]
+            .chars()
+            .next()
+            .map(|c| start_pos + c.len_utf8())
+            .unwrap_or(start_pos + 1);
 
         while let Some(ch) = self.peek() {
             if ch.is_alphanumeric() || ch == '_' {
-                if let Some((pos, _)) = self.advance() {
-                    end_pos = pos;
+                if let Some((pos, c)) = self.advance() {
+                    end = pos + c.len_utf8();
                 }
             } else {
                 break;
             }
         }
 
-        let text = &self.source[start_pos..=end_pos];
-        let span = Span::new(start_line, start_col, start_pos, end_pos + 1);
+        let text = self.source.get(start_pos..end).unwrap_or("");
+        let span = Span::new(start_line, start_col, start_pos, end);
 
         let kind = TokenKind::keyword_from_str(text)
             .unwrap_or_else(|| TokenKind::Ident(text.to_string()));
@@ -204,23 +242,23 @@ impl<'a> Lexer<'a> {
             let hex_digits = &text[2..];
             match i64::from_str_radix(hex_digits, 16) {
                 Ok(val) => Ok(Token::new(TokenKind::IntLit(val), span)),
-                Err(_) => Err(LexError::new(format!("invalid hex literal: {}", text), start_line, start_col)),
+                Err(_) => Err(LexError::new(format!("invalid hex literal: {}", text), span)),
             }
         } else if is_bin {
             let bin_digits: String = text[2..].chars().filter(|c| *c != '_').collect();
             match i64::from_str_radix(&bin_digits, 2) {
                 Ok(val) => Ok(Token::new(TokenKind::IntLit(val), span)),
-                Err(_) => Err(LexError::new(format!("invalid binary literal: {}", text), start_line, start_col)),
+                Err(_) => Err(LexError::new(format!("invalid binary literal: {}", text), span)),
             }
         } else if is_float {
             match text.parse::<f64>() {
                 Ok(val) => Ok(Token::new(TokenKind::FloatLit(val), span)),
-                Err(_) => Err(LexError::new(format!("invalid float literal: {}", text), start_line, start_col)),
+                Err(_) => Err(LexError::new(format!("invalid float literal: {}", text), span)),
             }
         } else {
             match text.parse::<i64>() {
                 Ok(val) => Ok(Token::new(TokenKind::IntLit(val), span)),
-                Err(_) => Err(LexError::new(format!("invalid integer literal: {}", text), start_line, start_col)),
+                Err(_) => Err(LexError::new(format!("invalid integer literal: {}", text), span)),
             }
         }
     }
@@ -265,9 +303,9 @@ impl<'a> Lexer<'a> {
                                         expr.push('(');
                                     }
                                     Some((_, ch)) => expr.push(ch),
-                                    None => return Err(LexError::new(
+                                    None => return Err(LexError::at(
                                         "unterminated string interpolation",
-                                        self.line, self.column,
+                                        start_line, start_col, start_pos,
                                     )),
                                 }
                             }
@@ -275,6 +313,7 @@ impl<'a> Lexer<'a> {
                         }
                         _ => {
                             // Regular escape sequence
+                            let (esc_line, esc_col, esc_pos) = (self.line, self.column.saturating_sub(1), self.current_pos);
                             match self.advance() {
                                 Some((_, 'n')) => current_lit.push('\n'),
                                 Some((_, 't')) => current_lit.push('\t'),
@@ -283,15 +322,15 @@ impl<'a> Lexer<'a> {
                                 Some((_, '"')) => current_lit.push('"'),
                                 Some((_, '0')) => current_lit.push('\0'),
                                 Some((_, ch)) => {
-                                    return Err(LexError::new(
+                                    return Err(LexError::at(
                                         format!("invalid escape sequence: \\{}", ch),
-                                        self.line, self.column,
+                                        esc_line, esc_col, esc_pos,
                                     ));
                                 }
                                 None => {
-                                    return Err(LexError::new(
+                                    return Err(LexError::at(
                                         "unexpected end of file in escape sequence",
-                                        self.line, self.column,
+                                        esc_line, esc_col, esc_pos,
                                     ));
                                 }
                             }
@@ -299,18 +338,18 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 Some((_, '\n')) => {
-                    return Err(LexError::new(
+                    return Err(LexError::at(
                         "unterminated string literal",
-                        start_line, start_col,
+                        start_line, start_col, start_pos,
                     ));
                 }
                 Some((_, ch)) => {
                     current_lit.push(ch);
                 }
                 None => {
-                    return Err(LexError::new(
+                    return Err(LexError::at(
                         "unterminated string literal",
-                        start_line, start_col,
+                        start_line, start_col, start_pos,
                     ));
                 }
             }
@@ -332,13 +371,13 @@ impl<'a> Lexer<'a> {
 
     /// Get next token
     fn next_token(&mut self) -> Result<Token, LexError> {
-        self.skip_whitespace_and_comments();
+        self.skip_whitespace_and_comments()?;
 
         let start_line = self.line;
         let start_col = self.column;
 
         match self.advance() {
-            None => Ok(Token::eof(self.current_pos)),
+            None => Ok(Token::eof_at(self.line, self.column, self.source.len())),
 
             Some((pos, ch)) => {
                 let span = Span::new(start_line, start_col, pos, pos + 1);
@@ -555,8 +594,7 @@ impl<'a> Lexer<'a> {
 
                     _ => Err(LexError::new(
                         format!("unexpected character: '{}'", ch),
-                        start_line,
-                        start_col,
+                        Span::new(start_line, start_col, pos, pos + ch.len_utf8()),
                     )),
                 }
             }
@@ -566,6 +604,12 @@ impl<'a> Lexer<'a> {
 
 /// Tokenize source code into a vector of tokens
 pub fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(LexError::new(
+            format!("source is {} bytes, larger than the {} byte limit", source.len(), MAX_SOURCE_BYTES),
+            Span::default(),
+        ));
+    }
     let mut lexer = Lexer::new(source);
     let mut tokens = Vec::new();
 
@@ -650,8 +694,8 @@ mod tests {
 
     #[test]
     fn test_floats() {
-        let tokens = tokenize("3.14 0.5 123.456").unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::FloatLit(3.14));
+        let tokens = tokenize("3.75 0.5 123.456").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::FloatLit(3.75));
         assert_eq!(tokens[1].kind, TokenKind::FloatLit(0.5));
         assert_eq!(tokens[2].kind, TokenKind::FloatLit(123.456));
     }
@@ -839,5 +883,109 @@ mod tests {
         assert_eq!(tokens[5].kind, TokenKind::Where);
         assert_eq!(tokens[6].kind, TokenKind::Typealias);
         assert_eq!(tokens[7].kind, TokenKind::Nil);
+    }
+
+    // === Hardening: error paths ===
+
+    #[test]
+    fn unterminated_block_comment_is_an_error() {
+        let err = tokenize("fn main() { } /* never closed").unwrap_err();
+        assert_eq!(err.message, "unterminated block comment");
+        assert_eq!((err.line(), err.column()), (1, 15));
+    }
+
+    #[test]
+    fn nested_unterminated_block_comment_is_an_error() {
+        let err = tokenize("/* outer /* inner */ still open").unwrap_err();
+        assert_eq!(err.message, "unterminated block comment");
+    }
+
+    #[test]
+    fn non_ascii_identifier_is_sliced_on_char_boundaries() {
+        let tokens = tokenize("café naïve_x").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Ident("café".to_string()));
+        assert_eq!(tokens[0].span.end, "café".len());
+        assert_eq!(tokens[1].kind, TokenKind::Ident("naïve_x".to_string()));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn non_ascii_identifier_at_end_of_input() {
+        let tokens = tokenize("aé").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Ident("aé".to_string()));
+        assert_eq!(tokens[0].span.end, 3);
+        // Identifiers must start with an ASCII letter or underscore.
+        let err = tokenize("é").unwrap_err();
+        assert_eq!(err.message, "unexpected character: 'é'");
+    }
+
+    #[test]
+    fn unexpected_character_error_carries_span() {
+        let err = tokenize("let x = 1 $ 2;").unwrap_err();
+        assert_eq!(err.message, "unexpected character: '$'");
+        assert_eq!((err.span.line, err.span.column, err.span.start, err.span.end), (1, 11, 10, 11));
+    }
+
+    #[test]
+    fn unexpected_multibyte_character_error_carries_span() {
+        let err = tokenize("x → y").unwrap_err();
+        assert_eq!(err.message, "unexpected character: '→'");
+        assert_eq!((err.span.start, err.span.end), (2, 5));
+    }
+
+    #[test]
+    fn unterminated_string_points_at_opening_quote() {
+        let err = tokenize("fn main() {\n  let s = \"abc;\n}").unwrap_err();
+        assert_eq!(err.message, "unterminated string literal");
+        assert_eq!((err.line(), err.column()), (2, 11));
+    }
+
+    #[test]
+    fn unterminated_interpolation_is_an_error() {
+        let err = tokenize("\"a \\(b\"").unwrap_err();
+        assert_eq!(err.message, "unterminated string interpolation");
+    }
+
+    #[test]
+    fn invalid_escape_points_at_backslash() {
+        let err = tokenize("\"ab\\q\"").unwrap_err();
+        assert_eq!(err.message, "invalid escape sequence: \\q");
+        assert_eq!((err.line(), err.column()), (1, 4));
+    }
+
+    #[test]
+    fn eof_token_has_a_real_position() {
+        let tokens = tokenize("fn\nmain").unwrap();
+        let eof = tokens.last().unwrap();
+        assert_eq!(eof.kind, TokenKind::Eof);
+        assert_eq!((eof.span.line, eof.span.column), (2, 5));
+        assert_eq!(eof.span.start, 7);
+    }
+
+    #[test]
+    fn integer_overflow_literal_is_an_error() {
+        let err = tokenize("99999999999999999999999").unwrap_err();
+        assert!(err.message.starts_with("invalid integer literal"));
+        assert_eq!(err.span.start, 0);
+    }
+
+    #[test]
+    fn hex_and_binary_without_digits_are_errors() {
+        assert!(tokenize("0x").unwrap_err().message.starts_with("invalid hex literal"));
+        assert!(tokenize("0b").unwrap_err().message.starts_with("invalid binary literal"));
+    }
+
+    #[test]
+    fn oversized_source_is_rejected() {
+        let huge = "a".repeat(MAX_SOURCE_BYTES + 1);
+        let err = tokenize(&huge).unwrap_err();
+        assert!(err.message.contains("byte limit"));
+    }
+
+    #[test]
+    fn lex_error_display_includes_position() {
+        let err = LexError::at("boom", 3, 4, 10);
+        assert_eq!(err.display(), "error[3:4]: boom");
+        assert_eq!(err.to_string(), "error[3:4]: boom");
     }
 }

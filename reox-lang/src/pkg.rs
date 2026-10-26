@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const MANIFEST_FILE: &str = "reox.pkg";
 
@@ -48,7 +48,8 @@ impl Manifest {
             }
 
             if line.starts_with('[') && line.ends_with(']') {
-                section = match &line[1..line.len()-1] {
+                let inner = line.get(1..line.len() - 1).unwrap_or("");
+                section = match inner {
                     "package" => "package",
                     "dependencies" => "dependencies",
                     other => return Err(format!("unknown section: [{}]", other)),
@@ -197,15 +198,15 @@ fn cmd_add(name: &str, version: Option<&str>) -> Result<(), String> {
     let mut manifest = read_manifest()?;
     let ver = version.unwrap_or("*").to_string();
 
-    if manifest.dependencies.contains_key(name) {
-        let old = manifest.dependencies.get(name).unwrap().clone();
-        manifest.dependencies.insert(name.to_string(), ver.clone());
-        write_manifest(&manifest)?;
-        println!("updated {} {} -> {}", name, old, ver);
-    } else {
-        manifest.dependencies.insert(name.to_string(), ver.clone());
-        write_manifest(&manifest)?;
-        println!("added {} = \"{}\"", name, ver);
+    match manifest.dependencies.insert(name.to_string(), ver.clone()) {
+        Some(old) => {
+            write_manifest(&manifest)?;
+            println!("updated {} {} -> {}", name, old, ver);
+        }
+        None => {
+            write_manifest(&manifest)?;
+            println!("added {} = \"{}\"", name, ver);
+        }
     }
 
     Ok(())
@@ -387,5 +388,27 @@ mod tests {
         assert_eq!(m.name, "test");
         assert_eq!(m.version, "2.0");
         assert_eq!(m.dependencies.get("ui").unwrap(), "1.0");
+    }
+
+    // === Hardening: error paths ===
+
+    #[test]
+    fn manifest_parse_rejects_bare_bracket_line() {
+        let err = Manifest::parse("[]\nname = \"x\"").unwrap_err();
+        assert_eq!(err, "unknown section: []");
+    }
+
+    #[test]
+    fn manifest_parse_rejects_unicode_section_without_panicking() {
+        let err = Manifest::parse("[pâckage]\n").unwrap_err();
+        assert!(err.starts_with("unknown section"));
+    }
+
+    #[test]
+    fn dependency_insert_reports_previous_version() {
+        let mut m = Manifest::new("p");
+        assert_eq!(m.dependencies.insert("ui".into(), "1".into()), None);
+        assert_eq!(m.dependencies.insert("ui".into(), "2".into()), Some("1".to_string()));
+        assert_eq!(m.dependencies.get("ui").map(String::as_str), Some("2"));
     }
 }

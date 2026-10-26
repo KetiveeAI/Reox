@@ -8,11 +8,12 @@ pub use ast::*;
 
 use crate::lexer::{Token, TokenKind, Span};
 
-/// Parser error
-#[derive(Debug, Clone)]
+/// Parser error, located by a source span, with an optional hint for the user
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
     pub message: String,
     pub span: Span,
+    pub hint: Option<String>,
 }
 
 impl ParseError {
@@ -20,7 +21,13 @@ impl ParseError {
         Self {
             message: message.into(),
             span,
+            hint: None,
         }
+    }
+
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 
     pub fn display(&self) -> String {
@@ -31,23 +38,44 @@ impl ParseError {
     }
 }
 
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display())
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+/// Deepest nesting of expressions, blocks and types the parser accepts.
+/// Recursive descent uses the native stack, so unbounded nesting would crash
+/// the compiler instead of producing a diagnostic.
+pub const MAX_NESTING_DEPTH: usize = 128;
+
+/// Token returned when the parser is asked to look past the end of its input.
+static END_OF_INPUT: Token = Token {
+    kind: TokenKind::Eof,
+    span: Span { line: 0, column: 0, start: 0, end: 0 },
+};
+
 /// REOX Parser
 pub struct Parser<'a> {
     tokens: &'a [Token],
     current: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, current: 0 }
+        Self { tokens, current: 0, depth: 0 }
     }
 
     // === Utility Methods ===
 
     fn peek(&self) -> &Token {
-        self.tokens.get(self.current).unwrap_or_else(|| {
-            self.tokens.last().expect("token stream should have EOF")
-        })
+        self.tokens
+            .get(self.current)
+            .or_else(|| self.tokens.last())
+            .unwrap_or(&END_OF_INPUT)
     }
 
     fn peek_kind(&self) -> &TokenKind {
@@ -58,11 +86,19 @@ impl<'a> Parser<'a> {
         matches!(self.peek_kind(), TokenKind::Eof)
     }
 
+    /// Consume the current token and return it. At end of input the EOF
+    /// token is returned and the position does not move.
     fn advance(&mut self) -> &Token {
-        if !self.is_at_end() {
+        if !self.is_at_end() && self.current < self.tokens.len() {
+            let consumed = self.current;
             self.current += 1;
+            match self.tokens.get(consumed) {
+                Some(t) => t,
+                None => self.peek(),
+            }
+        } else {
+            self.peek()
         }
-        self.tokens.get(self.current - 1).unwrap()
     }
 
     fn check(&self, kind: &TokenKind) -> bool {
@@ -73,10 +109,18 @@ impl<'a> Parser<'a> {
         if self.check(kind) {
             Ok(self.advance())
         } else {
-            Err(ParseError::new(
-                format!("{}, found {:?}", msg, self.peek_kind()),
-                self.peek().span,
-            ))
+            Err(self.error_here(msg))
+        }
+    }
+
+    /// Build an "<msg>, found <token>" error at the current token.
+    fn error_here(&self, msg: &str) -> ParseError {
+        let found = describe_token(self.peek_kind());
+        let err = ParseError::new(format!("{}, found {}", msg, found), self.peek().span);
+        if self.is_at_end() {
+            err.with_hint("the input ended before this construct was complete")
+        } else {
+            err
         }
     }
 
@@ -88,6 +132,52 @@ impl<'a> Parser<'a> {
             }
         }
         false
+    }
+
+    /// Consume one of `table`'s tokens and map it to its value. Returns
+    /// `None` without consuming anything when the current token is not listed.
+    fn match_map<T: Copy>(&mut self, table: &[(TokenKind, T)]) -> Option<T> {
+        for (kind, value) in table {
+            if self.check(kind) {
+                self.advance();
+                return Some(*value);
+            }
+        }
+        None
+    }
+
+    /// Run `f` one nesting level deeper, failing cleanly past MAX_NESTING_DEPTH.
+    fn nested<T>(
+        &mut self,
+        what: &str,
+        f: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(ParseError::new(
+                format!("{} nested deeper than {} levels", what, MAX_NESTING_DEPTH),
+                self.peek().span,
+            )
+            .with_hint("split the construct into smaller pieces"));
+        }
+        self.depth += 1;
+        let result = f(self);
+        self.depth -= 1;
+        result
+    }
+
+    /// Account for one more link in a left-associative operator or postfix
+    /// chain. Each link deepens the expression tree by one level, which later
+    /// stages walk recursively, so chains share the nesting budget.
+    fn chain_link(&mut self) -> Result<(), ParseError> {
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(ParseError::new(
+                format!("expression chain longer than {} links", MAX_NESTING_DEPTH),
+                self.peek().span,
+            )
+            .with_hint("split the expression into smaller pieces with intermediate variables"));
+        }
+        self.depth += 1;
+        Ok(())
     }
 
     // === Parsing Methods ===
@@ -129,10 +219,9 @@ impl<'a> Parser<'a> {
             TokenKind::Pub => self.parse_pub_decl(),
             TokenKind::Static => self.parse_static_decl(),
             TokenKind::Let => self.parse_global_var_decl(),
-            _ => Err(ParseError::new(
-                format!("expected declaration, found {:?}", self.peek_kind()),
-                self.peek().span,
-            )),
+            _ => Err(self
+                .error_here("expected declaration")
+                .with_hint("top-level items are fn, struct, variant, protocol, extension, layer, panel, const, typealias, import, extern or let")),
         }
     }
 
@@ -300,6 +389,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<Type, ParseError> {
+        self.nested("type", |p| p.parse_type_inner())
+    }
+
+    fn parse_type_inner(&mut self) -> Result<Type, ParseError> {
         match self.peek_kind().clone() {
             TokenKind::Int => {
                 self.advance();
@@ -340,14 +433,15 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenKind::RBracket, "expected ']'")?;
                 Ok(Type::Array(Box::new(inner)))
             }
-            _ => Err(ParseError::new(
-                format!("expected type, found {:?}", self.peek_kind()),
-                self.peek().span,
-            )),
+            _ => Err(self.error_here("expected type")),
         }
     }
 
     fn parse_block(&mut self) -> Result<Block, ParseError> {
+        self.nested("block", |p| p.parse_block_inner())
+    }
+
+    fn parse_block_inner(&mut self) -> Result<Block, ParseError> {
         let span = self.peek().span;
         self.consume(&TokenKind::LBrace, "expected '{'")?;
 
@@ -356,6 +450,10 @@ impl<'a> Parser<'a> {
             statements.push(self.parse_statement()?);
         }
 
+        if self.is_at_end() {
+            return Err(ParseError::new("unclosed block: expected '}'", self.peek().span)
+                .with_hint(format!("the block opened at {}:{} is never closed", span.line, span.column)));
+        }
         self.consume(&TokenKind::RBrace, "expected '}'")?;
 
         Ok(Block { statements, span })
@@ -372,13 +470,13 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(name) if name == "break" => {
                 let span = self.peek().span;
                 self.advance();
-                self.consume(&TokenKind::Semicolon, "expected ';' after 'break'").ok();
+                self.consume(&TokenKind::Semicolon, "expected ';' after 'break'")?;
                 Ok(Stmt::Break(span))
             }
             TokenKind::Ident(name) if name == "continue" => {
                 let span = self.peek().span;
                 self.advance();
-                self.consume(&TokenKind::Semicolon, "expected ';' after 'continue'").ok();
+                self.consume(&TokenKind::Semicolon, "expected ';' after 'continue'")?;
                 Ok(Stmt::Continue(span))
             }
             // Swift/C++ style statements
@@ -439,6 +537,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.nested("if statement", |p| p.parse_if_stmt_inner())
+    }
+
+    fn parse_if_stmt_inner(&mut self) -> Result<Stmt, ParseError> {
         let span = self.peek().span;
         self.consume(&TokenKind::If, "expected 'if'")?;
 
@@ -551,7 +653,7 @@ impl<'a> Parser<'a> {
     // === Expression Parsing (Pratt Parser) ===
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
-        self.parse_assignment()
+        self.nested("expression", |p| p.parse_assignment())
     }
 
     fn parse_assignment(&mut self) -> Result<Expr, ParseError> {
@@ -565,18 +667,13 @@ impl<'a> Parser<'a> {
         }
 
         // Compound assignment operators
-        if self.match_token(&[
-            TokenKind::PlusEq, TokenKind::MinusEq, 
-            TokenKind::StarEq, TokenKind::SlashEq, TokenKind::PercentEq
+        if let Some(op) = self.match_map(&[
+            (TokenKind::PlusEq, CompoundOp::AddEq),
+            (TokenKind::MinusEq, CompoundOp::SubEq),
+            (TokenKind::StarEq, CompoundOp::MulEq),
+            (TokenKind::SlashEq, CompoundOp::DivEq),
+            (TokenKind::PercentEq, CompoundOp::ModEq),
         ]) {
-            let op = match self.tokens.get(self.current - 1).map(|t| &t.kind) {
-                Some(TokenKind::PlusEq) => CompoundOp::AddEq,
-                Some(TokenKind::MinusEq) => CompoundOp::SubEq,
-                Some(TokenKind::StarEq) => CompoundOp::MulEq,
-                Some(TokenKind::SlashEq) => CompoundOp::DivEq,
-                Some(TokenKind::PercentEq) => CompoundOp::ModEq,
-                _ => unreachable!(),
-            };
             let span = self.peek().span;
             let value = self.parse_assignment()?;
             return Ok(Expr::CompoundAssign(Box::new(expr), op, Box::new(value), span));
@@ -586,162 +683,185 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_nullish_coalesce(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_or()?;
 
         while self.match_token(&[TokenKind::QuestionQuestion]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_or()?;
             left = Expr::NullCoalesce(Box::new(left), Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_and()?;
 
         while self.match_token(&[TokenKind::Or]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_and()?;
             left = Expr::Binary(Box::new(left), BinOp::Or, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_and(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_bitwise_or()?;
 
         while self.match_token(&[TokenKind::And]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_bitwise_or()?;
             left = Expr::Binary(Box::new(left), BinOp::And, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_bitwise_or(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_bitwise_xor()?;
 
         while self.match_token(&[TokenKind::BitwiseOr]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_bitwise_xor()?;
             left = Expr::Binary(Box::new(left), BinOp::BitwiseOr, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_bitwise_xor(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_bitwise_and()?;
 
         while self.match_token(&[TokenKind::BitwiseXor]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_bitwise_and()?;
             left = Expr::Binary(Box::new(left), BinOp::BitwiseXor, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_bitwise_and(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_equality()?;
 
         while self.match_token(&[TokenKind::BitwiseAnd]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_equality()?;
             left = Expr::Binary(Box::new(left), BinOp::BitwiseAnd, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_equality(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_comparison()?;
 
-        while self.match_token(&[TokenKind::EqEq, TokenKind::BangEq]) {
-            let op = match self.tokens.get(self.current - 1).map(|t| &t.kind) {
-                Some(TokenKind::EqEq) => BinOp::Eq,
-                Some(TokenKind::BangEq) => BinOp::Ne,
-                _ => unreachable!(),
-            };
+        while let Some(op) = self.match_map(&[
+            (TokenKind::EqEq, BinOp::Eq),
+            (TokenKind::BangEq, BinOp::Ne),
+        ]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_comparison()?;
             left = Expr::Binary(Box::new(left), op, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_shift()?;
 
-        while self.match_token(&[TokenKind::Lt, TokenKind::Gt, TokenKind::LtEq, TokenKind::GtEq]) {
-            let op = match self.tokens.get(self.current - 1).map(|t| &t.kind) {
-                Some(TokenKind::Lt) => BinOp::Lt,
-                Some(TokenKind::Gt) => BinOp::Gt,
-                Some(TokenKind::LtEq) => BinOp::Le,
-                Some(TokenKind::GtEq) => BinOp::Ge,
-                _ => unreachable!(),
-            };
+        while let Some(op) = self.match_map(&[
+            (TokenKind::Lt, BinOp::Lt),
+            (TokenKind::Gt, BinOp::Gt),
+            (TokenKind::LtEq, BinOp::Le),
+            (TokenKind::GtEq, BinOp::Ge),
+        ]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_shift()?;
             left = Expr::Binary(Box::new(left), op, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_shift(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_term()?;
 
-        while self.match_token(&[TokenKind::ShiftLeft, TokenKind::ShiftRight]) {
-            let op = match self.tokens.get(self.current - 1).map(|t| &t.kind) {
-                Some(TokenKind::ShiftLeft) => BinOp::ShiftLeft,
-                Some(TokenKind::ShiftRight) => BinOp::ShiftRight,
-                _ => unreachable!(),
-            };
+        while let Some(op) = self.match_map(&[
+            (TokenKind::ShiftLeft, BinOp::ShiftLeft),
+            (TokenKind::ShiftRight, BinOp::ShiftRight),
+        ]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_term()?;
             left = Expr::Binary(Box::new(left), op, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_term(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_factor()?;
 
-        while self.match_token(&[TokenKind::Plus, TokenKind::Minus]) {
-            let op = match self.tokens.get(self.current - 1).map(|t| &t.kind) {
-                Some(TokenKind::Plus) => BinOp::Add,
-                Some(TokenKind::Minus) => BinOp::Sub,
-                _ => unreachable!(),
-            };
+        while let Some(op) = self.match_map(&[
+            (TokenKind::Plus, BinOp::Add),
+            (TokenKind::Minus, BinOp::Sub),
+        ]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_factor()?;
             left = Expr::Binary(Box::new(left), op, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
     fn parse_factor(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut left = self.parse_unary()?;
 
-        while self.match_token(&[TokenKind::Star, TokenKind::Slash, TokenKind::Percent]) {
-            let op = match self.tokens.get(self.current - 1).map(|t| &t.kind) {
-                Some(TokenKind::Star) => BinOp::Mul,
-                Some(TokenKind::Slash) => BinOp::Div,
-                Some(TokenKind::Percent) => BinOp::Mod,
-                _ => unreachable!(),
-            };
+        while let Some(op) = self.match_map(&[
+            (TokenKind::Star, BinOp::Mul),
+            (TokenKind::Slash, BinOp::Div),
+            (TokenKind::Percent, BinOp::Mod),
+        ]) {
+            self.chain_link()?;
             let span = self.peek().span;
             let right = self.parse_unary()?;
             left = Expr::Binary(Box::new(left), op, Box::new(right), span);
         }
 
+        self.depth = base_depth;
         Ok(left)
     }
 
@@ -749,43 +869,52 @@ impl<'a> Parser<'a> {
         // Await expression: await expr
         if self.match_token(&[TokenKind::Await]) {
             let span = self.peek().span;
-            let operand = self.parse_unary()?;
+            let operand = self.parse_unary_operand()?;
             return Ok(Expr::Await(Box::new(operand), span));
         }
         
         // Pre-increment/decrement
         if self.match_token(&[TokenKind::PlusPlus]) {
             let span = self.peek().span;
-            let operand = self.parse_unary()?;
+            let operand = self.parse_unary_operand()?;
             return Ok(Expr::PreIncrement(Box::new(operand), span));
         }
         if self.match_token(&[TokenKind::MinusMinus]) {
             let span = self.peek().span;
-            let operand = self.parse_unary()?;
+            let operand = self.parse_unary_operand()?;
             return Ok(Expr::PreDecrement(Box::new(operand), span));
         }
         
         // Unary operators: -, !, ~
-        if self.match_token(&[TokenKind::Minus, TokenKind::Bang, TokenKind::BitwiseNot]) {
-            let op = match self.tokens.get(self.current - 1).map(|t| &t.kind) {
-                Some(TokenKind::Minus) => UnaryOp::Neg,
-                Some(TokenKind::Bang) => UnaryOp::Not,
-                Some(TokenKind::BitwiseNot) => UnaryOp::BitwiseNot,
-                _ => unreachable!(),
-            };
+        if let Some(op) = self.match_map(&[
+            (TokenKind::Minus, UnaryOp::Neg),
+            (TokenKind::Bang, UnaryOp::Not),
+            (TokenKind::BitwiseNot, UnaryOp::BitwiseNot),
+        ]) {
             let span = self.peek().span;
-            let right = self.parse_unary()?;
+            let right = self.parse_unary_operand()?;
             return Ok(Expr::Unary(op, Box::new(right), span));
         }
 
         self.parse_postfix()
     }
 
+    /// Operand of a prefix operator. Chains such as `- - - x` recurse, so
+    /// each operator counts as one nesting level.
+    fn parse_unary_operand(&mut self) -> Result<Expr, ParseError> {
+        self.nested("unary expression", |p| p.parse_unary())
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut expr = self.parse_call()?;
 
         // Post-increment/decrement
         loop {
+            if !self.check(&TokenKind::PlusPlus) && !self.check(&TokenKind::MinusMinus) {
+                break;
+            }
+            self.chain_link()?;
             if self.match_token(&[TokenKind::PlusPlus]) {
                 let span = self.peek().span;
                 expr = Expr::PostIncrement(Box::new(expr), span);
@@ -797,13 +926,23 @@ impl<'a> Parser<'a> {
             }
         }
 
+        self.depth = base_depth;
         Ok(expr)
     }
 
     fn parse_call(&mut self) -> Result<Expr, ParseError> {
+        let base_depth = self.depth;
         let mut expr = self.parse_primary()?;
 
         loop {
+            let is_link = self.check(&TokenKind::LParen)
+                || self.check(&TokenKind::Dot)
+                || self.check(&TokenKind::QuestionDot)
+                || self.check(&TokenKind::LBracket);
+            if !is_link {
+                break;
+            }
+            self.chain_link()?;
             if self.match_token(&[TokenKind::LParen]) {
                 let span = self.peek().span;
                 let args = self.parse_arg_list()?;
@@ -828,6 +967,7 @@ impl<'a> Parser<'a> {
             }
         }
 
+        self.depth = base_depth;
         Ok(expr)
     }
 
@@ -991,10 +1131,7 @@ impl<'a> Parser<'a> {
                 }
                 Ok(result)
             }
-            _ => Err(ParseError::new(
-                format!("expected expression, found {:?}", token.kind),
-                token.span,
-            )),
+            _ => Err(self.error_here("expected expression")),
         }
     }
 
@@ -1004,10 +1141,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(name)
             }
-            _ => Err(ParseError::new(
-                format!("expected identifier, found {:?}", self.peek_kind()),
-                self.peek().span,
-            )),
+            _ => Err(self.error_here("expected identifier")),
         }
     }
 
@@ -1063,10 +1197,7 @@ impl<'a> Parser<'a> {
                     Ok(Pattern::Identifier(name))
                 }
             }
-            _ => Err(ParseError::new(
-                format!("expected pattern, found {:?}", token.kind),
-                token.span,
-            )),
+            _ => Err(self.error_here("expected pattern")),
         }
     }
 
@@ -1206,12 +1337,12 @@ impl<'a> Parser<'a> {
                 | TokenKind::OnPinch | TokenKind::OnRotate => {
                     let gesture_span = self.peek().span;
                     let kind = match self.peek_kind() {
-                        TokenKind::OnTap => "on_tap",
                         TokenKind::OnPan => "on_pan",
                         TokenKind::OnSwipe => "on_swipe",
                         TokenKind::OnPinch => "on_pinch",
                         TokenKind::OnRotate => "on_rotate",
-                        _ => unreachable!(),
+                        // Only gesture keywords reach this arm; OnTap is the remaining one.
+                        _ => "on_tap",
                     }.to_string();
                     self.advance(); // consume gesture keyword
 
@@ -1308,10 +1439,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 _ => {
-                    return Err(ParseError::new(
-                        format!("unexpected token in panel body: {:?}", self.peek_kind()),
-                        self.peek().span,
-                    ));
+                    return Err(self.error_here("expected property or 'fn' in panel body"));
                 }
             }
         }
@@ -1378,10 +1506,7 @@ impl<'a> Parser<'a> {
                     ))
                 }
             }
-            _ => Err(ParseError::new(
-                format!("expected declaration after 'pub', found {:?}", self.peek_kind()),
-                self.peek().span,
-            )),
+            _ => Err(self.error_here("expected declaration after 'pub'")),
         }
     }
 
@@ -1390,10 +1515,7 @@ impl<'a> Parser<'a> {
         self.advance(); // consume 'static'
         match self.peek_kind() {
             TokenKind::Fn => self.parse_fn_decl_with_modifiers(false, false, true).map(Decl::Function),
-            _ => Err(ParseError::new(
-                format!("expected 'fn' after 'static', found {:?}", self.peek_kind()),
-                self.peek().span,
-            )),
+            _ => Err(self.error_here("expected 'fn' after 'static'")),
         }
     }
 
@@ -1470,19 +1592,56 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Human-readable token name for error messages.
+fn describe_token(kind: &TokenKind) -> String {
+    match kind {
+        TokenKind::Eof => "end of input".to_string(),
+        TokenKind::Ident(name) => format!("identifier '{}'", name),
+        TokenKind::IntLit(n) => format!("integer literal '{}'", n),
+        TokenKind::FloatLit(n) => format!("float literal '{}'", n),
+        TokenKind::StringLit(s) => format!("string literal \"{}\"", s),
+        TokenKind::StringInterp(_) => "interpolated string literal".to_string(),
+        TokenKind::LParen => "'('".to_string(),
+        TokenKind::RParen => "')'".to_string(),
+        TokenKind::LBrace => "'{'".to_string(),
+        TokenKind::RBrace => "'}'".to_string(),
+        TokenKind::LBracket => "'['".to_string(),
+        TokenKind::RBracket => "']'".to_string(),
+        TokenKind::Semicolon => "';'".to_string(),
+        TokenKind::Comma => "','".to_string(),
+        TokenKind::Colon => "':'".to_string(),
+        TokenKind::Dot => "'.'".to_string(),
+        TokenKind::Eq => "'='".to_string(),
+        TokenKind::Arrow => "'->'".to_string(),
+        TokenKind::FatArrow => "'=>'".to_string(),
+        other => format!("{:?}", other),
+    }
+}
+
 /// Convenience type for backward compatibility
 pub type Ast = Program;
 
-/// Parse tokens into AST
-pub fn parse(tokens: &[Token]) -> Ast {
-    let mut parser = Parser::new(tokens);
-    match parser.parse_program() {
-        Ok(program) => program,
-        Err(e) => {
-            eprintln!("{}", e.display());
-            Program { declarations: vec![] }
+/// Stack reserved for parsing. Recursive descent through the precedence
+/// chain uses many frames per nesting level, which are large in debug builds,
+/// so parsing runs on its own thread.
+const PARSE_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+/// Parse tokens into an AST. Any syntax error is returned, never printed.
+/// Parsing runs on a dedicated large-stack thread; see `MAX_NESTING_DEPTH`.
+pub fn parse(tokens: &[Token]) -> Result<Ast, ParseError> {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("reox-parse".to_string())
+            .stack_size(PARSE_STACK_BYTES)
+            .spawn_scoped(scope, || Parser::new(tokens).parse_program());
+        match worker {
+            Ok(handle) => handle.join().unwrap_or_else(|_| {
+                Err(ParseError::new("parser thread terminated unexpectedly", Span::default()))
+            }),
+            // Could not get a thread: parse here, still protected by the depth limit.
+            Err(_) => Parser::new(tokens).parse_program(),
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1493,7 +1652,7 @@ mod tests {
     #[test]
     fn test_parse_simple_function() {
         let tokens = tokenize("fn main() { }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         assert_eq!(ast.declarations.len(), 1);
         match &ast.declarations[0] {
             Decl::Function(f) => {
@@ -1507,7 +1666,7 @@ mod tests {
     #[test]
     fn test_parse_function_with_params() {
         let tokens = tokenize("fn add(a: int, b: int) -> int { return a + b; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         assert_eq!(ast.declarations.len(), 1);
         match &ast.declarations[0] {
             Decl::Function(f) => {
@@ -1522,7 +1681,7 @@ mod tests {
     #[test]
     fn test_parse_struct() {
         let tokens = tokenize("struct Point { x: int, y: int }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         assert_eq!(ast.declarations.len(), 1);
         match &ast.declarations[0] {
             Decl::Struct(s) => {
@@ -1536,7 +1695,7 @@ mod tests {
     #[test]
     fn test_parse_let_statement() {
         let tokens = tokenize("fn main() { let x: int = 42; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 assert_eq!(f.body.statements.len(), 1);
@@ -1555,7 +1714,7 @@ mod tests {
     #[test]
     fn test_parse_if_statement() {
         let tokens = tokenize("fn main() { if x > 0 { } else { } }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 assert_eq!(f.body.statements.len(), 1);
@@ -1573,7 +1732,7 @@ mod tests {
     #[test]
     fn test_parse_expression_precedence() {
         let tokens = tokenize("fn main() { let x = 1 + 2 * 3; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         // 1 + (2 * 3) due to precedence
         match &ast.declarations[0] {
             Decl::Function(f) => {
@@ -1599,7 +1758,7 @@ mod tests {
     #[test]
     fn test_parse_function_call() {
         let tokens = tokenize("fn main() { print(42); }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 match &f.body.statements[0] {
@@ -1622,7 +1781,7 @@ mod tests {
     #[test]
     fn test_parse_guard_statement() {
         let tokens = tokenize("fn main() { guard x > 0 else { return; } }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 assert_eq!(f.body.statements.len(), 1);
@@ -1640,7 +1799,7 @@ mod tests {
     #[test]
     fn test_parse_defer_statement() {
         let tokens = tokenize("fn main() { defer { cleanup(); } }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 assert_eq!(f.body.statements.len(), 1);
@@ -1658,7 +1817,7 @@ mod tests {
     #[test]
     fn test_parse_try_catch_statement() {
         let tokens = tokenize("fn main() { try { risky(); } catch e { handle(); } }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 assert_eq!(f.body.statements.len(), 1);
@@ -1678,7 +1837,7 @@ mod tests {
     #[test]
     fn test_parse_throw_statement() {
         let tokens = tokenize("fn main() { throw error; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 assert_eq!(f.body.statements.len(), 1);
@@ -1694,7 +1853,7 @@ mod tests {
     #[test]
     fn test_parse_compound_assignment() {
         let tokens = tokenize("fn main() { x += 1; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 match &f.body.statements[0] {
@@ -1709,7 +1868,7 @@ mod tests {
     #[test]
     fn test_parse_null_coalescing() {
         let tokens = tokenize("fn main() { let x = a ?? b; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 match &f.body.statements[0] {
@@ -1729,7 +1888,7 @@ mod tests {
     #[test]
     fn test_parse_optional_chaining() {
         let tokens = tokenize("fn main() { let x = a?.b; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 match &f.body.statements[0] {
@@ -1751,7 +1910,7 @@ mod tests {
     #[test]
     fn test_parse_pre_increment() {
         let tokens = tokenize("fn main() { ++x; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 match &f.body.statements[0] {
@@ -1766,7 +1925,7 @@ mod tests {
     #[test]
     fn test_parse_post_increment() {
         let tokens = tokenize("fn main() { x++; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 match &f.body.statements[0] {
@@ -1781,7 +1940,7 @@ mod tests {
     #[test]
     fn test_parse_nil_literal() {
         let tokens = tokenize("fn main() { let x = nil; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 match &f.body.statements[0] {
@@ -1806,7 +1965,7 @@ mod tests {
             }
         "#;
         let tokens = tokenize(source).unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         
         assert_eq!(ast.declarations.len(), 1);
         match &ast.declarations[0] {
@@ -1826,7 +1985,7 @@ mod tests {
             }
         "#;
         let tokens = tokenize(source).unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         
         assert_eq!(ast.declarations.len(), 1);
         match &ast.declarations[0] {
@@ -1854,7 +2013,7 @@ mod tests {
     #[test]
     fn test_parse_variant_decl() {
         let tokens = tokenize("variant Direction { Up, Down, Left, Right }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         assert_eq!(ast.declarations.len(), 1);
         match &ast.declarations[0] {
             Decl::Variant(v) => {
@@ -1870,7 +2029,7 @@ mod tests {
     #[test]
     fn test_parse_variant_with_fields() {
         let tokens = tokenize("variant Shape { Circle(radius: float), Rect(w: int, h: int) }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Variant(v) => {
                 assert_eq!(v.name, "Shape");
@@ -1887,7 +2046,7 @@ mod tests {
     #[test]
     fn test_parse_protocol_decl() {
         let tokens = tokenize("protocol Drawable { fn draw(canvas: int); fn size() -> int; }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Protocol(p) => {
                 assert_eq!(p.name, "Drawable");
@@ -1904,7 +2063,7 @@ mod tests {
     #[test]
     fn test_parse_extension_decl() {
         let tokens = tokenize("extension Color { fn lighten(amount: float) -> float { return amount; } }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Extension(ext) => {
                 assert_eq!(ext.target, "Color");
@@ -1918,7 +2077,7 @@ mod tests {
     #[test]
     fn test_parse_layer_decl() {
         let tokens = tokenize("layer MyButton { signal on_click; fn body() { } }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Layer(l) => {
                 assert_eq!(l.name, "MyButton");
@@ -1934,7 +2093,7 @@ mod tests {
     #[test]
     fn test_parse_layer_with_gestures() {
         let tokens = tokenize("layer Card { on_tap { } on_swipe(dir: int) { } }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Layer(l) => {
                 assert_eq!(l.name, "Card");
@@ -1952,7 +2111,7 @@ mod tests {
     #[test]
     fn test_parse_panel_decl() {
         let tokens = tokenize("panel MainWindow { fn root() { } }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Panel(p) => {
                 assert_eq!(p.name, "MainWindow");
@@ -1966,7 +2125,7 @@ mod tests {
     #[test]
     fn test_parse_const_decl() {
         let tokens = tokenize("const MAX_SIZE: int = 100;").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Const(c) => {
                 assert_eq!(c.name, "MAX_SIZE");
@@ -1979,7 +2138,7 @@ mod tests {
     #[test]
     fn test_parse_typealias_decl() {
         let tokens = tokenize("typealias Color = int;").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Typealias(t) => {
                 assert_eq!(t.name, "Color");
@@ -1992,7 +2151,7 @@ mod tests {
     #[test]
     fn test_parse_pub_fn() {
         let tokens = tokenize("pub fn render() { }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 assert_eq!(f.name, "render");
@@ -2005,7 +2164,7 @@ mod tests {
     #[test]
     fn test_parse_emit_stmt() {
         let tokens = tokenize("fn main() { emit on_click(42); }").unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         match &ast.declarations[0] {
             Decl::Function(f) => {
                 match &f.body.statements[0] {
@@ -2026,5 +2185,147 @@ mod tests {
             }
             _ => panic!("expected function"),
         }
+    }
+
+    // === Hardening: error paths ===
+
+    fn parse_err(source: &str) -> ParseError {
+        let tokens = tokenize(source).unwrap();
+        parse(&tokens).unwrap_err()
+    }
+
+    #[test]
+    fn parse_returns_error_instead_of_empty_program() {
+        let err = parse_err("fn main( { }");
+        assert!(err.message.starts_with("expected identifier"), "{}", err.message);
+        assert_eq!((err.span.line, err.span.column), (1, 10));
+    }
+
+    #[test]
+    fn parser_survives_empty_token_slice() {
+        let err = Parser::new(&[]).parse_program();
+        assert!(err.is_ok(), "no tokens means an empty program");
+        let mut parser = Parser::new(&[]);
+        assert!(parser.is_at_end());
+        assert_eq!(parser.advance().kind, TokenKind::Eof);
+        assert!(parser.consume(&TokenKind::Fn, "expected 'fn'").is_err());
+    }
+
+    #[test]
+    fn advance_at_end_of_input_does_not_underflow() {
+        let tokens = tokenize("").unwrap();
+        let mut parser = Parser::new(&tokens);
+        for _ in 0..3 {
+            assert_eq!(parser.advance().kind, TokenKind::Eof);
+        }
+        assert_eq!(parser.current, 0);
+    }
+
+    #[test]
+    fn unclosed_block_reports_end_of_input_with_hint() {
+        let err = parse_err("fn main() {\n  let x = 1;\n");
+        assert_eq!(err.message, "unclosed block: expected '}'");
+        assert_eq!(err.span.line, 3);
+        assert!(err.hint.as_deref().unwrap_or("").contains("1:11"));
+    }
+
+    #[test]
+    fn end_of_input_errors_name_end_of_input() {
+        let err = parse_err("fn main() { let x = ");
+        assert!(err.message.ends_with("found end of input"), "{}", err.message);
+        assert!(err.hint.is_some());
+    }
+
+    #[test]
+    fn break_and_continue_require_semicolons() {
+        let err = parse_err("fn main() { while true { break } }");
+        assert!(err.message.starts_with("expected ';' after 'break'"), "{}", err.message);
+        let err = parse_err("fn main() { while true { continue } }");
+        assert!(err.message.starts_with("expected ';' after 'continue'"), "{}", err.message);
+        let tokens = tokenize("fn main() { while true { break; continue; } }").unwrap();
+        assert!(parse(&tokens).is_ok());
+    }
+
+    #[test]
+    fn deeply_nested_parentheses_are_a_nesting_error() {
+        let source = format!("fn main() {{ let x = {}1{}; }}", "(".repeat(5000), ")".repeat(5000));
+        let err = parse_err(&source);
+        assert_eq!(err.message, format!("expression nested deeper than {} levels", MAX_NESTING_DEPTH));
+        assert!(err.hint.is_some());
+    }
+
+    #[test]
+    fn deeply_nested_blocks_types_and_unary_are_nesting_errors() {
+        let blocks = format!("fn main() {}{}", "{".repeat(5000), "}".repeat(5000));
+        assert!(parse_err(&blocks).message.contains("block nested deeper"));
+        let types = format!("fn f(a: {}int{}) {{ }}", "[".repeat(5000), "]".repeat(5000));
+        assert!(parse_err(&types).message.contains("type nested deeper"));
+        let unary = format!("fn main() {{ let x = {}1; }}", "-".repeat(5000));
+        assert!(parse_err(&unary).message.contains("unary expression nested deeper"));
+        let ifs = format!("fn main() {{ if true {{ }} {} }}", "else if true { }".repeat(5000));
+        assert!(parse_err(&ifs).message.contains("nested deeper"));
+    }
+
+    #[test]
+    fn long_operator_chains_are_bounded() {
+        let source = format!("fn main() {{ let x = {}1; }}", "1 + ".repeat(50_000));
+        let err = parse_err(&source);
+        assert_eq!(err.message, format!("expression chain longer than {} links", MAX_NESTING_DEPTH));
+        let members = format!("fn main() {{ let x = a{}; }}", ".b".repeat(50_000));
+        assert!(parse_err(&members).message.contains("chain longer"));
+        let calls = format!("fn main() {{ f{}; }}", "()".repeat(50_000));
+        assert!(parse_err(&calls).message.contains("chain longer"));
+    }
+
+    #[test]
+    fn moderate_nesting_and_chains_still_parse() {
+        let parens = format!("fn main() {{ let x = {}1{}; }}", "(".repeat(100), ")".repeat(100));
+        assert!(parse(&tokenize(&parens).unwrap()).is_ok());
+        let chain = format!("fn main() {{ let x = {}1; }}", "1 + ".repeat(100));
+        assert!(parse(&tokenize(&chain).unwrap()).is_ok());
+        let blocks = format!("fn main() {}{}", "{".repeat(100), "}".repeat(100));
+        assert!(parse(&tokenize(&blocks).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn chain_budget_is_restored_between_expressions() {
+        // Two long-but-legal chains in sequence must not accumulate depth.
+        let chain = "1 + ".repeat(100);
+        let source = format!("fn main() {{ let x = {}1; let y = {}1; let z = {}1; }}", chain, chain, chain);
+        assert!(parse(&tokenize(&source).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn describe_token_is_readable() {
+        assert_eq!(describe_token(&TokenKind::Eof), "end of input");
+        assert_eq!(describe_token(&TokenKind::Ident("x".into())), "identifier 'x'");
+        assert_eq!(describe_token(&TokenKind::IntLit(7)), "integer literal '7'");
+        assert_eq!(describe_token(&TokenKind::StringLit("s".into())), "string literal \"s\"");
+        assert_eq!(describe_token(&TokenKind::LBrace), "'{'");
+        assert_eq!(describe_token(&TokenKind::Semicolon), "';'");
+        assert_eq!(describe_token(&TokenKind::Fn), "Fn");
+    }
+
+    #[test]
+    fn declaration_error_has_hint() {
+        let err = parse_err("42");
+        assert!(err.message.starts_with("expected declaration, found integer literal '42'"), "{}", err.message);
+        assert!(err.hint.is_some());
+    }
+
+    #[test]
+    fn parse_error_display_and_hint() {
+        let err = ParseError::new("boom", Span::new(2, 3, 0, 1)).with_hint("fix it");
+        assert_eq!(err.display(), "error[2:3]: boom");
+        assert_eq!(err.to_string(), "error[2:3]: boom");
+        assert_eq!(err.hint.as_deref(), Some("fix it"));
+    }
+
+    #[test]
+    fn match_map_leaves_unmatched_tokens_alone() {
+        let tokens = tokenize("x").unwrap();
+        let mut parser = Parser::new(&tokens);
+        assert_eq!(parser.match_map(&[(TokenKind::Plus, 1), (TokenKind::Minus, 2)]), None);
+        assert_eq!(parser.current, 0);
     }
 }

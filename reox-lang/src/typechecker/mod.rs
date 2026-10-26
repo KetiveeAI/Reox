@@ -8,7 +8,7 @@ mod types;
 
 pub use types::*;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::parser::{
     Ast, Decl, Stmt, Expr, Literal, BinOp, UnaryOp,
@@ -18,27 +18,51 @@ use crate::parser::{
 };
 use crate::lexer::Span;
 
-/// Type check error
-#[derive(Debug, Clone)]
+/// Type check error, located by a source span
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeError {
     pub message: String,
-    pub line: u32,
-    pub column: u32,
+    pub span: Span,
 }
 
 impl TypeError {
     pub fn new(message: impl Into<String>, span: &Span) -> Self {
         Self {
             message: message.into(),
-            line: span.line,
-            column: span.column,
+            span: *span,
         }
     }
 
+    pub fn line(&self) -> u32 {
+        self.span.line
+    }
+
+    pub fn column(&self) -> u32 {
+        self.span.column
+    }
+
     pub fn display(&self) -> String {
-        format!("type error[{}:{}]: {}", self.line, self.column, self.message)
+        format!("type error[{}:{}]: {}", self.span.line, self.span.column, self.message)
     }
 }
+
+impl std::fmt::Display for TypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display())
+    }
+}
+
+impl std::error::Error for TypeError {}
+
+/// Deepest expression tree the checker walks before reporting an error
+/// instead of recursing further.
+pub const MAX_EXPR_DEPTH: usize = 1024;
+
+/// Longest chain of type aliases followed before reporting a cycle.
+const MAX_ALIAS_CHAIN: usize = 64;
+
+/// Stack reserved for type checking; see `check`.
+const CHECK_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 /// Type checker state
 pub struct TypeChecker {
@@ -46,31 +70,31 @@ pub struct TypeChecker {
     errors: Vec<TypeError>,
     current_return_type: Option<ResolvedType>,
     type_aliases: HashMap<String, ResolvedType>,
+    expr_depth: usize,
+    /// Runtime natives (print, len, push, ...). They accept any arguments and
+    /// return an unknown type; a user declaration of the same name shadows them.
+    builtins: HashSet<String>,
 }
 
 impl TypeChecker {
     pub fn new() -> Self {
-        let mut tc = Self {
+        let mut builtins: HashSet<String> = crate::interpreter::native_names()
+            .map(str::to_string)
+            .collect();
+        builtins.insert("print".to_string());
+        Self {
             symbols: SymbolTable::new(),
             errors: Vec::new(),
             current_return_type: None,
             type_aliases: HashMap::new(),
-        };
-        // Register built-in functions
-        let _ = tc.symbols.define(Symbol {
-            name: "print".to_string(),
-            ty: ResolvedType::Function {
-                params: vec![ResolvedType::Unknown],
-                ret: Box::new(ResolvedType::Void),
-            },
-            mutable: false,
-            kind: SymbolKind::Function,
-        });
-        let _ = tc.symbols.define_function("print".to_string(), ResolvedType::Function {
-            params: vec![ResolvedType::Unknown],
-            ret: Box::new(ResolvedType::Void),
-        });
-        tc
+            expr_depth: 0,
+            builtins,
+        }
+    }
+
+    /// Whether `name` is a runtime built-in that no user declaration shadows.
+    fn is_builtin(&self, name: &str) -> bool {
+        self.builtins.contains(name) && self.symbols.lookup(name).is_none()
     }
 
     /// Type check the entire AST
@@ -134,7 +158,7 @@ impl TypeChecker {
                                     .map(|param| ResolvedType::from_parser_type(&param.ty))
                                     .collect(),
                                 ret: Box::new(method.return_type.as_ref()
-                                    .map(|t| ResolvedType::from_parser_type(t))
+                                    .map(ResolvedType::from_parser_type)
                                     .unwrap_or(ResolvedType::Void)),
                             },
                             mutable: false,
@@ -165,7 +189,7 @@ impl TypeChecker {
                 }
                 Decl::Const(c) => {
                     let ty = c.ty.as_ref()
-                        .map(|t| ResolvedType::from_parser_type(t))
+                        .map(ResolvedType::from_parser_type)
                         .unwrap_or(ResolvedType::Unknown);
                     let _ = self.symbols.define(Symbol {
                         name: c.name.clone(),
@@ -186,7 +210,7 @@ impl TypeChecker {
                 }
                 Decl::GlobalVar(g) => {
                     let declared_type = g.ty.as_ref()
-                        .map(|t| ResolvedType::from_parser_type(t));
+                        .map(ResolvedType::from_parser_type);
                     let inferred_type = g.init.as_ref().map(|e| self.infer_expr_type(e));
                     let final_type = declared_type
                         .or(inferred_type)
@@ -244,8 +268,7 @@ impl TypeChecker {
         }) {
             self.errors.push(TypeError {
                 message: e,
-                line: s.span.line,
-                column: s.span.column,
+                span: s.span,
             });
         }
     }
@@ -269,8 +292,7 @@ impl TypeChecker {
         if let Err(e) = self.symbols.define_function(f.name.clone(), fn_type.clone()) {
             self.errors.push(TypeError {
                 message: e,
-                line: f.span.line,
-                column: f.span.column,
+                span: f.span,
             });
         }
 
@@ -327,8 +349,7 @@ impl TypeChecker {
         if let Err(e_msg) = self.symbols.define_function(e.name.clone(), fn_type.clone()) {
             self.errors.push(TypeError {
                 message: e_msg,
-                line: e.span.line,
-                column: e.span.column,
+                span: e.span,
             });
         }
 
@@ -357,7 +378,7 @@ impl TypeChecker {
         // Set expected return type
         self.current_return_type = f.return_type
             .as_ref()
-            .map(|t| ResolvedType::from_parser_type(t));
+            .map(ResolvedType::from_parser_type);
 
         // Check function body
         self.check_block(&f.body);
@@ -392,8 +413,7 @@ impl TypeChecker {
                 if cond_type != ResolvedType::Bool {
                     self.errors.push(TypeError {
                         message: format!("guard condition must be bool, found '{}'", cond_type.display_name()),
-                        line: g.span.line,
-                        column: g.span.column,
+                        span: g.span,
                     });
                 }
                 self.symbols.push_scope();
@@ -429,19 +449,28 @@ impl TypeChecker {
     }
 
     fn resolve_type(&self, ty: &ResolvedType) -> ResolvedType {
+        self.resolve_type_bounded(ty, 0)
+    }
+
+    /// Follow type aliases. A cycle such as `typealias A = B; typealias B = A;`
+    /// resolves to `Error` instead of recursing forever.
+    fn resolve_type_bounded(&self, ty: &ResolvedType, followed: usize) -> ResolvedType {
+        if followed > MAX_ALIAS_CHAIN {
+            return ResolvedType::Error;
+        }
         match ty {
             ResolvedType::Struct(name) => {
                 if let Some(resolved) = self.type_aliases.get(name) {
-                    self.resolve_type(resolved)
+                    self.resolve_type_bounded(resolved, followed + 1)
                 } else {
                     ty.clone()
                 }
             }
             ResolvedType::Optional(inner) => {
-                ResolvedType::Optional(Box::new(self.resolve_type(inner)))
+                ResolvedType::Optional(Box::new(self.resolve_type_bounded(inner, followed)))
             }
             ResolvedType::Array(inner) => {
-                ResolvedType::Array(Box::new(self.resolve_type(inner)))
+                ResolvedType::Array(Box::new(self.resolve_type_bounded(inner, followed)))
             }
             _ => ty.clone(),
         }
@@ -462,8 +491,7 @@ impl TypeChecker {
                             decl.display_name(),
                             infer.display_name()
                         ),
-                        line: l.span.line,
-                        column: l.span.column,
+                        span: l.span,
                     });
                 }
                 decl.clone()
@@ -473,8 +501,7 @@ impl TypeChecker {
             (None, None) => {
                 self.errors.push(TypeError {
                     message: "cannot infer type without initializer".to_string(),
-                    line: l.span.line,
-                    column: l.span.column,
+                    span: l.span,
                 });
                 ResolvedType::Error
             }
@@ -488,8 +515,7 @@ impl TypeChecker {
         }) {
             self.errors.push(TypeError {
                 message: e,
-                line: l.span.line,
-                column: l.span.column,
+                span: l.span,
             });
         }
     }
@@ -507,8 +533,7 @@ impl TypeChecker {
                         expected.display_name(),
                         return_type.display_name()
                     ),
-                    line: r.span.line,
-                    column: r.span.column,
+                    span: r.span,
                 });
             }
         }
@@ -522,8 +547,7 @@ impl TypeChecker {
                     "if condition must be bool, found '{}'",
                     cond_type.display_name()
                 ),
-                line: i.span.line,
-                column: i.span.column,
+                span: i.span,
             });
         }
 
@@ -546,8 +570,7 @@ impl TypeChecker {
                     "while condition must be bool, found '{}'",
                     cond_type.display_name()
                 ),
-                line: w.span.line,
-                column: w.span.column,
+                span: w.span,
             });
         }
 
@@ -568,8 +591,7 @@ impl TypeChecker {
                         "cannot iterate over '{}'",
                         iter_type.display_name()
                     ),
-                    line: f.span.line,
-                    column: f.span.column,
+                    span: f.span,
                 });
                 ResolvedType::Error
             }
@@ -588,6 +610,20 @@ impl TypeChecker {
 
     /// Infer the type of an expression
     fn infer_expr_type(&mut self, expr: &Expr) -> ResolvedType {
+        if self.expr_depth >= MAX_EXPR_DEPTH {
+            self.errors.push(TypeError::new(
+                format!("expression nested deeper than {} levels", MAX_EXPR_DEPTH),
+                &expr.span(),
+            ));
+            return ResolvedType::Error;
+        }
+        self.expr_depth += 1;
+        let ty = self.infer_expr_type_inner(expr);
+        self.expr_depth -= 1;
+        ty
+    }
+
+    fn infer_expr_type_inner(&mut self, expr: &Expr) -> ResolvedType {
         match expr {
             Expr::Literal(lit) => self.infer_literal_type(lit),
             Expr::Identifier(name, span) => {
@@ -611,6 +647,15 @@ impl TypeChecker {
                 self.check_unary_op(op, &operand_ty, span)
             }
             Expr::Call(callee, args, span) => {
+                if let Expr::Identifier(name, _) = callee.as_ref() {
+                    if self.is_builtin(name) {
+                        // Natives are variadic and dynamically typed; still check the arguments.
+                        for arg in args {
+                            self.infer_expr_type(arg);
+                        }
+                        return ResolvedType::Unknown;
+                    }
+                }
                 let callee_ty = self.infer_expr_type(callee);
                 self.check_call(&callee_ty, args, span)
             }
@@ -1048,15 +1093,25 @@ impl Default for TypeChecker {
     }
 }
 
-/// Type check the AST (convenience function for backward compatibility)
-pub fn check(ast: &Ast) -> Ast {
-    let mut checker = TypeChecker::new();
-    if let Err(errors) = checker.check_program(ast) {
-        for error in errors {
-            eprintln!("{}", error.display());
+/// Type check the AST. On success the (unchanged) AST is returned; every
+/// type error found is returned together, none is printed.
+pub fn check(ast: &Ast) -> Result<Ast, Vec<TypeError>> {
+    // The checker recurses over the expression tree, so run it on a thread
+    // with a stack large enough for `MAX_EXPR_DEPTH` levels in debug builds.
+    let outcome = std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("reox-typecheck".to_string())
+            .stack_size(CHECK_STACK_BYTES)
+            .spawn_scoped(scope, || TypeChecker::new().check_program(ast));
+        match worker {
+            Ok(handle) => handle.join().unwrap_or_else(|_| {
+                Err(vec![TypeError::new("type checker thread terminated unexpectedly", &Span::default())])
+            }),
+            Err(_) => TypeChecker::new().check_program(ast),
         }
-    }
-    ast.clone()
+    });
+    outcome?;
+    Ok(ast.clone())
 }
 
 #[cfg(test)]
@@ -1067,7 +1122,7 @@ mod tests {
 
     fn check_source(source: &str) -> Result<(), Vec<TypeError>> {
         let tokens = tokenize(source).unwrap();
-        let ast = parse(&tokens);
+        let ast = parse(&tokens).unwrap();
         let mut checker = TypeChecker::new();
         checker.check_program(&ast)
     }
@@ -1170,5 +1225,87 @@ mod tests {
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(errors.iter().any(|e| e.message.contains("arguments")));
+    }
+
+    // === Hardening: error paths ===
+
+    #[test]
+    fn check_returns_every_error_instead_of_printing() {
+        let tokens = tokenize("fn main() { let a: int = \"x\"; let b: bool = 1; }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let errors = check(&ast).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert_eq!((errors[0].line(), errors[0].column()), (1, 13));
+        assert!(errors[0].display().starts_with("type error[1:13]: type mismatch"));
+    }
+
+    #[test]
+    fn check_returns_ast_on_success() {
+        let tokens = tokenize("fn main() -> int { return 1; }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        assert_eq!(check(&ast).unwrap().declarations.len(), 1);
+    }
+
+    #[test]
+    fn type_alias_cycle_does_not_recurse_forever() {
+        let result = check_source("typealias A = B; typealias B = A; fn main() { let x: A = 1; }");
+        // Whatever the verdict, the checker must terminate and keep its spans.
+        if let Err(errors) = result {
+            for e in errors { assert!(e.span.line >= 1); }
+        }
+    }
+
+    #[test]
+    fn deep_expression_tree_is_reported_not_overflowed() {
+        // Build a left-deep tree by hand, deeper than the checker's limit.
+        let span = Span::default();
+        let mut expr = Expr::Literal(Literal::Int(1, span));
+        for _ in 0..(MAX_EXPR_DEPTH + 10) {
+            expr = Expr::Binary(Box::new(expr), BinOp::Add, Box::new(Expr::Literal(Literal::Int(1, span))), span);
+        }
+        let ast = Ast {
+            declarations: vec![Decl::Function(FnDecl {
+                name: "main".into(),
+                params: vec![],
+                return_type: None,
+                body: Block { statements: vec![Stmt::Expr(expr)], span },
+                is_async: false,
+                is_pub: false,
+                is_static: false,
+                span,
+            })],
+        };
+        let errors = check(&ast).unwrap_err();
+        assert!(errors.iter().any(|e| e.message.contains("nested deeper than")));
+    }
+
+    #[test]
+    fn runtime_natives_are_known_to_the_checker() {
+        let ok = check_source(r#"
+            fn main() {
+                println("a", 1);
+                let n: int = len([1, 2]);
+                let m = map_set(map_new(), "k", 1);
+                print();
+            }
+        "#);
+        assert!(ok.is_ok(), "{:?}", ok.err());
+    }
+
+    #[test]
+    fn user_declarations_shadow_natives() {
+        // An extern or fn named like a native replaces it, with its own arity.
+        let ok = check_source("extern fn print(s: string); fn main() { print(\"x\"); }");
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let errors = check_source("fn len(a: int) -> int { return a; } fn main() { len(1, 2); }").unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.starts_with("expected 1 arguments, found 2"));
+    }
+
+    #[test]
+    fn native_arguments_are_still_checked() {
+        let errors = check_source("fn main() { println(undefined_thing); }").unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("undefined variable 'undefined_thing'"));
     }
 }
