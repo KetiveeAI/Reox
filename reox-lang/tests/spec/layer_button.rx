@@ -1,0 +1,27 @@
+// reox-spec.md, "Layer - UI Component": a layer with fields, a signal and a
+// method that takes an implicit self and calls the runtime's widget API.
+import prelude;
+
+layer MyButton {
+    @Bind let pressed: bool = false;
+    let label: string;
+
+    signal on_click: int;
+
+    fn body() -> View {
+        let btn = button_view(label);
+        button_set_style(btn, color_primary(), color_secondary(), color_accent());
+        return btn;
+    }
+
+    fn title() -> string {
+        return self.label;
+    }
+}
+
+fn main() {
+    let button = MyButton { pressed: false, label: "Press me" };
+    let view: View = button.body();
+    println(button.title());
+    println("built");
+}

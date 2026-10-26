@@ -56,6 +56,9 @@ pub struct CodeGen {
     /// Payload field names of every variant case, by (variant, case), in
     /// declaration order. Patterns are positional; the C union is not.
     variant_fields: HashMap<(String, String), Vec<String>>,
+    /// Functions the program declares itself (fn or extern). The built-in
+    /// widget and color rewrites never apply to these.
+    declared_fns: std::collections::HashSet<String>,
 }
 
 impl CodeGen {
@@ -69,6 +72,7 @@ impl CodeGen {
             expr_depth: 0,
             match_counter: 0,
             variant_fields: HashMap::new(),
+            declared_fns: std::collections::HashSet::new(),
         }
     }
 
@@ -128,6 +132,14 @@ impl CodeGen {
                     format!("generic declaration '{}' must be instantiated by the type checker before code generation", name),
                     span,
                 ));
+            }
+        }
+
+        for decl in &ast.declarations {
+            match decl {
+                Decl::Function(f) => { self.declared_fns.insert(f.name.clone()); }
+                Decl::Extern(e) => { self.declared_fns.insert(e.name.clone()); }
+                _ => {}
             }
         }
 
@@ -393,10 +405,15 @@ impl CodeGen {
         self.emit_line(&format!("extern {} {}({});", ret_type, e.name, params_str));
     }
 
+    /// A REOX `main` without a return type is the C entry point `int main`.
+    fn is_void_main(f: &FnDecl) -> bool {
+        f.name == "main" && f.return_type.is_none()
+    }
+
     fn gen_fn_prototype(&mut self, f: &FnDecl) {
         let ret_type = f.return_type.as_ref()
             .map(|t| self.type_to_c(t))
-            .unwrap_or_else(|| "void".to_string());
+            .unwrap_or_else(|| if Self::is_void_main(f) { "int".to_string() } else { "void".to_string() });
 
         let params: Vec<String> = f.params.iter()
             .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
@@ -698,7 +715,7 @@ impl CodeGen {
         
         let ret_type = f.return_type.as_ref()
             .map(|t| self.type_to_c(t))
-            .unwrap_or_else(|| "void".to_string());
+            .unwrap_or_else(|| if Self::is_void_main(f) { "int".to_string() } else { "void".to_string() });
 
         let params: Vec<String> = f.params.iter()
             .map(|p| format!("{} {}", self.type_to_c(&p.ty), p.name))
@@ -717,6 +734,9 @@ impl CodeGen {
         // Emit any remaining deferred cleanup at function end (for void functions)
         if !self.defer_stack.is_empty() {
             self.emit_deferred_cleanup()?;
+        }
+        if Self::is_void_main(f) {
+            self.emit_line("return 0;");
         }
         
         self.dedent();
@@ -980,8 +1000,21 @@ impl CodeGen {
                 self.gen_expr(operand)?;
             }
             Expr::Call(callee, args, _) => {
-                // Check for UI widget function calls
+                // Built-in UI widget and theme color calls, unless the program
+                // declares a function of that name itself.
                 if let Expr::Identifier(name, _) = callee.as_ref() {
+                    if self.declared_fns.contains(name) {
+                        self.gen_expr(callee)?;
+                        self.emit("(");
+                        for (i, arg) in args.iter().enumerate() {
+                            if i > 0 {
+                                self.emit(", ");
+                            }
+                            self.gen_expr(arg)?;
+                        }
+                        self.emit(")");
+                        return Ok(());
+                    }
                     match name.as_str() {
                         // UI Widget constructors -> emit reox FFI calls
                         "button" => {
@@ -1634,8 +1667,9 @@ mod tests {
         let mut codegen = CodeGen::new();
         let output = codegen.generate(&ast).unwrap();
 
-        assert!(output.contains("void main(void)"));
+        assert!(output.contains("int main(void)"), "{}", output);
         assert!(output.contains("int64_t x = 42"));
+        assert!(output.contains("    return 0;\n}"), "{}", output);
         assert!(output.contains("return 0"));
     }
 

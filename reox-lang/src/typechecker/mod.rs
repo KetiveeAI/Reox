@@ -1036,10 +1036,20 @@ impl TypeChecker {
             && !matches!(self.symbols.lookup(name), Some(sym) if sym.kind != SymbolKind::Struct)
     }
 
+    /// Type of the field `name` of `self`, when a method body is being
+    /// checked and `self`'s type has such a field.
+    fn implicit_self_field(&self, name: &str) -> Option<ResolvedType> {
+        let ctx = self.current_self.as_ref()?;
+        self.symbols.lookup_struct(&ctx.type_name)?.fields.get(name).cloned()
+    }
+
     /// Check that `target` may be assigned to: its root must be a mutable
     /// variable, or `self` inside a `mut` method.
     fn check_assignable(&mut self, target: &Expr) {
         match target {
+            Expr::Identifier(name, span) if self.symbols.lookup(name).is_none() && self.implicit_self_field(name).is_some() => {
+                self.check_assignable(&Expr::SelfRef(*span));
+            }
             Expr::Identifier(name, span) => {
                 if let Some(sym) = self.symbols.lookup(name) {
                     if !sym.mutable {
@@ -2070,6 +2080,10 @@ impl TypeChecker {
                         span,
                     ));
                     ResolvedType::Error
+                } else if let Some(field_ty) = self.implicit_self_field(name) {
+                    // Inside a method a bare field name reads through `self`.
+                    self.record(SiteKind::Ident, *span, Resolution::ImplicitSelf);
+                    field_ty
                 } else {
                     self.errors.push(TypeError::new(
                         format!("undefined variable '{}'", name),
@@ -3644,5 +3658,26 @@ mod tests {
             &[vec![1], vec![]],
         );
         assert!(ok.is_ok(), "{:?}", ok.err());
+    }
+
+    // === Implicit self ===
+
+    #[test]
+    fn bare_field_names_inside_methods_read_through_self() {
+        let tokens = tokenize("struct P { x: int  fn get() -> int { return x; }  mut fn bump() { x += 1; }  fn bad() { x = 2; } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let errors = check(&ast).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("cannot assign through 'self' in method 'bad'"), "{}", errors[0].message);
+        let tokens = tokenize("struct P { x: int  fn get() -> int { return x; } }").unwrap();
+        let ast = parse(&tokens).unwrap();
+        let lowered = check(&ast).unwrap();
+        let s = match &lowered.declarations[0] { Decl::Struct(s) => s, other => panic!("{:?}", other) };
+        match &s.methods[0].body.statements[0] {
+            Stmt::Return(r) => assert!(matches!(&r.value, Some(Expr::Member(obj, f, _)) if matches!(obj.as_ref(), Expr::SelfRef(_)) && f == "x")),
+            other => panic!("{:?}", other),
+        }
+        // A local still shadows the field.
+        assert!(check_source("struct P { x: int  fn get() -> string { let x = \"s\"; return x; } }").is_ok());
     }
 }

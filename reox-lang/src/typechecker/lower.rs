@@ -52,6 +52,8 @@ pub(crate) enum Resolution {
     /// An identifier or `Type.Case` member that names the constant `mangled`
     /// (a payload-less variant case).
     Rename { mangled: String },
+    /// A bare identifier inside a method that names a field of `self`.
+    ImplicitSelf,
     /// A match expression: the scrutinee and result types codegen needs, and
     /// every arm's pattern with variant cases resolved.
     Match { scrutinee: Option<Type>, result: Option<Type>, patterns: Vec<Pattern> },
@@ -209,8 +211,9 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn expr(&self, e: &Expr) -> Expr {
         match e {
             Expr::Literal(_) | Expr::Nil(_) | Expr::SelfRef(_) => e.clone(),
-            Expr::Identifier(_, s) => match self.lookup(SiteKind::Ident, *s) {
+            Expr::Identifier(name, s) => match self.lookup(SiteKind::Ident, *s) {
                 Some(Resolution::Rename { mangled }) => Expr::Identifier(mangled.clone(), *s),
+                Some(Resolution::ImplicitSelf) => Expr::Member(Box::new(Expr::SelfRef(*s)), name.clone(), *s),
                 _ => e.clone(),
             },
             Expr::Block(b, s) => Expr::Block(self.block(b), *s),
