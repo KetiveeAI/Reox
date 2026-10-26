@@ -3,24 +3,32 @@
 
 #![allow(dead_code)]
 
-/// Source location for error reporting
+/// Source location for error reporting. `file` identifies the source file
+/// in a multi-file program (see `modules::SourceMap`); 0 is the entry file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub line: u32,
     pub column: u32,
     pub start: usize,
     pub end: usize,
+    pub file: u32,
 }
 
 impl Span {
     pub fn new(line: u32, column: u32, start: usize, end: usize) -> Self {
-        Self { line, column, start, end }
+        Self { line, column, start, end, file: 0 }
+    }
+
+    /// The same span attributed to `file`.
+    pub fn in_file(mut self, file: u32) -> Self {
+        self.file = file;
+        self
     }
 }
 
 impl Default for Span {
     fn default() -> Self {
-        Self { line: 1, column: 1, start: 0, end: 0 }
+        Self { line: 1, column: 1, start: 0, end: 0, file: 0 }
     }
 }
 

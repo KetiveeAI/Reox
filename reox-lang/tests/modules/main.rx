@@ -1,0 +1,14 @@
+// Multi-file program: imports a sibling module and the standard prelude.
+import geometry;
+import prelude;
+
+fn main() {
+    let b: Box2D = box2d(0.0, 0.0, 2.0, 3.0);
+    let a: float = geometry.box_area(b);
+    print_float(a);
+    let o: Option<int> = Some(1);
+    match o {
+        Some(v) => print_int(v),
+        None => print_int(0)
+    }
+}

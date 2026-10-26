@@ -236,7 +236,7 @@ fn test_summary() -> void {
     println("See counts above");
     print("Failed: ");
     println("See counts above");
-    
+
     if failed_tests == 0 {
         println("");
         println("ALL TESTS PASSED!");
@@ -252,7 +252,7 @@ fn test_summary() -> void {
 fn test_color_system() -> void {
     println("");
     println("=== COLOR SYSTEM TESTS ===");
-    
+
     // Test RGBA color creation
     test_start("color_rgba creation");
     let red: Color = color_rgba(255, 0, 0, 255);
@@ -261,7 +261,7 @@ fn test_color_system() -> void {
     } else {
         test_fail("RGBA values incorrect");
     }
-    
+
     // Test color blending
     test_start("color_blend interpolation");
     let white: Color = color_rgba(255, 255, 255, 255);
@@ -272,7 +272,7 @@ fn test_color_system() -> void {
     } else {
         test_fail("Blend result not gray");
     }
-    
+
     // Test color lightening
     test_start("color_lighten");
     let base: Color = color_rgba(100, 100, 100, 255);
@@ -282,7 +282,7 @@ fn test_color_system() -> void {
     } else {
         test_fail("Lightened color not lighter");
     }
-    
+
     // Test color darkening
     test_start("color_darken");
     let dark: Color = color_darken(base, 0.2);
@@ -291,7 +291,7 @@ fn test_color_system() -> void {
     } else {
         test_fail("Darkened color not darker");
     }
-    
+
     // Test semantic colors
     test_start("semantic colors availability");
     let bg: Color = color_background();
@@ -307,7 +307,7 @@ fn test_color_system() -> void {
 fn test_layout_system() -> void {
     println("");
     println("=== LAYOUT SYSTEM TESTS ===");
-    
+
     // Test VStack creation
     test_start("vstack creation");
     let stack: View = vstack(10.0);
@@ -316,7 +316,7 @@ fn test_layout_system() -> void {
     } else {
         test_fail("Invalid vstack handle");
     }
-    
+
     // Test HStack creation
     test_start("hstack creation");
     let hstack_view: View = hstack(8.0);
@@ -325,7 +325,7 @@ fn test_layout_system() -> void {
     } else {
         test_fail("Invalid hstack handle");
     }
-    
+
     // Test grid creation
     test_start("grid creation");
     let grid_view: View = grid(3, 2, 4.0);
@@ -334,7 +334,7 @@ fn test_layout_system() -> void {
     } else {
         test_fail("Invalid grid handle");
     }
-    
+
     // Test nested layout
     test_start("nested layout");
     let outer: View = vstack(12.0);
@@ -342,8 +342,8 @@ fn test_layout_system() -> void {
     let inner2: View = hstack(8.0);
     view_add_child(outer, inner1);
     view_add_child(outer, inner2);
-    test_pass();  // No crash = pass
-    
+    test_pass(); // No crash = pass
+
     // Test spacer
     test_start("spacer creation");
     let sp: View = spacer();
@@ -360,7 +360,7 @@ fn test_layout_system() -> void {
 fn test_widget_system() -> void {
     println("");
     println("=== WIDGET SYSTEM TESTS ===");
-    
+
     // Test text_view
     test_start("text_view creation");
     let txt: View = text_view("Hello, REOX!");
@@ -369,7 +369,7 @@ fn test_widget_system() -> void {
     } else {
         test_fail("Invalid text_view handle");
     }
-    
+
     // Test button_view
     test_start("button_view creation");
     let btn: View = button_view("Click Me");
@@ -378,7 +378,7 @@ fn test_widget_system() -> void {
     } else {
         test_fail("Invalid button_view handle");
     }
-    
+
     // Test slider_view
     test_start("slider_view creation");
     let slider: View = slider_view(0.0, 100.0, 50.0);
@@ -387,7 +387,7 @@ fn test_widget_system() -> void {
     } else {
         test_fail("Invalid slider_view handle");
     }
-    
+
     // Test checkbox_view
     test_start("checkbox_view creation");
     let check: View = checkbox_view("Option A", false);
@@ -396,7 +396,7 @@ fn test_widget_system() -> void {
     } else {
         test_fail("Invalid checkbox_view handle");
     }
-    
+
     // Test switch_view
     test_start("switch_view creation");
     let sw: View = switch_view(true);
@@ -405,7 +405,7 @@ fn test_widget_system() -> void {
     } else {
         test_fail("Invalid switch_view handle");
     }
-    
+
     // Test progress_view
     test_start("progress_view creation");
     let prog: View = progress_view(0.75);
@@ -414,7 +414,7 @@ fn test_widget_system() -> void {
     } else {
         test_fail("Invalid progress_view handle");
     }
-    
+
     // Test input_view
     test_start("input_view creation");
     let inp: View = input_view("Enter text...");
@@ -431,54 +431,54 @@ fn test_widget_system() -> void {
 fn test_view_modifiers() -> void {
     println("");
     println("=== VIEW MODIFIERS TESTS ===");
-    
+
     let view: View = text_view("Test View");
-    
+
     // Test background
     test_start("view_set_background");
     view_set_background(view, color_rgba(30, 30, 30, 255));
     test_pass();
-    
+
     // Test padding
     test_start("view_set_padding");
     view_set_padding(view, insets_all(16.0));
     test_pass();
-    
+
     // Test corner radius
     test_start("view_set_corner_radius");
     view_set_corner_radius(view, 12.0);
     test_pass();
-    
+
     // Test shadow
     test_start("view_set_shadow");
     view_set_shadow(view, shadow(0.0, 4.0, 8.0, color_rgba(0, 0, 0, 128)));
     test_pass();
-    
+
     // Test border
     test_start("view_set_border");
     view_set_border(view, 1.0, color_rgba(100, 100, 100, 255));
     test_pass();
-    
+
     // Test opacity
     test_start("view_set_opacity");
     view_set_opacity(view, 0.8);
     test_pass();
-    
+
     // Test size
     test_start("view_set_size");
     view_set_size(view, 200.0, 100.0);
     test_pass();
-    
+
     // Test transform
     test_start("view_set_transform");
     view_set_transform(view, 1.0, 1.0, 0.0);
     test_pass();
-    
+
     // Test hidden
     test_start("view_set_hidden");
     view_set_hidden(view, false);
     test_pass();
-    
+
     // Test enabled
     test_start("view_set_enabled");
     view_set_enabled(view, true);
@@ -491,50 +491,50 @@ fn test_view_modifiers() -> void {
 fn test_animation_system() -> void {
     println("");
     println("=== ANIMATION SYSTEM TESTS ===");
-    
+
     let view: View = text_view("Animated");
-    
+
     // Test fade animations
     test_start("animate_fade_in");
     animate_fade_in(view, 0.3);
     test_pass();
-    
+
     test_start("animate_fade_out");
     animate_fade_out(view, 0.3);
     test_pass();
-    
+
     // Test slide animations
     test_start("animate_slide_in");
     animate_slide_in(view, -100.0, 0.0, 0.5);
     test_pass();
-    
+
     test_start("animate_slide_out");
     animate_slide_out(view, 100.0, 0.0, 0.5);
     test_pass();
-    
+
     // Test scale animation
     test_start("animate_scale");
     animate_scale(view, 0.8, 1.0, 0.3);
     test_pass();
-    
+
     // Test rotate animation
     test_start("animate_rotate");
     animate_rotate(view, 360.0, 0.5);
     test_pass();
-    
+
     // Test effect animations
     test_start("animate_pulse");
     animate_pulse(view, 0.5);
     test_pass();
-    
+
     test_start("animate_bounce");
     animate_bounce(view, 0.4);
     test_pass();
-    
+
     test_start("animate_shake");
     animate_shake(view, 0.3);
     test_pass();
-    
+
     // Test color animation
     test_start("animate_color");
     animate_color(view, color_rgba(255, 0, 0, 255), color_rgba(0, 0, 255, 255), 0.5);
@@ -547,7 +547,7 @@ fn test_animation_system() -> void {
 fn test_easing_functions() -> void {
     println("");
     println("=== EASING FUNCTIONS TESTS ===");
-    
+
     // Test linear
     test_start("ease_linear");
     let linear_result: float = ease_linear(0.5);
@@ -556,43 +556,43 @@ fn test_easing_functions() -> void {
     } else {
         test_fail("Linear should return 0.5 for t=0.5");
     }
-    
+
     // Test quadratic easings
     test_start("ease_in_quad");
     let in_quad: float = ease_in_quad(0.5);
     if in_quad < 0.5 {
-        test_pass();  // Should be slower at start
+        test_pass(); // Should be slower at start
     } else {
         test_fail("ease_in should be slower at start");
     }
-    
+
     test_start("ease_out_quad");
     let out_quad: float = ease_out_quad(0.5);
     if out_quad > 0.5 {
-        test_pass();  // Should be faster at start
+        test_pass(); // Should be faster at start
     } else {
         test_fail("ease_out should be faster at start");
     }
-    
+
     // Test cubic easings
     test_start("ease_in_cubic");
     let in_cubic: float = ease_in_cubic(0.5);
     test_pass();
-    
+
     test_start("ease_out_cubic");
     let out_cubic: float = ease_out_cubic(0.5);
     test_pass();
-    
+
     // Test spring
     test_start("ease_spring");
     let spring_result: float = ease_spring(0.5, 0.5, 0.3);
     test_pass();
-    
+
     // Test bounce
     test_start("ease_bounce");
     let bounce_result: float = ease_bounce(0.5);
     test_pass();
-    
+
     // Test elastic
     test_start("ease_elastic");
     let elastic_result: float = ease_elastic(0.5);
@@ -605,9 +605,9 @@ fn test_easing_functions() -> void {
 fn test_keyframe_animations() -> void {
     println("");
     println("=== KEYFRAME ANIMATION TESTS ===");
-    
+
     let view: View = text_view("Keyframe Test");
-    
+
     // Test keyframe creation
     test_start("keyframe_create");
     let kf: int = keyframe_create();
@@ -616,19 +616,19 @@ fn test_keyframe_animations() -> void {
     } else {
         test_fail("Invalid keyframe handle");
     }
-    
+
     // Test keyframe adding
     test_start("keyframe_add");
     keyframe_add(kf, 0.0, "opacity", 0.0);
     keyframe_add(kf, 0.5, "opacity", 1.0);
     keyframe_add(kf, 1.0, "opacity", 0.5);
     test_pass();
-    
+
     // Test keyframe apply
     test_start("keyframe_apply");
     keyframe_apply(view, kf, 1.0);
     test_pass();
-    
+
     // Test animation control
     test_start("animation_control");
     animation_set_loop(view, 3);
@@ -646,30 +646,30 @@ fn test_keyframe_animations() -> void {
 fn test_transitions() -> void {
     println("");
     println("=== TRANSITION TESTS ===");
-    
+
     let view1: View = text_view("Page 1");
     let view2: View = text_view("Page 2");
-    
+
     // Test push transition
     test_start("transition_push");
     transition_push(view1, view2, 0.3);
     test_pass();
-    
+
     // Test pop transition
     test_start("transition_pop");
     transition_pop(view2, view1, 0.3);
     test_pass();
-    
+
     // Test fade transition
     test_start("transition_fade");
     transition_fade(view1, view2, 0.3);
     test_pass();
-    
+
     // Test slide transition
     test_start("transition_slide");
-    transition_slide(view1, view2, 0, 0.3);  // 0 = left
+    transition_slide(view1, view2, 0, 0.3); // 0 = left
     test_pass();
-    
+
     // Test zoom transition
     test_start("transition_zoom");
     transition_zoom(view1, view2, 0.3);
@@ -682,7 +682,7 @@ fn test_transitions() -> void {
 fn test_window_app() -> void {
     println("");
     println("=== WINDOW & APP TESTS ===");
-    
+
     // Test app creation
     test_start("app_new");
     let app: App = app_new("Test App");
@@ -691,7 +691,7 @@ fn test_window_app() -> void {
     } else {
         test_fail("Invalid app handle");
     }
-    
+
     // Test window creation
     test_start("app_create_window");
     let win: Window = app_create_window(app, "Test Window", 800, 600);
@@ -700,17 +700,17 @@ fn test_window_app() -> void {
     } else {
         test_fail("Invalid window handle");
     }
-    
+
     // Test window title
     test_start("window_set_title");
     window_set_title(win, "Updated Title");
     test_pass();
-    
+
     // Test window size
     test_start("window_set_size");
     window_set_size(win, 1024, 768);
     test_pass();
-    
+
     // Test window root
     test_start("window_set_root");
     let root: View = vstack(10.0);
@@ -724,7 +724,7 @@ fn test_window_app() -> void {
 fn test_complex_ui() -> void {
     println("");
     println("=== COMPLEX UI COMPOSITION TESTS ===");
-    
+
     test_start("card component");
     // Build a card-like component
     let card: View = vstack(8.0);
@@ -732,54 +732,56 @@ fn test_complex_ui() -> void {
     view_set_padding(card, insets_all(16.0));
     view_set_corner_radius(card, 12.0);
     view_set_shadow(card, shadow(0.0, 4.0, 12.0, color_rgba(0, 0, 0, 100)));
-    
+
     let title: View = text_view("Card Title");
     text_set_font_size(title, 18.0);
     text_set_font_weight(title, 600);
     text_set_color(title, color_rgba(255, 255, 255, 255));
     view_add_child(card, title);
-    
+
     let body: View = text_view("Card body content goes here.");
     text_set_font_size(body, 14.0);
     text_set_color(body, color_rgba(180, 180, 180, 255));
     view_add_child(card, body);
-    
+
     let button: View = button_view("Action");
-    button_set_style(button, 
+    button_set_style(
+        button,
         color_rgba(102, 126, 234, 255),
         color_rgba(122, 146, 254, 255),
-        color_rgba(82, 106, 214, 255));
+        color_rgba(82, 106, 214, 255)
+    );
     view_add_child(card, button);
-    
+
     test_pass();
-    
+
     test_start("form layout");
     // Build a form layout
     let form: View = vstack(12.0);
-    
+
     let row1: View = hstack(8.0);
     let label1: View = text_view("Name:");
     let input1: View = input_view("Enter name");
     view_add_child(row1, label1);
     view_add_child(row1, input1);
     view_add_child(form, row1);
-    
+
     let row2: View = hstack(8.0);
     let label2: View = text_view("Email:");
     let input2: View = input_view("Enter email");
     view_add_child(row2, label2);
     view_add_child(row2, input2);
     view_add_child(form, row2);
-    
+
     let submit: View = button_view("Submit");
     view_add_child(form, submit);
-    
+
     test_pass();
-    
+
     test_start("settings panel");
     // Build a settings panel
     let settings: View = vstack(16.0);
-    
+
     // Toggle row
     let toggle_row: View = hstack(12.0);
     let toggle_label: View = text_view("Dark Mode");
@@ -788,7 +790,7 @@ fn test_complex_ui() -> void {
     view_add_child(toggle_row, spacer());
     view_add_child(toggle_row, toggle);
     view_add_child(settings, toggle_row);
-    
+
     // Slider row
     let slider_row: View = vstack(4.0);
     let slider_label: View = text_view("Volume");
@@ -796,7 +798,7 @@ fn test_complex_ui() -> void {
     view_add_child(slider_row, slider_label);
     view_add_child(slider_row, slider);
     view_add_child(settings, slider_row);
-    
+
     // Checkbox row
     let check_row: View = vstack(8.0);
     let check1: View = checkbox_view("Option 1", true);
@@ -806,7 +808,7 @@ fn test_complex_ui() -> void {
     view_add_child(check_row, check2);
     view_add_child(check_row, check3);
     view_add_child(settings, check_row);
-    
+
     test_pass();
 }
 
@@ -819,7 +821,7 @@ fn main() -> int {
     println("========================================");
     println("");
     println("Testing REOX runtime functions...");
-    
+
     // Run all test categories
     test_color_system();
     test_layout_system();
@@ -831,14 +833,14 @@ fn main() -> int {
     test_transitions();
     test_window_app();
     test_complex_ui();
-    
+
     // Print summary
     test_summary();
-    
+
     println("");
     println("========================================");
     println("Tests complete. Press any key to exit.");
     println("========================================");
-    
+
     return 0;
 }

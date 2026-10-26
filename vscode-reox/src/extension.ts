@@ -1,10 +1,206 @@
 import * as vscode from 'vscode';
+import { execFile } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+    LanguageClient,
+    LanguageClientOptions,
+    ServerOptions,
+    TransportKind
+} from 'vscode-languageclient/node';
 
-export function activate(context: vscode.ExtensionContext) {
-    console.log('Reox extension is active');
+let client: LanguageClient | undefined;
+let output: vscode.OutputChannel | undefined;
+let warnedMissingServer = false;
 
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
+    output = vscode.window.createOutputChannel('REOX Language Server');
+    context.subscriptions.push(output);
+
+    context.subscriptions.push(
+        vscode.languages.registerDocumentFormattingEditProvider('reox', new ReoxFormattingProvider()),
+        vscode.commands.registerCommand('reox.formatDocument', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.languageId !== 'reox') {
+                vscode.window.showInformationMessage('Reox: open a .rx or .reox file to format it.');
+                return;
+            }
+            await vscode.commands.executeCommand('editor.action.formatDocument');
+        }),
+        vscode.commands.registerCommand('reox.restartLanguageServer', async () => {
+            await stopClient();
+            warnedMissingServer = false;
+            await startClient(context);
+        }),
+        vscode.workspace.onDidChangeConfiguration(async (event) => {
+            if (event.affectsConfiguration('reox.languageServer')) {
+                await stopClient();
+                warnedMissingServer = false;
+                await startClient(context);
+            }
+        })
+    );
+
+    // The static completion and hover tables are a fallback for machines
+    // without reox-lsp on PATH; the language server replaces them when it runs.
+    registerFallbackProviders(context);
+
+    await startClient(context);
+}
+
+export async function deactivate(): Promise<void> {
+    await stopClient();
+}
+
+// === Language server ===
+
+function configuration(): vscode.WorkspaceConfiguration {
+    return vscode.workspace.getConfiguration('reox');
+}
+
+/// Resolve the reox-lsp executable: the setting, else a lookup on PATH.
+function resolveServerCommand(): string | undefined {
+    const configured = configuration().get<string>('languageServer.path', '').trim();
+    if (configured.length > 0) {
+        return configured;
+    }
+    const exe = process.platform === 'win32' ? 'reox-lsp.exe' : 'reox-lsp';
+    const dirs = (process.env.PATH ?? '').split(path.delimiter).filter((d) => d.length > 0);
+    for (const dir of dirs) {
+        const candidate = path.join(dir, exe);
+        try {
+            fs.accessSync(candidate, fs.constants.X_OK);
+            return candidate;
+        } catch {
+            // keep looking
+        }
+    }
+    return undefined;
+}
+
+async function startClient(context: vscode.ExtensionContext): Promise<void> {
+    if (client) {
+        return;
+    }
+    const config = configuration();
+    if (!config.get<boolean>('languageServer.enabled', true)) {
+        output?.appendLine('reox.languageServer.enabled is false; not starting reox-lsp.');
+        return;
+    }
+    const command = resolveServerCommand();
+    if (!command) {
+        output?.appendLine('reox-lsp not found on PATH and reox.languageServer.path is empty.');
+        if (!warnedMissingServer) {
+            warnedMissingServer = true;
+            const choice = await vscode.window.showWarningMessage(
+                'reox-lsp was not found. Build it with `cargo build -p reox-lsp` and put it on PATH, or set reox.languageServer.path.',
+                'Open Settings'
+            );
+            if (choice === 'Open Settings') {
+                await vscode.commands.executeCommand('workbench.action.openSettings', 'reox.languageServer.path');
+            }
+        }
+        return;
+    }
+
+    const serverOptions: ServerOptions = {
+        command,
+        args: ['--stdio'],
+        transport: TransportKind.stdio
+    };
+    const initializationOptions: Record<string, string> = {};
+    const prelude = config.get<string>('languageServer.preludePath', '').trim();
+    if (prelude.length > 0) {
+        initializationOptions.preludePath = prelude;
+    }
+    const clientOptions: LanguageClientOptions = {
+        documentSelector: [{ scheme: 'file', language: 'reox' }, { scheme: 'untitled', language: 'reox' }],
+        outputChannel: output,
+        initializationOptions,
+        synchronize: {
+            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{rx,reox}')
+        }
+    };
+
+    client = new LanguageClient('reox', 'REOX Language Server', serverOptions, clientOptions);
+    output?.appendLine(`Starting ${command} --stdio`);
+    try {
+        await client.start();
+        context.subscriptions.push({ dispose: () => { void stopClient(); } });
+    } catch (err) {
+        output?.appendLine(`Failed to start reox-lsp: ${String(err)}`);
+        vscode.window.showErrorMessage(`REOX language server failed to start: ${String(err)}`);
+        client = undefined;
+    }
+}
+
+async function stopClient(): Promise<void> {
+    if (!client) {
+        return;
+    }
+    const running = client;
+    client = undefined;
+    try {
+        await running.stop();
+    } catch (err) {
+        output?.appendLine(`Error stopping reox-lsp: ${String(err)}`);
+    }
+}
+
+// === Formatter (reoxc fmt --stdin) ===
+
+class ReoxFormattingProvider implements vscode.DocumentFormattingEditProvider {
+    provideDocumentFormattingEdits(
+        document: vscode.TextDocument,
+        _options: vscode.FormattingOptions,
+        token: vscode.CancellationToken
+    ): Thenable<vscode.TextEdit[]> {
+        const reoxc = configuration().get<string>('reoxcPath', 'reoxc') || 'reoxc';
+        const source = document.getText();
+        return new Promise((resolve) => {
+            const child = execFile(reoxc, ['fmt', '--stdin'], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+                if (token.isCancellationRequested) {
+                    resolve([]);
+                    return;
+                }
+                if (error) {
+                    const detail = stderr.trim().length > 0 ? stderr.trim() : error.message;
+                    output?.appendLine(`reoxc fmt failed: ${detail}`);
+                    vscode.window.showErrorMessage(`Reox: format failed: ${firstLine(detail)}`);
+                    resolve([]);
+                    return;
+                }
+                if (stdout === source) {
+                    resolve([]);
+                    return;
+                }
+                const fullRange = new vscode.Range(
+                    document.positionAt(0),
+                    document.positionAt(source.length)
+                );
+                resolve([vscode.TextEdit.replace(fullRange, stdout)]);
+            });
+            token.onCancellationRequested(() => child.kill());
+            child.stdin?.on('error', (err) => output?.appendLine(`reoxc fmt stdin: ${String(err)}`));
+            child.stdin?.end(source);
+        });
+    }
+}
+
+function firstLine(text: string): string {
+    const nl = text.indexOf('\n');
+    return nl >= 0 ? text.slice(0, nl) : text;
+}
+
+// === Fallback providers (no language server available) ===
+
+function registerFallbackProviders(context: vscode.ExtensionContext): void {
     const provider = vscode.languages.registerCompletionItemProvider('reox', {
-        provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, context: vscode.CompletionContext) {
+        provideCompletionItems() {
+            if (client) {
+                // The server answers completion; avoid duplicate items.
+                return [];
+            }
 
             // Control flow keywords
             const controlFlow = [
@@ -15,7 +211,7 @@ export function activate(context: vscode.ExtensionContext) {
             // Declaration keywords
             const declarations = [
                 'fn', 'let', 'struct', 'kind', 'layer', 'panel', 'action', 'signal', 'emit',
-                'extern', 'import', 'async', 'await', 'protocol', 'extension', 'typealias'
+                'extern', 'import', 'async', 'await', 'protocol', 'extension', 'typealias', 'variant'
             ];
 
             // Modifiers
@@ -141,13 +337,11 @@ export function activate(context: vscode.ExtensionContext) {
 
             const allKeywords = [...controlFlow, ...declarations, ...modifiers, ...gestures, ...otherKeywords];
 
-            const completionItems = [
+            return [
                 ...allKeywords.map(k => new vscode.CompletionItem(k, vscode.CompletionItemKind.Keyword)),
                 ...types.map(t => new vscode.CompletionItem(t, vscode.CompletionItemKind.TypeParameter)),
                 ...allFunctions.map(b => new vscode.CompletionItem(b, vscode.CompletionItemKind.Function))
             ];
-
-            return completionItems;
         }
     });
 
@@ -208,9 +402,12 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     const hoverProvider = vscode.languages.registerHoverProvider('reox', {
-        provideHover(document, position, token) {
+        provideHover(document, position) {
+            if (client) {
+                return undefined;
+            }
             const range = document.getWordRangeAtPosition(position);
-            const word = document.getText(range);
+            const word = range ? document.getText(range) : '';
 
             if (word && hoverDocs[word]) {
                 return new vscode.Hover(new vscode.MarkdownString(hoverDocs[word]));
@@ -221,5 +418,3 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(provider, hoverProvider);
 }
-
-export function deactivate() { }

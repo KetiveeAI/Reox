@@ -14,7 +14,7 @@
 | --------------------------------- | --------------- | --------- | ------- | ----------- |
 | Functions (`fn`)                  | Done            | Done      | Done    | Done        |
 | Structs (`struct`)                | Done            | Done      | Done    | Done        |
-| Imports (`import`)                | Done            | -         | Done    | Done        |
+| Imports (`import a.b.c;`)         | Done            | Done      | Done    | Done        |
 | Extern (`extern fn`)              | Done            | Done      | Done    | Done        |
 | Variables (`let`/`mut`)           | Done            | Done      | Done    | Done        |
 | Control flow (`if`/`while`/`for`) | Done            | Done      | Done    | Done        |
@@ -30,17 +30,26 @@
 | Increment/Decrement               | Done            | Done      | Done    | Done        |
 | Bitwise operators                 | Done            | Done      | Done    | Done        |
 | Range expressions (`..`)          | Done            | -         | Done    | Done        |
-| `variant` (enum type)             | **Not started** | -         | -       | -           |
-| `protocol` (interface)            | **Not started** | -         | -       | -           |
-| `extension` (type ext)            | **Not started** | -         | -       | -           |
-| `layer` (UI component)            | **Not started** | -         | -       | -           |
-| `panel` (window)                  | **Not started** | -         | -       | -           |
-| `@Bind` (reactive state)          | **Not started** | -         | -       | -           |
-| `signal`/`emit`                   | **Not started** | -         | -       | -           |
-| `const`/`static`                  | **Not started** | -         | -       | -           |
-| `typealias`                       | **Not started** | -         | -       | -           |
-| `pub` visibility                  | **Not started** | -         | -       | -           |
-| Gesture handlers                  | **Not started** | -         | -       | -           |
+| `variant` (tagged union)          | Done            | Done      | Done    | Done        |
+| Match on variant payloads         | Done            | Done      | Done    | Done        |
+| Match exhaustiveness check        | -               | Done      | -       | -           |
+| Methods and `self` (`mut fn`)     | Done            | Done      | Done    | Done        |
+| Generics (monomorphised)          | Done            | Done      | Done    | Done        |
+| `protocol` (static dispatch)      | Done            | Done      | Done    | Done        |
+| `extension` (type ext)            | Done            | Done      | Done    | Done        |
+| `layer` (UI component)            | Done            | Done      | Done    | Done        |
+| `panel` (window)                  | Done            | Done      | Done    | Done        |
+| `@Bind` (reactive state)          | Done            | As `let`  | As `let`| As `let`    |
+| `signal`/`emit`                   | Done            | -         | Partial | -           |
+| `const`/`static`                  | Done            | Done      | Done    | Done        |
+| `typealias`                       | Done            | Done      | Done    | Done        |
+| `pub` visibility (across files)   | Done            | Done      | -       | -           |
+| Gesture handlers                  | Done            | -         | Done    | -           |
+
+Rows marked `-` have nothing to do at that stage. Every row above is covered
+by tests under `reox-lang/src` and `reox-lang/tests`; the three examples
+below marked with a test file are compiled to C, built against `runtime/`
+with gcc and run by `reox-lang/tests/spec_examples.rs`.
 
 ## Syntax Reference
 
@@ -99,7 +108,9 @@ match command {
 }
 ```
 
-### Variant Types (Planned)
+### Variant Types
+
+Test: `reox-lang/tests/spec/variant_result.rx`.
 
 ```reox
 variant Direction {
@@ -114,15 +125,68 @@ variant Result {
     Err(message: string)
 }
 
-match result {
-    Ok(v) => print_int(v),
-    Err(msg) => print(msg)
+fn describe(result: Result) {
+    match result {
+        Ok(v) => print_int(v),
+        Err(msg) => println(msg)
+    }
 }
 ```
 
-### Layer — UI Component (Planned)
+A `match` must be exhaustive: the compiler lists the missing cases
+(`missing: Some(Err(_)), Nothing`). Patterns nest (`Some(Ok(v))`), may be
+qualified (`Result.Ok(v)`), and `_` or a binding catches the rest. Cases are
+constructed as `Ok(42)`, `Result.Ok(42)` or the legacy `Result_Ok(42)`;
+payloads may be positional (`Some(T)`) or named (`Err(message: string)`).
+
+### Methods and `self`
 
 ```reox
+struct Counter {
+    count: int
+
+    fn value() -> int { return count; }       // implicit self.count
+    mut fn bump(by: int) { self.count += by; } // mutation needs `mut fn`
+    static fn make() -> Counter { return Counter { count: 0 }; }
+}
+
+extension Counter {
+    mut fn twice() { self.bump(1); self.bump(1); }
+}
+
+let mut c = Counter.make();   // a mut method needs a `let mut` receiver
+c.twice();
+```
+
+Methods declared inside `struct`, `extension`, `layer` and `panel` bodies
+take an implicit `self`; `obj.method(args)` dispatches statically and
+compiles to `TypeName_method(TypeName* self, ...)`.
+
+### Generics
+
+```reox
+fn swap<T>(a: T, b: T) -> T { return b; }
+struct Box<T> { value: T  fn get() -> T { return self.value; } }
+variant Option<T> { Some(T), None }          // in the prelude
+variant Result<T, E> { Ok(T), Err(E) }       // in the prelude
+
+let b = Box { value: 41 };                   // Box<int>, mangled Box__int
+let o: Option<int> = None;                   // type arguments from context
+fn show<T: Drawable>(x: T) { x.draw(); }     // bounds are protocols
+```
+
+Generic declarations are instantiated per concrete type set at their use
+sites (monomorphisation); type arguments are inferred from the arguments
+and from the expected type.
+
+### Layer — UI Component
+
+Test: `reox-lang/tests/spec/layer_button.rx` (links against the runtime's
+`button_view`, `button_set_style` and theme colors from `import prelude;`).
+
+```reox
+import prelude;
+
 layer MyButton {
     @Bind let pressed: bool = false;
     let label: string;
@@ -135,9 +199,12 @@ layer MyButton {
         return btn;
     }
 }
+
+let button = MyButton { pressed: false, label: "Press me" };
+let view: View = button.body();
 ```
 
-### Panel — Window (Planned)
+### Panel — Window
 
 ```reox
 panel MainWindow {
@@ -158,7 +225,9 @@ panel MainWindow {
 }
 ```
 
-### Protocol — Interface (Planned)
+### Protocol — Interface
+
+Test: `reox-lang/tests/spec/protocol_drawable.rx`.
 
 ```reox
 protocol Drawable {
@@ -166,15 +235,39 @@ protocol Drawable {
     fn bounds() -> Rect;
 }
 
-extension Circle {
+struct Circle { radius: float }
+
+extension Circle : Drawable {
     fn draw(canvas: View) {
-        // implementation
+        println("drawing circle");
     }
     fn bounds() -> Rect {
         return rect(0.0, 0.0, self.radius * 2.0, self.radius * 2.0);
     }
 }
+
+fn render<T: Drawable>(item: T, canvas: View) {
+    item.draw(canvas);      // static dispatch, no vtable
+}
 ```
+
+`extension Type : Protocol` must implement every protocol method with the
+same signature; missing or mismatched methods are listed in one diagnostic.
+Protocols are not types: they are used as generic bounds.
+
+### Modules
+
+```reox
+import geometry;        // geometry.rx next to the entry file, or in stdlib/
+import util.math;       // util/math.rx
+
+let r = rect(0.0, 0.0, 2.0, 3.0);   // pub items are available unqualified
+let a = geometry.area(r);           // or qualified by module name
+```
+
+Every file is a module named after its stem. `pub` controls what other
+files may use; using a private item, or an item of a module the file does
+not import, is a diagnostic with a hint. Import cycles are reported.
 
 ### AI Integration
 

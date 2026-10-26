@@ -1,12 +1,12 @@
 // ============================================================================
 // REOX Standard Library - NXRender Integration
 // Direct access to NeolyxOS native rendering engine
-// 
+//
 // Copyright (c) 2025-2026 KetiveeAI
-// 
+//
 // Usage:
 //   import nxrender;
-//   
+//
 //   let win = nx_window_create("My App", 100, 100, 800, 600);
 //   let btn = nx_button_create("Click Me");
 //   nx_window_set_root(win, btn);

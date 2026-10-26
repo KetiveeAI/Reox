@@ -250,6 +250,14 @@ static NATIVES: &[(&str, NativeFn)] = &[
         for x in &a { println!("{}", x); }
         Ok(Value::Nil)
     }),
+    // Typed printers, matching the C runtime's print_int/print_float/print_bool
+    // (no trailing newline).
+    ("print_int", |a| { print!("{}", arg_int(&a, 0, "print_int")?); flush_stdout()?; Ok(Value::Nil) }),
+    ("print_float", |a| { print!("{}", arg_float(&a, 0, "print_float")?); flush_stdout()?; Ok(Value::Nil) }),
+    ("print_bool", |a| match arg(&a, 0, "print_bool")? {
+        Value::Bool(b) => { print!("{}", b); flush_stdout()?; Ok(Value::Nil) }
+        other => Err(type_mismatch("print_bool", 0, "a bool", other)),
+    }),
     ("input", |a| {
         if let Some(prompt) = a.first() {
             print!("{}", prompt);
@@ -666,10 +674,23 @@ pub const MAX_EXPR_DEPTH: usize = 2048;
 /// frames, which are large in debug builds, so evaluation runs on its own thread.
 const EVAL_STACK_BYTES: usize = 256 * 1024 * 1024;
 
+/// A variant case constructor the interpreter knows about.
+#[derive(Debug, Clone)]
+struct CaseCtor {
+    type_name: String,
+    case_name: String,
+    arity: usize,
+}
+
 pub struct Interpreter {
     env: Environment,
     structs: HashMap<String, StructDecl>,
     functions: HashMap<String, FnDecl>,
+    /// Variant case names per variant type, for pattern matching.
+    variant_cases: HashMap<String, Vec<String>>,
+    /// Constructors reachable by name: `Type_Case`, `Type.Case` and, when
+    /// unambiguous, the bare `Case`.
+    case_ctors: HashMap<String, CaseCtor>,
     call_depth: usize,
     expr_depth: usize,
     /// Set by `return`; unwinds enclosing blocks and loops until the call takes it.
@@ -682,6 +703,8 @@ impl Interpreter {
             env: Environment::new(),
             structs: HashMap::new(),
             functions: HashMap::new(),
+            variant_cases: HashMap::new(),
+            case_ctors: HashMap::new(),
             call_depth: 0,
             expr_depth: 0,
             returning: None,
@@ -712,16 +735,26 @@ impl Interpreter {
     pub fn eval_on_current_thread(&mut self, ast: &Ast) -> Result<Value, RuntimeError> {
         for d in &ast.declarations {
             match d {
-                Decl::Struct(s) => { self.structs.insert(s.name.clone(), s.clone()); },
+                Decl::Struct(s) => {
+                    self.structs.insert(s.name.clone(), s.clone());
+                    for method in &s.methods {
+                        self.functions.insert(format!("{}_{}", s.name, method.name), method.clone());
+                    }
+                },
                 Decl::Function(f) => { self.functions.insert(f.name.clone(), f.clone()); },
                 Decl::Variant(v) => {
+                    self.variant_cases.insert(v.name.clone(), v.cases.iter().map(|c| c.name.clone()).collect());
                     for case in &v.cases {
-                        let type_name = v.name.clone();
-                        let case_name = case.name.clone();
-                        // Register all variant cases as constant values
-                        // Payload variants are constructed via pattern syntax: VariantName.CaseName(args)
-                        self.env.define(&format!("{}_{}", v.name, case.name),
-                            Value::Variant { type_name, case_name, payload: vec![] });
+                        let ctor = CaseCtor { type_name: v.name.clone(), case_name: case.name.clone(), arity: case.fields.len() };
+                        self.case_ctors.insert(format!("{}_{}", v.name, case.name), ctor.clone());
+                        // The bare case name works when exactly one variant declares it.
+                        match self.case_ctors.get(&case.name) {
+                            Some(existing) if existing.type_name != v.name => {
+                                self.case_ctors.remove(&case.name);
+                            }
+                            Some(_) => {}
+                            None => { self.case_ctors.insert(case.name.clone(), ctor); }
+                        }
                     }
                 },
                 Decl::Const(c) => {
@@ -755,10 +788,27 @@ impl Interpreter {
                 Decl::Import(_) | Decl::Extern(_) | Decl::Protocol(_) | Decl::Typealias(_) => {}
             }
         }
+        // Payload-less cases are plain values.
+        for (name, ctor) in self.case_ctors.clone() {
+            if ctor.arity == 0 {
+                self.env.define(&name, Value::Variant { type_name: ctor.type_name, case_name: ctor.case_name, payload: vec![] });
+            }
+        }
         match self.functions.get("main").cloned() {
             Some(f) => self.call(&f, vec![]).map_err(Self::leaked_control_flow),
             None => Ok(Value::Nil),
         }
+    }
+
+    /// Build a variant value from a constructor and its arguments.
+    fn construct(&self, ctor: &CaseCtor, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        if args.len() != ctor.arity {
+            return Err(RuntimeError::new(format!(
+                "case '{}' of '{}' takes {} value{}, found {}",
+                ctor.case_name, ctor.type_name, ctor.arity, if ctor.arity == 1 { "" } else { "s" }, args.len()
+            )));
+        }
+        Ok(Value::Variant { type_name: ctor.type_name.clone(), case_name: ctor.case_name.clone(), payload: args })
     }
 
     /// A break/continue that escaped every loop is a real error.
@@ -791,6 +841,115 @@ impl Interpreter {
         self.env.pop();
         self.exit_call();
         self.take_return(r)
+    }
+
+    /// Call a method with `self` bound to `receiver`. Returns the result and
+    /// the receiver as it is after the call, so callers can write mutations
+    /// back to the place the receiver came from.
+    fn call_method(&mut self, f: &FnDecl, receiver: Value, a: Vec<Value>) -> Result<(Value, Value), RuntimeError> {
+        self.enter_call(Some(f.span))?;
+        self.env.push();
+        self.env.define("self", receiver.clone());
+        for (i, p) in f.params.iter().enumerate() { self.env.define(&p.name, a.get(i).cloned().unwrap_or(Value::Nil)); }
+        let r = self.block(&f.body);
+        let after = self.env.get("self").unwrap_or(receiver);
+        self.env.pop();
+        self.exit_call();
+        Ok((self.take_return(r)?, after))
+    }
+
+    /// Dispatch `receiver.method(args)`: look the method up by the receiver's
+    /// type, call it, and write the possibly mutated `self` back when the
+    /// receiver expression names a place.
+    fn dispatch_method(&mut self, receiver_expr: &Expr, method: &str, args: &[Expr], span: Span) -> Result<Option<Value>, RuntimeError> {
+        // Static call on a type name: Type.method(args) or Type.Case(args)
+        if let Expr::Identifier(type_name, _) = receiver_expr {
+            if self.env.get(type_name).is_none() {
+                if let Some(f) = self.functions.get(&format!("{}_{}", type_name, method)).cloned() {
+                    let vs = self.eval_args(args)?;
+                    return self.call(&f, vs).map(Some);
+                }
+                if self.variant_cases.contains_key(type_name) {
+                    if let Some(ctor) = self.case_ctors.get(&format!("{}_{}", type_name, method)).cloned() {
+                        let vs = self.eval_args(args)?;
+                        return self.construct(&ctor, vs).map(Some);
+                    }
+                }
+            }
+        }
+        let receiver = self.expr(receiver_expr)?;
+        let type_name = match &receiver {
+            Value::Struct { name, .. } => name.clone(),
+            Value::Variant { type_name, .. } => type_name.clone(),
+            _ => return Ok(None),
+        };
+        let f = match self.functions.get(&format!("{}_{}", type_name, method)).cloned() {
+            Some(f) => f,
+            None => return Ok(None),
+        };
+        let vs = self.eval_args(args)?;
+        let (result, after) = self.call_method(&f, receiver, vs)?;
+        if Self::is_place(receiver_expr) {
+            self.assign_path(receiver_expr, after).map_err(|e| e.with_span(span))?;
+        }
+        Ok(Some(result))
+    }
+
+    /// Whether `expr` names a place that `assign_path` can store into.
+    fn is_place(expr: &Expr) -> bool {
+        match expr {
+            Expr::Identifier(_, _) | Expr::SelfRef(_) => true,
+            Expr::Member(obj, _, _) | Expr::Index(obj, _, _) => Self::is_place(obj),
+            _ => false,
+        }
+    }
+
+    /// Store `value` into the place `target` denotes: a variable, `self`, a
+    /// struct field or an array/map element, through any depth of nesting.
+    fn assign_path(&mut self, target: &Expr, value: Value) -> Result<(), RuntimeError> {
+        match target {
+            Expr::Identifier(n, _) => {
+                if self.env.set(n, value) { Ok(()) } else {
+                    Err(RuntimeError::new(format!("assignment to undefined variable '{}'", n)))
+                }
+            }
+            Expr::SelfRef(_) => {
+                if self.env.set("self", value) { Ok(()) } else {
+                    Err(RuntimeError::new("'self' is only available inside a method body"))
+                }
+            }
+            Expr::Member(obj, field, _) => {
+                let mut container = self.expr(obj)?;
+                match &mut container {
+                    Value::Struct { fields, name } => {
+                        if !fields.contains_key(field) {
+                            return Err(RuntimeError::new(format!("struct '{}' has no field '{}'", name, field)));
+                        }
+                        fields.insert(field.clone(), value);
+                    }
+                    other => return Err(RuntimeError::new(format!("cannot assign field '{}' on {}", field, other.type_name()))),
+                }
+                self.assign_path(obj, container)
+            }
+            Expr::Index(arr, idx, _) => {
+                let mut container = self.expr(arr)?;
+                let index = self.expr(idx)?;
+                match (&mut container, &index) {
+                    (Value::Array(items), Value::Int(i)) => {
+                        let len = items.len();
+                        let slot = usize::try_from(*i).ok().and_then(|i| items.get_mut(i))
+                            .ok_or_else(|| RuntimeError::new(format!("index {} out of bounds (length {})", i, len)))?;
+                        *slot = value;
+                    }
+                    (Value::Map(m), Value::String(k)) => { m.insert(k.clone(), value); }
+                    (base, index) => return Err(RuntimeError::new(format!(
+                        "cannot assign into {} with {}", base.type_name(), index.type_name()
+                    ))),
+                }
+                self.assign_path(arr, container)
+            }
+            _ => Err(RuntimeError::new("invalid assignment target")),
+        }
     }
 
     /// Resolve a function body's result: an explicit `return` value wins over
@@ -986,6 +1145,11 @@ impl Interpreter {
                 }
             },
             Expr::Call(c, a, span) => {
+                if let Expr::Member(receiver, method, _) = c.as_ref() {
+                    if let Some(v) = self.dispatch_method(receiver, method, a, *span)? {
+                        return Ok(v);
+                    }
+                }
                 if let Expr::Identifier(n, _) = c.as_ref() {
                     match self.env.get(n) {
                         Some(Value::NativeAction(f)) => {
@@ -1002,6 +1166,12 @@ impl Interpreter {
                         let vs = self.eval_args(a)?;
                         return self.call(&f, vs);
                     }
+                    if self.env.get(n).is_none() {
+                        if let Some(ctor) = self.case_ctors.get(n).cloned() {
+                            let vs = self.eval_args(a)?;
+                            return self.construct(&ctor, vs);
+                        }
+                    }
                 }
                 // Calling the result of an arbitrary expression
                 let callee = self.expr(c)?;
@@ -1017,7 +1187,30 @@ impl Interpreter {
                     other => Err(RuntimeError::new(format!("{} is not callable", other.type_name())))
                 }
             },
+            Expr::MethodCall(receiver, type_name, method, args, span) => {
+                match self.dispatch_method(receiver, method, args, *span)? {
+                    Some(v) => Ok(v),
+                    None => Err(RuntimeError::new(format!("type '{}' has no method '{}'", type_name, method))),
+                }
+            },
+            Expr::SelfRef(_) => self.env.get("self")
+                .ok_or_else(|| RuntimeError::new("'self' is only available inside a method body")),
+            Expr::Typed(inner, _, _) => self.expr(inner),
+            Expr::Block(block, _) => {
+                self.env.push();
+                let result = self.block(block);
+                self.env.pop();
+                result
+            },
             Expr::Member(o, f, _) => {
+                if let Expr::Identifier(type_name, _) = o.as_ref() {
+                    if self.env.get(type_name).is_none() && self.variant_cases.contains_key(type_name) {
+                        return match self.case_ctors.get(&format!("{}_{}", type_name, f)).cloned() {
+                            Some(ctor) => self.construct(&ctor, vec![]),
+                            None => Err(RuntimeError::new(format!("variant '{}' has no case '{}'", type_name, f))),
+                        };
+                    }
+                }
                 let ov = self.expr(o)?;
                 match ov {
                     Value::Struct { fields, .. } => fields.get(f).cloned()
@@ -1043,16 +1236,8 @@ impl Interpreter {
             },
             Expr::Assign(t, v, _) => {
                 let val = self.expr(v)?;
-                match t.as_ref() {
-                    Expr::Identifier(n, _) => {
-                        if self.env.set(n, val.clone()) {
-                            Ok(val)
-                        } else {
-                            Err(RuntimeError::new(format!("assignment to undefined variable '{}'", n)))
-                        }
-                    }
-                    _ => Err(RuntimeError::new("invalid assignment target")),
-                }
+                self.assign_path(t, val.clone())?;
+                Ok(val)
             },
             Expr::ArrayLit(es, _) => Ok(Value::Array(self.eval_args(es)?)),
             Expr::StructLit(n, fs, _) => {
@@ -1063,19 +1248,24 @@ impl Interpreter {
             Expr::Match(x, arms, _) => {
                 let v = self.expr(x)?;
                 for arm in arms {
-                    if self.pat(&arm.pattern, &v) {
-                        return self.expr(&arm.body);
+                    if let Some(bindings) = self.pat(&arm.pattern, &v) {
+                        self.env.push();
+                        for (name, value) in bindings {
+                            self.env.define(&name, value);
+                        }
+                        let result = self.expr(&arm.body);
+                        self.env.pop();
+                        return result;
                     }
                 }
-                Ok(Value::Nil)
+                Err(RuntimeError::new(format!("no match arm matches the value {}", v)))
             },
             // Compound assignments: +=, -=, *=, /=, %=
             Expr::CompoundAssign(target, op, value, _) => {
-                let n = match target.as_ref() {
-                    Expr::Identifier(n, _) => n,
-                    _ => return Err(RuntimeError::new("invalid compound assignment target")),
-                };
-                let current = self.env.get(n).ok_or_else(|| RuntimeError::new(format!("undefined variable '{}'", n)))?;
+                if !Self::is_place(target) {
+                    return Err(RuntimeError::new("invalid compound assignment target"));
+                }
+                let current = self.expr(target)?;
                 let rhs = self.expr(value)?;
                 let bin = match op {
                     CompoundOp::AddEq => BinOp::Add,
@@ -1085,7 +1275,7 @@ impl Interpreter {
                     CompoundOp::ModEq => BinOp::Mod,
                 };
                 let result = self.binop(current, &bin, rhs)?;
-                self.env.set(n, result.clone());
+                self.assign_path(target, result.clone())?;
                 Ok(result)
             },
             Expr::PreIncrement(target, _) => self.step_variable(target, 1, true),
@@ -1144,30 +1334,61 @@ impl Interpreter {
     /// Shared implementation of ++x, --x, x++ and x--.
     fn step_variable(&mut self, target: &Expr, delta: i64, prefix: bool) -> Result<Value, RuntimeError> {
         let verb = if delta > 0 { "increment" } else { "decrement" };
-        let n = match target {
-            Expr::Identifier(n, _) => n,
-            _ => return Err(RuntimeError::new(format!("invalid {} target", verb))),
-        };
-        let current = self.env.get(n).ok_or_else(|| RuntimeError::new(format!("undefined variable '{}'", n)))?;
-        let old = match current {
+        if !Self::is_place(target) {
+            return Err(RuntimeError::new(format!("invalid {} target", verb)));
+        }
+        let old = match self.expr(target)? {
             Value::Int(i) => i,
             other => return Err(RuntimeError::new(format!("{} requires int, found {}", verb, other.type_name()))),
         };
         let new = old.checked_add(delta).ok_or_else(|| RuntimeError::new(format!("integer overflow in {}", verb)))?;
-        self.env.set(n, Value::Int(new));
+        self.assign_path(target, Value::Int(new))?;
         Ok(Value::Int(if prefix { new } else { old }))
     }
 
-    fn pat(&self, p: &Pattern, v: &Value) -> bool {
+    /// Match `v` against `p`. Returns the bindings the pattern introduces, or
+    /// `None` when it does not match.
+    fn pat(&self, p: &Pattern, v: &Value) -> Option<Vec<(String, Value)>> {
         match p {
-            Pattern::Wildcard | Pattern::Identifier(_) => true,
-            Pattern::Literal(l) => match (l, v) {
-                (Literal::Int(a,_), Value::Int(b)) => *a == *b,
-                (Literal::Bool(a,_), Value::Bool(b)) => *a == *b,
-                (Literal::String(a,_), Value::String(b)) => a == b,
-                (Literal::Float(a,_), Value::Float(b)) => (a - b).abs() < f64::EPSILON,
-                _ => false,
-            },
+            Pattern::Wildcard => Some(Vec::new()),
+            Pattern::Identifier(name) => {
+                // A case name of the value's own variant type is a case
+                // pattern, not a binding.
+                if let Value::Variant { type_name, case_name, payload } = v {
+                    let is_case = self.variant_cases.get(type_name).map(|cs| cs.contains(name)).unwrap_or(false);
+                    if is_case {
+                        return if case_name == name && payload.is_empty() { Some(Vec::new()) } else { None };
+                    }
+                }
+                Some(vec![(name.clone(), v.clone())])
+            }
+            Pattern::Literal(l) => {
+                let matches = match (l, v) {
+                    (Literal::Int(a,_), Value::Int(b)) => *a == *b,
+                    (Literal::Bool(a,_), Value::Bool(b)) => *a == *b,
+                    (Literal::String(a,_), Value::String(b)) => a == b,
+                    (Literal::Float(a,_), Value::Float(b)) => (a - b).abs() < f64::EPSILON,
+                    _ => false,
+                };
+                if matches { Some(Vec::new()) } else { None }
+            }
+            Pattern::Variant(vp) => {
+                let (type_name, case_name, payload) = match v {
+                    Value::Variant { type_name, case_name, payload } => (type_name, case_name, payload),
+                    _ => return None,
+                };
+                if vp.type_name.as_ref().map(|t| t != type_name).unwrap_or(false) || &vp.case != case_name {
+                    return None;
+                }
+                if payload.len() != vp.args.len() {
+                    return None;
+                }
+                let mut bindings = Vec::new();
+                for (arg, value) in vp.args.iter().zip(payload.iter()) {
+                    bindings.extend(self.pat(arg, value)?);
+                }
+                Some(bindings)
+            }
         }
     }
 
@@ -1491,6 +1712,7 @@ mod tests {
         let ast = Ast {
             declarations: vec![Decl::Function(FnDecl {
                 name: "main".into(),
+                type_params: vec![],
                 params: vec![],
                 return_type: None,
                 body: Block { statements: vec![Stmt::Return(ReturnStmt { value: Some(expr), span })], span },
@@ -1498,6 +1720,7 @@ mod tests {
                 throws: false,
                 is_pub: false,
                 is_static: false,
+                is_mut: false,
                 span,
             })],
         };
@@ -1519,5 +1742,124 @@ mod tests {
         let ast = parse(&tokens).unwrap();
         assert_eq!(Interpreter::new().eval_on_current_thread(&ast).unwrap(), Value::Int(4));
         assert_eq!(eval(&ast).unwrap(), Value::Int(4));
+    }
+
+    // === Methods and self ===
+
+    const COUNTER: &str = r#"
+        struct Counter {
+            count: int
+            fn value() -> int { return self.count; }
+            mut fn bump(by: int) { self.count += by; }
+            static fn make() -> Counter { return Counter { count: 0 }; }
+        }
+        extension Counter { mut fn twice() { self.bump(1); self.bump(1); } }
+    "#;
+
+    fn run_checked(source: &str) -> Result<Value, RuntimeError> {
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(&tokens).unwrap();
+        let checked = crate::typechecker::check(&ast).unwrap_or_else(|e| panic!("{:?}", e));
+        eval(&checked)
+    }
+
+    #[test]
+    fn mut_methods_write_back_to_the_receiver() {
+        let src = format!("{}\nfn main() -> int {{ let mut c = Counter.make(); c.bump(5); c.twice(); return c.value(); }}", COUNTER);
+        assert_eq!(run_checked(&src).unwrap(), Value::Int(7));
+        // The same program also runs unlowered (dynamic dispatch on the struct name).
+        assert_eq!(run(&src).unwrap(), Value::Int(7));
+    }
+
+    #[test]
+    fn method_calls_on_nested_fields_mutate_in_place() {
+        let src = format!("{}\nstruct Pair {{ a: Counter, b: Counter }}\nfn main() -> int {{ let mut p = Pair {{ a: Counter.make(), b: Counter.make() }}; p.a.bump(3); p.b.count = 10; p.b.count++; return p.a.value() + p.b.value(); }}", COUNTER);
+        assert_eq!(run_checked(&src).unwrap(), Value::Int(14));
+    }
+
+    #[test]
+    fn element_assignment_through_paths() {
+        assert_eq!(run("fn main() -> int { let a = [1, 2, 3]; a[1] = 20; a[2] += 5; return a[1] + a[2]; }").unwrap(), Value::Int(28));
+        let err = run_err("fn main() { let a = [1]; a[4] = 2; }");
+        assert_eq!(err.message, "index 4 out of bounds (length 1)");
+        let err = run_err("struct P { x: int } fn main() { let p = P { x: 1 }; p.y = 2; }");
+        assert_eq!(err.message, "struct 'P' has no field 'y'");
+    }
+
+    #[test]
+    fn self_outside_a_method_is_a_runtime_error_when_unchecked() {
+        assert_eq!(run_err("fn main() { let s = self; }").message, "'self' is only available inside a method body");
+    }
+
+    // === Variant patterns ===
+
+    const RESULT: &str = r#"
+        variant Result { Ok(int), Err(message: string) }
+        variant Maybe { Some(Result), Nothing }
+    "#;
+
+    #[test]
+    fn variant_values_destructure_in_match() {
+        let src = format!("{}\nfn f(r: Result) -> int {{ return match r {{ Ok(v) => v * 2, Err(m) => {{ let n = len(m); n }} }}; }}\nfn main() -> int {{ return f(Ok(21)) + f(Result.Err(\"abc\")) + f(Result_Ok(1)); }}", RESULT);
+        assert_eq!(run_checked(&src).unwrap(), Value::Int(47));
+        assert_eq!(run(&src).unwrap(), Value::Int(47));
+    }
+
+    #[test]
+    fn nested_patterns_and_case_names_as_patterns() {
+        let src = format!("{}\nfn f(m: Maybe) -> int {{ return match m {{ Some(Ok(v)) => v, Some(Err(_)) => -1, Nothing => 0 }}; }}\nfn main() -> int {{ return f(Some(Ok(5))) * 100 + f(Some(Err(\"e\"))) * 10 + f(Nothing) + f(Maybe.Nothing); }}", RESULT);
+        assert_eq!(run_checked(&src).unwrap(), Value::Int(490));
+    }
+
+    #[test]
+    fn bindings_are_scoped_to_their_arm() {
+        let src = format!("{}\nfn main() -> int {{ let v = 7; let r = match Ok(1) {{ Ok(v) => v, Err(_) => 0 }}; return v * 10 + r; }}", RESULT);
+        assert_eq!(run_checked(&src).unwrap(), Value::Int(71));
+    }
+
+    #[test]
+    fn constructor_arity_and_unmatched_values_are_runtime_errors_when_unchecked() {
+        let err = run_err(&format!("{}\nfn main() {{ let r = Ok(1, 2); }}", RESULT));
+        assert_eq!(err.message, "case 'Ok' of 'Result' takes 1 value, found 2");
+        let err = run_err(&format!("{}\nfn main() -> int {{ return match Ok(1) {{ Err(_) => 0 }}; }}", RESULT));
+        assert!(err.message.starts_with("no match arm matches the value Result.Ok(1)"), "{}", err.message);
+        let err = run_err(&format!("{}\nfn main() {{ let r = Result.Nope; }}", RESULT));
+        assert_eq!(err.message, "variant 'Result' has no case 'Nope'");
+    }
+
+    // === Generics ===
+
+    #[test]
+    fn generic_programs_run_after_monomorphisation() {
+        let src = r#"
+            variant Option<T> { Some(T), None }
+            struct Box<T> { value: T  fn get() -> T { return self.value; }  mut fn set(v: T) { self.value = v; } }
+            fn swap<T>(a: T, b: T) -> T { return b; }
+            fn unwrap_or(o: Option<int>, d: int) -> int { return match o { Some(v) => v, None => d }; }
+            fn main() -> int {
+                let mut b = Box { value: 40 };
+                b.set(b.get() + 2);
+                let s: Option<int> = Some(7);
+                let n: Option<int> = None;
+                return b.get() * 10 + unwrap_or(s, 0) + unwrap_or(n, 1) + swap(100, 0);
+            }
+        "#;
+        assert_eq!(run_checked(src).unwrap(), Value::Int(428));
+    }
+
+    // === Protocol conformance ===
+
+    #[test]
+    fn bounded_generics_run_through_extension_methods() {
+        let src = r#"
+            protocol Area { fn area() -> int; }
+            struct Rect { w: int, h: int }
+            struct Square { s: int }
+            extension Rect : Area { fn area() -> int { return self.w * self.h; } }
+            extension Square : Area { fn area() -> int { return self.s * self.s; } }
+            fn total<T: Area>(a: T, b: T) -> int { return a.area() + b.area(); }
+            fn main() -> int { return total(Rect { w: 2, h: 3 }, Rect { w: 1, h: 1 }) * 100 + total(Square { s: 2 }, Square { s: 3 }); }
+        "#;
+        assert_eq!(run_checked(src).unwrap(), Value::Int(713));
     }
 }

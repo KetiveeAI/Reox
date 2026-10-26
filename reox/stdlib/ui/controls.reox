@@ -9,10 +9,10 @@ struct Button {
 }
 
 fn button(label: string) -> Button {
-    return Button { 
-        label: label, 
-        enabled: true, 
-        on_click: fn() {} 
+    return Button {
+        label: label,
+        enabled: true,
+        on_click: fn() {},
     };
 }
 
@@ -29,7 +29,7 @@ fn label(text: string) -> Label {
         text: text,
         color: Color { r: 255, g: 255, b: 255, a: 255 },
         font_size: 16,
-        bold: false
+        bold: false,
     };
 }
 
@@ -46,7 +46,7 @@ fn text_field(placeholder: string) -> TextField {
         value: "",
         placeholder: placeholder,
         password: false,
-        on_change: fn(s: string) {}
+        on_change: fn(s: string) {},
     };
 }
 
@@ -61,7 +61,7 @@ fn toggle(initial: bool) -> Switch {
     return Switch {
         value: initial,
         on_color: Color { r: 0, g: 122, b: 255, a: 255 },
-        on_change: fn(b: bool) {}
+        on_change: fn(b: bool) {},
     };
 }
 
@@ -76,7 +76,7 @@ fn checkbox(label: string) -> Checkbox {
     return Checkbox {
         checked: false,
         label: label,
-        on_change: fn(b: bool) {}
+        on_change: fn(b: bool) {},
     };
 }
 
@@ -95,13 +95,13 @@ fn slider(min: float, max: float) -> Slider {
         min: min,
         max: max,
         step: 1.0,
-        on_change: fn(v: float) {}
+        on_change: fn(v: float) {},
     };
 }
 
 /// Progress bar
 struct ProgressBar {
-    value: float,           // 0.0 to 1.0
+    value: float, // 0.0 to 1.0
     indeterminate: bool,
     color: Color
 }
@@ -110,7 +110,7 @@ fn progress(value: float) -> ProgressBar {
     return ProgressBar {
         value: value,
         indeterminate: false,
-        color: Color { r: 0, g: 122, b: 255, a: 255 }
+        color: Color { r: 0, g: 122, b: 255, a: 255 },
     };
 }
 
@@ -118,7 +118,7 @@ fn progress_indeterminate() -> ProgressBar {
     return ProgressBar {
         value: 0.0,
         indeterminate: true,
-        color: Color { r: 0, g: 122, b: 255, a: 255 }
+        color: Color { r: 0, g: 122, b: 255, a: 255 },
     };
 }
 
@@ -133,7 +133,7 @@ fn dropdown(items: [string]) -> Dropdown {
     return Dropdown {
         items: items,
         selected: 0,
-        on_select: fn(i: int) {}
+        on_select: fn(i: int) {},
     };
 }
 
@@ -148,7 +148,7 @@ fn list_view(items: [View]) -> ListView {
     return ListView {
         items: items,
         item_height: 44,
-        on_select: fn(i: int) {}
+        on_select: fn(i: int) {},
     };
 }
 
@@ -169,7 +169,7 @@ fn tab_view() -> TabView {
     return TabView {
         tabs: [],
         selected: 0,
-        on_change: fn(i: int) {}
+        on_change: fn(i: int) {},
     };
 }
 
@@ -191,9 +191,9 @@ enum ImageFit {
 fn image(src: string) -> Image {
     return Image {
         src: src,
-        width: -1,  // Auto
+        width: -1, // Auto
         height: -1,
-        fit: ImageFit.Contain
+        fit: ImageFit.Contain,
     };
 }
 

@@ -1,0 +1,33 @@
+// reox-spec.md, "Protocol - Interface": conformance checked at compile time,
+// dispatched statically through a generic bound.
+import shapes;
+extern fn print_float(n: float);
+extern fn println(s: string);
+
+protocol Drawable {
+    fn draw(canvas: View);
+    fn bounds() -> Rect;
+}
+
+struct Circle { radius: float }
+
+extension Circle : Drawable {
+    fn draw(canvas: View) {
+        println("drawing circle");
+    }
+    fn bounds() -> Rect {
+        return rect(0.0, 0.0, self.radius * 2.0, self.radius * 2.0);
+    }
+}
+
+fn render<T: Drawable>(item: T, canvas: View) {
+    item.draw(canvas);
+}
+
+fn main() {
+    let circle = Circle { radius: 1.5 };
+    let canvas = View { handle: 1 };
+    render(circle, canvas);
+    print_float(circle.bounds().w);
+    println("");
+}

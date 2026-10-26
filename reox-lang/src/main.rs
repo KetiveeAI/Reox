@@ -42,6 +42,13 @@ fn handle_command(cmd: cli::CliCommand) -> Result<(), String> {
             let cmd = pkg::parse_pkg_args(&args)?;
             pkg::handle_pkg(cmd)
         }
+        cli::CliCommand::Fmt(args) => {
+            let code = reoxc::fmt::run(&args)?;
+            if code != 0 {
+                process::exit(code);
+            }
+            Ok(())
+        }
         cli::CliCommand::Help => {
             cli::print_usage();
             Ok(())
@@ -121,19 +128,16 @@ fn new_project(name: &str, template_name: &str) -> Result<(), String> {
 }
 
 fn run(args: &cli::Args) -> Result<(), String> {
-    let source = std::fs::read_to_string(&args.input)
-        .map_err(|e| format!("failed to read '{}': {}", args.input, e))?;
-
-    let ast = match cli::check_source(&source) {
-        Ok(ast) => ast,
-        Err(diagnostics) => {
-            cli::report_diagnostics(&args.input, &source, &diagnostics);
+    let (ast, sources) = match cli::check_file(std::path::Path::new(&args.input)) {
+        Ok(checked) => checked,
+        Err((diagnostics, sources)) => {
+            cli::report_program_diagnostics(&sources, &diagnostics);
             return Err("compilation failed".to_string());
         }
     };
 
     if let Err(e) = reoxc::interpreter::eval(&ast) {
-        cli::report_diagnostics(&args.input, &source, &[e.into()]);
+        cli::report_program_diagnostics(&sources, &[e.into()]);
         return Err("program terminated with a runtime error".to_string());
     }
 
@@ -141,9 +145,6 @@ fn run(args: &cli::Args) -> Result<(), String> {
 }
 
 fn compile(args: &cli::Args) -> Result<(), String> {
-    let source = std::fs::read_to_string(&args.input)
-        .map_err(|e| format!("failed to read '{}': {}", args.input, e))?;
-
     let output_path = args.output.clone()
         .unwrap_or_else(|| {
             let stem = std::path::Path::new(&args.input)
@@ -153,10 +154,10 @@ fn compile(args: &cli::Args) -> Result<(), String> {
             format!("{}.c", stem)
         });
 
-    let c_code = match cli::compile_source(&source) {
-        Ok(c_code) => c_code,
-        Err(diagnostics) => {
-            cli::report_diagnostics(&args.input, &source, &diagnostics);
+    let c_code = match cli::compile_file(std::path::Path::new(&args.input)) {
+        Ok((c_code, _sources)) => c_code,
+        Err((diagnostics, sources)) => {
+            cli::report_program_diagnostics(&sources, &diagnostics);
             return Err("compilation failed".to_string());
         }
     };

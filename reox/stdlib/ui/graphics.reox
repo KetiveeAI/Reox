@@ -10,25 +10,25 @@ struct Color {
 }
 
 // Predefined colors
-const COLOR_BLACK   = Color { r: 0, g: 0, b: 0, a: 255 };
-const COLOR_WHITE   = Color { r: 255, g: 255, b: 255, a: 255 };
-const COLOR_RED     = Color { r: 255, g: 0, b: 0, a: 255 };
-const COLOR_GREEN   = Color { r: 0, g: 255, b: 0, a: 255 };
-const COLOR_BLUE    = Color { r: 0, g: 0, b: 255, a: 255 };
-const COLOR_YELLOW  = Color { r: 255, g: 255, b: 0, a: 255 };
-const COLOR_CYAN    = Color { r: 0, g: 255, b: 255, a: 255 };
+const COLOR_BLACK = Color { r: 0, g: 0, b: 0, a: 255 };
+const COLOR_WHITE = Color { r: 255, g: 255, b: 255, a: 255 };
+const COLOR_RED = Color { r: 255, g: 0, b: 0, a: 255 };
+const COLOR_GREEN = Color { r: 0, g: 255, b: 0, a: 255 };
+const COLOR_BLUE = Color { r: 0, g: 0, b: 255, a: 255 };
+const COLOR_YELLOW = Color { r: 255, g: 255, b: 0, a: 255 };
+const COLOR_CYAN = Color { r: 0, g: 255, b: 255, a: 255 };
 const COLOR_MAGENTA = Color { r: 255, g: 0, b: 255, a: 255 };
-const COLOR_GRAY    = Color { r: 128, g: 128, b: 128, a: 255 };
-const COLOR_CLEAR   = Color { r: 0, g: 0, b: 0, a: 0 };
+const COLOR_GRAY = Color { r: 128, g: 128, b: 128, a: 255 };
+const COLOR_CLEAR = Color { r: 0, g: 0, b: 0, a: 0 };
 
 // NeolyxOS system colors
-const COLOR_PRIMARY    = Color { r: 0, g: 122, b: 255, a: 255 };
-const COLOR_SECONDARY  = Color { r: 88, g: 86, b: 214, a: 255 };
-const COLOR_ACCENT     = Color { r: 255, g: 69, b: 58, a: 255 };
+const COLOR_PRIMARY = Color { r: 0, g: 122, b: 255, a: 255 };
+const COLOR_SECONDARY = Color { r: 88, g: 86, b: 214, a: 255 };
+const COLOR_ACCENT = Color { r: 255, g: 69, b: 58, a: 255 };
 const COLOR_BACKGROUND = Color { r: 28, g: 28, b: 30, a: 255 };
-const COLOR_SURFACE    = Color { r: 44, g: 44, b: 46, a: 255 };
-const COLOR_TEXT       = Color { r: 255, g: 255, b: 255, a: 255 };
-const COLOR_TEXT_DIM   = Color { r: 174, g: 174, b: 178, a: 255 };
+const COLOR_SURFACE = Color { r: 44, g: 44, b: 46, a: 255 };
+const COLOR_TEXT = Color { r: 255, g: 255, b: 255, a: 255 };
+const COLOR_TEXT_DIM = Color { r: 174, g: 174, b: 178, a: 255 };
 
 /// Create color from RGB values (0-255)
 fn rgb(r: int, g: int, b: int) -> Color {
@@ -46,7 +46,7 @@ fn hex(value: int) -> Color {
         r: (value >> 16) & 0xFF,
         g: (value >> 8) & 0xFF,
         b: value & 0xFF,
-        a: 255
+        a: 255,
     };
 }
 
@@ -56,7 +56,7 @@ fn lighten(c: Color, amount: float) -> Color {
         r: c.r + (255 - c.r) * amount,
         g: c.g + (255 - c.g) * amount,
         b: c.b + (255 - c.b) * amount,
-        a: c.a
+        a: c.a,
     };
 }
 
@@ -66,7 +66,7 @@ fn darken(c: Color, amount: float) -> Color {
         r: c.r * (1.0 - amount),
         g: c.g * (1.0 - amount),
         b: c.b * (1.0 - amount),
-        a: c.a
+        a: c.a,
     };
 }
 
@@ -76,7 +76,7 @@ fn blend(a: Color, b: Color, t: float) -> Color {
         r: a.r + (b.r - a.r) * t,
         g: a.g + (b.g - a.g) * t,
         b: a.b + (b.b - a.b) * t,
-        a: a.a + (b.a - a.a) * t
+        a: a.a + (b.a - a.a) * t,
     };
 }
 
