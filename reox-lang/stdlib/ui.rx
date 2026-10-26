@@ -72,7 +72,7 @@ extern fn insets_symmetric(v: float, h: float) -> EdgeInsets;
 pub struct Border {
     width: float,
     color: Color,
-    style: int  // 0=none, 1=solid, 2=dashed, 3=dotted
+    style: int // 0=none, 1=solid, 2=dashed, 3=dotted
 }
 
 extern fn border(width: float, color: Color) -> Border;
@@ -172,7 +172,7 @@ extern fn image_set_aspect_fit(v: View, fit: bool) -> void;
 // HStack - horizontal layout
 extern fn hstack(gap: float) -> View;
 
-// VStack - vertical layout  
+// VStack - vertical layout
 extern fn vstack(gap: float) -> View;
 
 // ZStack - overlay layout

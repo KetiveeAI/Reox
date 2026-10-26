@@ -12,21 +12,21 @@ extern fn color_rgba(r: int, g: int, b: int, a: int) -> Color;
 
 fn main() -> int {
     println("=== REOX Simple UI Test ===");
-    
+
     // Test 1: Color creation
     println("Test 1: Creating colors...");
     let red: Color = color_rgba(255, 0, 0, 255);
     let green: Color = color_rgba(0, 255, 0, 255);
     let blue: Color = color_rgba(0, 0, 255, 255);
     println("  Colors created successfully!");
-    
+
     // Test 2: Basic math
     println("Test 2: Basic arithmetic...");
     let a: int = 10;
     let b: int = 20;
     let sum: int = a + b;
     println("  Arithmetic working!");
-    
+
     // Test 3: Conditionals
     println("Test 3: Conditionals...");
     if sum > 25 {
@@ -34,7 +34,7 @@ fn main() -> int {
     } else {
         println("  Sum <= 25: UNEXPECTED");
     }
-    
+
     // Test 4: Loops
     println("Test 4: Loop...");
     let mut i: int = 0;
@@ -43,7 +43,7 @@ fn main() -> int {
         i = i + 1;
     }
     println("  Loop complete!");
-    
+
     println("");
     println("=== All simple tests passed! ===");
     return 0;

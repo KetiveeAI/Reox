@@ -85,20 +85,20 @@ fn build_animated_card(title: string, description: string, primary: Color) -> Vi
     view_set_padding(card, insets_all(20.0));
     view_set_corner_radius(card, 16.0);
     view_set_shadow(card, shadow(0.0, 8.0, 24.0, color_rgba(0, 0, 0, 100)));
-    
+
     // Title
     let title_view: View = text_view(title);
     text_set_font_size(title_view, 18.0);
     text_set_font_weight(title_view, 600);
     text_set_color(title_view, primary);
     view_add_child(card, title_view);
-    
+
     // Description
     let desc_view: View = text_view(description);
     text_set_font_size(desc_view, 12.0);
     text_set_color(desc_view, color_rgba(180, 180, 180, 255));
     view_add_child(card, desc_view);
-    
+
     return card;
 }
 
@@ -107,111 +107,111 @@ fn main() -> int {
     println("REOX Animation Visual Test");
     println("========================================");
     println("");
-    
+
     // Create application
     let app: App = app_new("REOX Animation Test");
     let window: Window = app_create_window(app, "Animation Demo", 800, 600);
-    
+
     // Define color palette
     let bg: Color = color_rgba(26, 27, 38, 255);
     let purple: Color = color_rgba(139, 92, 246, 255);
     let pink: Color = color_rgba(236, 72, 153, 255);
     let cyan: Color = color_rgba(34, 211, 238, 255);
     let green: Color = color_rgba(34, 197, 94, 255);
-    
+
     // Root container
     let root: View = vstack(24.0);
     view_set_background(root, bg);
     view_set_padding(root, insets_all(32.0));
-    
+
     // Title section
     let title: View = text_view("Animation System Test");
     text_set_font_size(title, 28.0);
     text_set_font_weight(title, 700);
     text_set_color(title, color_rgba(255, 255, 255, 255));
     view_add_child(root, title);
-    
+
     let subtitle: View = text_view("Demonstrating REOX animation capabilities");
     text_set_font_size(subtitle, 14.0);
     text_set_color(subtitle, color_rgba(160, 160, 170, 255));
     view_add_child(root, subtitle);
-    
+
     // Card row
     let cards: View = hstack(16.0);
-    
+
     // Fade card
     let fade_card: View = build_animated_card("Fade", "Opacity transitions", purple);
     view_add_child(cards, fade_card);
-    
+
     // Slide card
     let slide_card: View = build_animated_card("Slide", "Position animations", pink);
     view_add_child(cards, slide_card);
-    
+
     // Bounce card
     let bounce_card: View = build_animated_card("Bounce", "Spring physics", cyan);
     view_add_child(cards, bounce_card);
-    
+
     // Pulse card
     let pulse_card: View = build_animated_card("Pulse", "Scale effects", green);
     view_add_child(cards, pulse_card);
-    
+
     view_add_child(root, cards);
-    
+
     // Button row
     let buttons: View = hstack(12.0);
-    
+
     let btn1: View = button_view("Fade In");
     button_set_style(btn1, purple, color_lighten(purple, 0.2), color_darken(purple, 0.2));
     view_add_child(buttons, btn1);
-    
+
     let btn2: View = button_view("Slide In");
     button_set_style(btn2, pink, color_lighten(pink, 0.2), color_darken(pink, 0.2));
     view_add_child(buttons, btn2);
-    
+
     let btn3: View = button_view("Bounce");
     button_set_style(btn3, cyan, color_lighten(cyan, 0.2), color_darken(cyan, 0.2));
     view_add_child(buttons, btn3);
-    
+
     let btn4: View = button_view("Pulse");
     button_set_style(btn4, green, color_lighten(green, 0.2), color_darken(green, 0.2));
     view_add_child(buttons, btn4);
-    
+
     view_add_child(root, buttons);
-    
+
     // Footer
     let footer: View = text_view("REOX UI Framework for NeolyxOS");
     text_set_font_size(footer, 11.0);
     text_set_color(footer, color_rgba(100, 100, 110, 255));
     view_add_child(root, footer);
-    
+
     // Set window root
     window_set_root(window, root);
-    
+
     // Apply entrance animations
     println("Applying entrance animations...");
-    
+
     // Fade in title
     rx_view_fade_in(title, 0.5);
-    
+
     // Slide in cards from different directions
     rx_view_slide_in(fade_card, -50.0, 0.0, 0.4);
     rx_view_slide_in(slide_card, 0.0, 50.0, 0.5);
     rx_view_slide_in(bounce_card, 50.0, 0.0, 0.6);
     rx_view_slide_in(pulse_card, 0.0, -50.0, 0.7);
-    
+
     // Bounce buttons
     rx_view_bounce(btn1, 0.3);
     rx_view_bounce(btn2, 0.35);
     rx_view_bounce(btn3, 0.4);
     rx_view_bounce(btn4, 0.45);
-    
+
     println("Animations queued!");
     println("");
     println("Running application event loop...");
-    
+
     // Run application
     app_run(app);
-    
+
     println("Animation test complete.");
     return 0;
 }

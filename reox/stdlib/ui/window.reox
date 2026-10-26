@@ -19,7 +19,7 @@ fn window_options_default() -> WindowOptions {
         height: 600,
         resizable: true,
         fullscreen: false,
-        centered: true
+        centered: true,
     };
 }
 
@@ -82,18 +82,18 @@ fn window_show(win: Window) {
 /// Application main window builder (SwiftUI-style)
 window MainWindow {
     title: "My App"
-    size: (800, 600)
-    resizable: true
-    
-    on_load: {
+        size: (800, 600)
+        resizable: true
+
+        on_load: {
         print("Window loaded");
     }
-    
+
     on_close: {
         print("Window closing");
     }
-    
+
     view {
         // Content goes here
-    }
+    },
 }

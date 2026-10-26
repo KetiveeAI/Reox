@@ -1,0 +1,13 @@
+# REOX workspace: the compiler (reox-lang, crate `reoxc`) and the language server (reox-lsp).
+# `reox-lang` stays buildable on its own; this file only shares one target directory.
+[workspace]
+resolver = "2"
+members = ["reox-lang", "reox-lsp"]
+
+# Release profile shared by every crate (cargo only honours profiles at the root).
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

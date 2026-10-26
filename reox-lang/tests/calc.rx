@@ -20,16 +20,16 @@ fn main() -> int {
     let x: int = 10;
     let y: int = 20;
     let sum: int = add(x, y);
-    
+
     if sum > 25 {
         println("Sum is greater than 25");
     } else {
         println("Sum is 25 or less");
     }
-    
+
     let p1: Point = Point { x: 0, y: 0 };
     let p2: Point = Point { x: 3, y: 4 };
     let dist: int = distance(p1, p2);
-    
+
     return 0;
 }

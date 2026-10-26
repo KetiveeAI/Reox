@@ -1,3 +1,23 @@
+## [1.3.0] - 2026-10-26
+
+### Added
+- **Language server client**: the extension now starts `reox-lsp` (from `reox.languageServer.path`
+  or `PATH`) for `.rx` / `.reox` files and gets real diagnostics from the compiler front end,
+  hover with signatures, inferred `let` types and `///` docs, go to definition, document
+  outline and completion of symbols in scope plus `stdlib/prelude.rx` externs
+- **Reox: Format Document** command and a document formatting provider backed by
+  `reoxc fmt --stdin` (works with Format On Save); `reox.reoxcPath` selects the compiler
+- **Reox: Restart Language Server** command
+- Settings: `reox.languageServer.enabled`, `reox.languageServer.path`,
+  `reox.languageServer.preludePath`, `reox.reoxcPath`, `reox.trace.server`
+
+### Changed
+- The built-in keyword/stdlib completion and hover tables are now a fallback used only when
+  `reox-lsp` is not available
+- Activation is `onLanguage:reox` instead of eager
+
+---
+
 ## [1.2.3] - 2026-04-25
 
 ### Added

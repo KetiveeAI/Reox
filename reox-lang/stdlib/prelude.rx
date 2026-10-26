@@ -1,7 +1,7 @@
 // ============================================================================
 // REOX Standard Library Prelude
 // Native UI scripting language for NeolyxOS
-// 
+//
 // FEATURES:
 // - Swift-like syntax with C performance
 // - Memory-safe execution
@@ -111,12 +111,12 @@ pub struct Color {
 // Color Constructors
 extern fn color_rgba(r: int, g: int, b: int, a: int) -> Color;
 extern fn color_rgb(r: int, g: int, b: int) -> Color;
-extern fn color_hex(hex: int) -> Color;            // 0xRRGGBB
-extern fn color_hexa(hex: int, alpha: int) -> Color;  // 0xRRGGBB + alpha
+extern fn color_hex(hex: int) -> Color; // 0xRRGGBB
+extern fn color_hexa(hex: int, alpha: int) -> Color; // 0xRRGGBB + alpha
 
 // Color Manipulation
-extern fn color_lighten(c: Color, amount: float) -> Color;  // 0.0-1.0
-extern fn color_darken(c: Color, amount: float) -> Color;   // 0.0-1.0
+extern fn color_lighten(c: Color, amount: float) -> Color; // 0.0-1.0
+extern fn color_darken(c: Color, amount: float) -> Color; // 0.0-1.0
 extern fn color_blend(a: Color, b: Color, t: float) -> Color;
 extern fn color_alpha(c: Color, a: int) -> Color;
 extern fn color_invert(c: Color) -> Color;
@@ -141,25 +141,25 @@ extern fn color_grayscale(c: Color) -> Color;
  * TEXT_SEC   #AEAEB2 (Gray - secondary text)
  */
 
-extern fn color_primary() -> Color;       // #007AFF
-extern fn color_secondary() -> Color;     // #5856D6
-extern fn color_accent() -> Color;        // #FF453A
-extern fn color_success() -> Color;       // #34C759
-extern fn color_warning() -> Color;       // #FF9500
-extern fn color_error() -> Color;         // #FF3B30
-extern fn color_info() -> Color;          // #5AC8FA
-extern fn color_background() -> Color;    // #1C1C1E
-extern fn color_surface() -> Color;       // #2C2C2E
-extern fn color_surface_alt() -> Color;   // #3A3A3C
-extern fn color_text() -> Color;          // #FFFFFF
-extern fn color_text_secondary() -> Color;// #AEAEB2
+extern fn color_primary() -> Color; // #007AFF
+extern fn color_secondary() -> Color; // #5856D6
+extern fn color_accent() -> Color; // #FF453A
+extern fn color_success() -> Color; // #34C759
+extern fn color_warning() -> Color; // #FF9500
+extern fn color_error() -> Color; // #FF3B30
+extern fn color_info() -> Color; // #5AC8FA
+extern fn color_background() -> Color; // #1C1C1E
+extern fn color_surface() -> Color; // #2C2C2E
+extern fn color_surface_alt() -> Color; // #3A3A3C
+extern fn color_text() -> Color; // #FFFFFF
+extern fn color_text_secondary() -> Color; // #AEAEB2
 extern fn color_text_disabled() -> Color; // #636366
-extern fn color_border() -> Color;        // #48484A
-extern fn color_divider() -> Color;       // #38383A
-extern fn color_overlay() -> Color;       // rgba(0,0,0,0.5)
-extern fn color_clear() -> Color;         // rgba(0,0,0,0)
-extern fn color_white() -> Color;         // #FFFFFF
-extern fn color_black() -> Color;         // #000000
+extern fn color_border() -> Color; // #48484A
+extern fn color_divider() -> Color; // #38383A
+extern fn color_overlay() -> Color; // rgba(0,0,0,0.5)
+extern fn color_clear() -> Color; // rgba(0,0,0,0)
+extern fn color_white() -> Color; // #FFFFFF
+extern fn color_black() -> Color; // #000000
 
 // ============================================================================
 // UI: Geometry
@@ -205,10 +205,10 @@ extern fn shadow_spread(x: float, y: float, blur: float, spread: float, c: Color
 extern fn shadow_none() -> Shadow;
 
 // Preset shadows
-extern fn shadow_sm() -> Shadow;   // Small: 0 1 2
-extern fn shadow_md() -> Shadow;   // Medium: 0 4 6
-extern fn shadow_lg() -> Shadow;   // Large: 0 10 15
-extern fn shadow_xl() -> Shadow;   // XLarge: 0 20 25
+extern fn shadow_sm() -> Shadow; // Small: 0 1 2
+extern fn shadow_md() -> Shadow; // Medium: 0 4 6
+extern fn shadow_lg() -> Shadow; // Large: 0 10 15
+extern fn shadow_xl() -> Shadow; // XLarge: 0 20 25
 
 // ============================================================================
 // UI: View Base
@@ -217,16 +217,16 @@ extern fn shadow_xl() -> Shadow;   // XLarge: 0 20 25
 pub struct View { handle: int }
 
 // Layout Containers
-extern fn vstack(gap: float) -> View;         // Vertical stack
-extern fn hstack(gap: float) -> View;         // Horizontal stack
-extern fn zstack() -> View;                    // Overlay stack
-extern fn scroll_view() -> View;              // Scrollable container
-extern fn list_view() -> View;                // List container
-extern fn grid_view(cols: int, gap: float) -> View;  // Grid layout
-extern fn flex_view() -> View;                // Flexbox container
-extern fn center() -> View;                   // Centers child
-extern fn spacer() -> View;                   // Flexible space
-extern fn divider() -> View;                  // Horizontal line
+extern fn vstack(gap: float) -> View; // Vertical stack
+extern fn hstack(gap: float) -> View; // Horizontal stack
+extern fn zstack() -> View; // Overlay stack
+extern fn scroll_view() -> View; // Scrollable container
+extern fn list_view() -> View; // List container
+extern fn grid_view(cols: int, gap: float) -> View; // Grid layout
+extern fn flex_view() -> View; // Flexbox container
+extern fn center() -> View; // Centers child
+extern fn spacer() -> View; // Flexible space
+extern fn divider() -> View; // Horizontal line
 
 // Basic Views
 extern fn text_view(text: string) -> View;
@@ -234,7 +234,7 @@ extern fn image_view(source: string) -> View;
 extern fn icon_view(name: string) -> View;
 extern fn avatar_view(source: string) -> View;
 extern fn badge_view(text: string) -> View;
-extern fn progress_view(value: float) -> View;  // 0.0-1.0
+extern fn progress_view(value: float) -> View; // 0.0-1.0
 extern fn activity_indicator() -> View;
 
 // ============================================================================
@@ -286,7 +286,7 @@ extern fn toggle_view(label: string, on: bool) -> View;
 extern fn switch_view(on: bool) -> View;
 
 // Pickers
-extern fn picker_view(options: string) -> View;    // Options as "a,b,c"
+extern fn picker_view(options: string) -> View; // Options as "a,b,c"
 extern fn date_picker() -> View;
 extern fn time_picker() -> View;
 extern fn date_time_picker() -> View;
@@ -651,4 +651,3 @@ extern fn path_view(svg_path: string) -> View;
 extern fn shape_set_fill(v: View, color: Color) -> void;
 extern fn shape_set_stroke(v: View, color: Color, width: float) -> void;
 extern fn shape_set_stroke_dash(v: View, dash_length: float, gap_length: float) -> void;
-

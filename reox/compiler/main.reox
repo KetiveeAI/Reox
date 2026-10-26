@@ -1,11 +1,8 @@
-struct Token {
-}
+struct Token {}
 
-struct Ast {
-}
+struct Ast {}
 
-struct IrModule {
-}
+struct IrModule {}
 
 extern fn os_args() -> [string];
 extern fn file_read(path: string) -> string;
