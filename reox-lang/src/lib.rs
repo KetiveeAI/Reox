@@ -12,6 +12,7 @@ pub mod stdlib;
 pub mod cli;
 pub mod pkg;
 pub mod templates;
+pub mod modules;
 
 // Re-export main types for convenience
 pub use diagnostic::{Diagnostic, Severity};
@@ -20,5 +21,6 @@ pub use parser::{Ast, parse, ParseError};
 pub use typechecker::{check, TypeError};
 pub use codegen::{generate, CodegenError};
 pub use interpreter::{Interpreter, Value, eval, RuntimeError};
-pub use cli::{CliCommand, Args, parse_cli, parse_args, check_source, compile_source, report_diagnostics};
+pub use cli::{CliCommand, Args, parse_cli, parse_args, check_source, compile_source, check_file, compile_file, report_diagnostics, report_program_diagnostics};
+pub use modules::{SourceMap, ModuleMap, Program, load_program};
 pub use templates::{Template, ProjectConfig, create_project};

@@ -54,7 +54,7 @@ pub const MAX_NESTING_DEPTH: usize = 128;
 /// Token returned when the parser is asked to look past the end of its input.
 static END_OF_INPUT: Token = Token {
     kind: TokenKind::Eof,
-    span: Span { line: 0, column: 0, start: 0, end: 0 },
+    span: Span { line: 0, column: 0, start: 0, end: 0, file: 0 },
 };
 
 /// REOX Parser
@@ -467,10 +467,17 @@ impl<'a> Parser<'a> {
         let span = self.peek().span;
         self.consume(&TokenKind::Import, "expected 'import'")?;
 
+        // `import a.b.c;` resolves a/b/c.rx; `a::b::c` is accepted as well.
         let mut path = vec![self.parse_identifier()?];
-        while self.match_token(&[TokenKind::Colon]) {
-            self.consume(&TokenKind::Colon, "expected '::'")?;
-            path.push(self.parse_identifier()?);
+        loop {
+            if self.match_token(&[TokenKind::Dot]) {
+                path.push(self.parse_identifier()?);
+            } else if self.match_token(&[TokenKind::Colon]) {
+                self.consume(&TokenKind::Colon, "expected '::'")?;
+                path.push(self.parse_identifier()?);
+            } else {
+                break;
+            }
         }
 
         self.consume(&TokenKind::Semicolon, "expected ';' after import")?;

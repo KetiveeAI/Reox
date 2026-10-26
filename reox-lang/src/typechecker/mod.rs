@@ -19,6 +19,7 @@ use crate::parser::{
     VariantDecl, ProtocolDecl, ExtensionDecl, LayerDecl, PanelDecl, ConstDecl, TypeParam, Field,
 };
 use crate::lexer::Span;
+use crate::modules::ModuleMap;
 use lower::{Lowerer, Resolution, Resolutions, SiteKey, SiteKind};
 
 /// Type check error, located by a source span
@@ -162,6 +163,14 @@ pub struct TypeChecker {
     /// Type the enclosing context expects of the expression being inferred,
     /// used to pick the type arguments of `None`, `Ok(x)` and friends.
     expected: Option<ResolvedType>,
+    /// Module layout of a multi-file program; `None` for a single file.
+    modules: Option<ModuleMap>,
+    /// Owning file and visibility of every top-level name.
+    owners: HashMap<String, (u32, bool)>,
+    /// Owning file and visibility of every method, by (type, method).
+    method_owners: HashMap<(String, String), (u32, bool)>,
+    /// File of the declaration whose body is being checked.
+    current_file: u32,
 }
 
 impl TypeChecker {
@@ -195,6 +204,104 @@ impl TypeChecker {
             conformances: HashMap::new(),
             protocols: HashMap::new(),
             expected: None,
+            modules: None,
+            owners: HashMap::new(),
+            method_owners: HashMap::new(),
+            current_file: 0,
+        }
+    }
+
+    /// Check a multi-file program: `pub` controls what other files may use,
+    /// and `module.item` reaches an item of an imported module.
+    pub fn with_modules(modules: ModuleMap) -> Self {
+        let mut checker = Self::new();
+        checker.modules = Some(modules);
+        checker
+    }
+
+    fn own(&mut self, name: &str, file: u32, is_pub: bool) {
+        self.owners.entry(name.to_string()).or_insert((file, is_pub));
+    }
+
+    /// Report a use of top-level `name` from the current file when the
+    /// owning module did not make it available.
+    fn check_visible(&mut self, name: &str, span: &Span) {
+        let modules = match &self.modules {
+            Some(m) => m,
+            None => return,
+        };
+        let (owner, is_pub) = match self.owners.get(name) {
+            Some(o) => *o,
+            None => return,
+        };
+        if owner == self.current_file {
+            return;
+        }
+        let module = modules.name(owner).to_string();
+        if !modules.imports(self.current_file, owner) {
+            self.errors.push(TypeError::new(
+                format!("'{}' is defined in module '{}', which this file does not import", name, module),
+                span,
+            ).with_hint(format!("add 'import {};' at the top of the file", module)));
+        } else if !is_pub {
+            self.errors.push(TypeError::new(
+                format!("'{}' is private to module '{}'", name, module),
+                span,
+            ).with_hint(format!("declare it 'pub' in '{}'", module)));
+        }
+    }
+
+    /// Like `check_visible`, for a method of `type_name`.
+    fn check_method_visible(&mut self, type_name: &str, method: &str, span: &Span) {
+        let modules = match &self.modules {
+            Some(m) => m,
+            None => return,
+        };
+        let (owner, is_pub) = match self.method_owners.get(&(type_name.to_string(), method.to_string())) {
+            Some(o) => *o,
+            None => return,
+        };
+        if owner == self.current_file || is_pub {
+            return;
+        }
+        let module = modules.name(owner).to_string();
+        self.errors.push(TypeError::new(
+            format!("method '{}' of '{}' is private to module '{}'", method, type_name, module),
+            span,
+        ).with_hint(format!("declare it 'pub fn' in '{}'", module)));
+    }
+
+    /// File id of a module name as seen from the current file, when `name`
+    /// is an imported module and nothing else shadows it.
+    fn module_named(&self, name: &str) -> Option<u32> {
+        let modules = self.modules.as_ref()?;
+        if self.symbols.lookup(name).is_some() || self.type_kinds.contains_key(name) {
+            return None;
+        }
+        modules.imported_module(self.current_file, name)
+    }
+
+    /// `module.item`: resolve `item` to the top-level name it denotes in that
+    /// module, reporting when the module has no such public item.
+    fn resolve_module_item(&mut self, module_file: u32, module: &str, item: &str, span: &Span) -> Option<String> {
+        match self.owners.get(item) {
+            Some((owner, is_pub)) if *owner == module_file => {
+                if !*is_pub {
+                    self.errors.push(TypeError::new(
+                        format!("'{}' is private to module '{}'", item, module),
+                        span,
+                    ).with_hint(format!("declare it 'pub' in '{}'", module)));
+                    return None;
+                }
+                Some(item.to_string())
+            }
+            _ => {
+                self.errors.push(TypeError::new(
+                    format!("module '{}' has no public item '{}'", module, item),
+                    span,
+                ));
+                None
+            }
         }
     }
 
@@ -262,11 +369,21 @@ impl TypeChecker {
     fn resolve_parser_type(&mut self, ty: &Type, span: &Span) -> ResolvedType {
         match ty {
             Type::Generic(name, args) => {
+                self.check_visible(name, span);
                 let args: Vec<ResolvedType> = args.iter().map(|a| self.resolve_parser_type(a, span)).collect();
                 match self.instantiate_type(name, args, span) {
                     Some(mangled) => ResolvedType::Struct(mangled),
                     None => ResolvedType::Error,
                 }
+            }
+            Type::Named(name) if self.owners.contains_key(name) && self.modules.is_some() => {
+                self.check_visible(name, span);
+                if self.type_kinds.get(name) == Some(&TypeKind::Protocol) {
+                    self.errors.push(TypeError::new(format!("protocol '{}' cannot be used as a type", name), span)
+                        .with_hint(format!("protocols dispatch statically: take a generic parameter bounded by it, 'fn f<T: {}>(x: T)'", name)));
+                    return ResolvedType::Error;
+                }
+                ResolvedType::from_parser_type(ty)
             }
             Type::Named(name) if self.type_kinds.get(name) == Some(&TypeKind::Protocol) => {
                 self.errors.push(TypeError::new(
@@ -407,6 +524,12 @@ impl TypeChecker {
         let map = self.prepare_instantiation(name, &type_params, &args, span)?;
         self.instances.insert(mangled.clone(), Instance { template: name.to_string(), args });
         self.instance_order.push(mangled.clone());
+        let template_file = match (&struct_template, &variant_template) {
+            (Some(s), _) => s.span.file,
+            (_, Some(v)) => v.span.file,
+            _ => self.current_file,
+        };
+        let saved_file = std::mem::replace(&mut self.current_file, template_file);
         let empty = Resolutions::new();
         let subst = Lowerer::with_subst(&empty, &map);
         let subst_fields = |fields: &[Field]| -> Vec<Field> { subst.fields(fields) };
@@ -463,6 +586,7 @@ impl TypeChecker {
                 self.check_conformance(&mangled, &protocol, span);
             }
         }
+        self.current_file = saved_file;
         Some(mangled)
     }
 
@@ -481,7 +605,9 @@ impl TypeChecker {
                 type_params: Vec::new(),
                 ..Lowerer::with_subst(&empty, &map).fn_decl(&template)
             };
+            let saved_file = std::mem::replace(&mut self.current_file, template.span.file);
             self.register_function(&inst);
+            self.current_file = saved_file;
             self.pending_bodies.push(PendingBody { home: BodyHome::Function, decl: inst });
         }
         match self.symbols.lookup_function(&mangled).cloned() {
@@ -958,13 +1084,32 @@ impl TypeChecker {
     /// record how it dispatches. Returns `None` when `receiver.method` is not
     /// a method, so the caller falls back to treating it as a field access.
     fn check_method_call(&mut self, receiver: &Expr, method: &str, args: &[Expr], call_span: &Span, member_span: &Span) -> Option<ResolvedType> {
+        // Qualified call into an imported module: module.function(args)
+        if let Expr::Identifier(module, _) = receiver {
+            if let Some(module_file) = self.module_named(module) {
+                let module = module.clone();
+                let item = match self.resolve_module_item(module_file, &module, method, member_span) {
+                    Some(item) => item,
+                    None => return Some(ResolvedType::Error),
+                };
+                let callee = Expr::Call(Box::new(Expr::Identifier(item.clone(), *member_span)), args.to_vec(), *call_span);
+                let ty = self.infer_expr_type(&callee);
+                // The inner call may have resolved itself (generic instance, constructor).
+                if !self.resolutions.contains_key(&SiteKey::new(SiteKind::Call, *call_span)) {
+                    self.record(SiteKind::Call, *call_span, Resolution::StaticCall { mangled: item });
+                }
+                return Some(ty);
+            }
+        }
         // Static call on a type name: Type.method(args)
         if let Expr::Identifier(type_name, _) = receiver {
             if self.symbols.lookup(type_name).is_none() && self.templates.variants.contains_key(type_name) {
+                self.check_visible(type_name, member_span);
                 let expected = self.expected.take();
                 return Some(self.check_generic_case(type_name, method, Some(args), expected.as_ref(), SiteKind::Call, call_span));
             }
             if self.is_type_name(type_name) {
+                self.check_visible(type_name, member_span);
                 if let Some(variant) = self.variants.get(type_name).cloned() {
                     if let Some(case) = variant.case(method).cloned() {
                         return Some(self.check_case_construction(&variant, &case, Some(args), SiteKind::Call, call_span));
@@ -973,6 +1118,7 @@ impl TypeChecker {
                 let info = self.lookup_method(type_name, method).cloned();
                 return Some(match info {
                     Some(info) if info.is_static => {
+                        self.check_method_visible(type_name, method, member_span);
                         self.check_args(&info.params, args, call_span);
                         self.record(SiteKind::Call, *call_span, Resolution::StaticCall {
                             mangled: Self::mangle_method(type_name, method),
@@ -1003,6 +1149,7 @@ impl TypeChecker {
             _ => return None,
         };
         let info = self.lookup_method(&type_name, method)?.clone();
+        self.check_method_visible(&type_name, method, member_span);
         if info.is_static {
             self.errors.push(TypeError::new(
                 format!("'{}' is a static method of '{}'; call it as '{}.{}(...)'", method, type_name, type_name, method),
@@ -1134,10 +1281,28 @@ impl TypeChecker {
         // Protocols first: a protocol name is not a type anywhere else.
         for decl in &ast.declarations {
             if let Decl::Protocol(p) = decl {
+                self.current_file = p.span.file;
+                self.own(&p.name, p.span.file, p.is_pub);
                 self.register_protocol(p);
             }
         }
         for decl in &ast.declarations {
+            let (name, file, is_pub) = match decl {
+                Decl::Struct(s) => (&s.name, s.span.file, s.is_pub),
+                Decl::Variant(v) => (&v.name, v.span.file, v.is_pub),
+                Decl::Layer(l) => (&l.name, l.span.file, l.is_pub),
+                Decl::Panel(p) => (&p.name, p.span.file, p.is_pub),
+                Decl::Typealias(t) => (&t.name, t.span.file, t.is_pub),
+                Decl::Function(f) => (&f.name, f.span.file, f.is_pub),
+                Decl::Extern(e) => (&e.name, e.span.file, true),
+                Decl::Const(c) => (&c.name, c.span.file, c.is_pub),
+                Decl::GlobalVar(g) => (&g.name, g.span.file, false),
+                _ => continue,
+            };
+            self.own(name, file, is_pub);
+        }
+        for decl in &ast.declarations {
+            self.current_file = Self::decl_file(decl);
             match decl {
                 Decl::Protocol(_) => {}
                 Decl::Struct(s) if !s.type_params.is_empty() => {}
@@ -1163,6 +1328,7 @@ impl TypeChecker {
         // Pass 1b: functions, methods, constants and globals.
         self.resolutions.clear();
         for decl in &ast.declarations {
+            self.current_file = Self::decl_file(decl);
             match decl {
                 Decl::Function(f) if !f.type_params.is_empty() => {}
                 Decl::Struct(s) if !s.type_params.is_empty() => {}
@@ -1244,10 +1410,12 @@ impl TypeChecker {
             }
         }
         let global_resolutions = std::mem::take(&mut self.resolutions);
+        self.current_file = 0;
 
         // Pass 1c: protocol conformance, once every method of every type is known.
         for decl in &ast.declarations {
             if let Decl::Extension(ext) = decl {
+                self.current_file = ext.span.file;
                 if ext.type_params.is_empty() && self.type_kinds.contains_key(&ext.target) {
                     for protocol in &ext.protocols {
                         self.check_conformance(&ext.target, protocol, &ext.span);
@@ -1342,6 +1510,24 @@ impl TypeChecker {
             Ok(Ast { declarations: lowered })
         } else {
             Err(self.errors.clone())
+        }
+    }
+
+    /// File a declaration was parsed from.
+    fn decl_file(decl: &Decl) -> u32 {
+        match decl {
+            Decl::Function(f) => f.span.file,
+            Decl::Struct(s) => s.span.file,
+            Decl::Import(i) => i.span.file,
+            Decl::Extern(e) => e.span.file,
+            Decl::Variant(v) => v.span.file,
+            Decl::Protocol(p) => p.span.file,
+            Decl::Extension(e) => e.span.file,
+            Decl::Layer(l) => l.span.file,
+            Decl::Panel(p) => p.span.file,
+            Decl::Const(c) => c.span.file,
+            Decl::Typealias(t) => t.span.file,
+            Decl::GlobalVar(g) => g.span.file,
         }
     }
 
@@ -1457,6 +1643,7 @@ impl TypeChecker {
 
     /// Record a method of `type_name`. The C symbol is `TypeName_method`.
     fn register_method(&mut self, type_name: &str, f: &FnDecl) {
+        self.method_owners.entry((type_name.to_string(), f.name.clone())).or_insert((f.span.file, f.is_pub));
         let info = MethodInfo {
             name: f.name.clone(),
             params: f.params.iter().map(|p| self.resolve_parser_type(&p.ty, &p.span)).collect(),
@@ -1595,6 +1782,7 @@ impl TypeChecker {
 
     fn check_body(&mut self, f: &FnDecl, self_ctx: Option<SelfContext>) -> FnDecl {
         self.resolutions.clear();
+        let saved_file = std::mem::replace(&mut self.current_file, f.span.file);
         let saved_self = std::mem::replace(&mut self.current_self, self_ctx);
         self.symbols.push_scope();
 
@@ -1629,6 +1817,7 @@ impl TypeChecker {
         self.current_return_type = None;
         self.symbols.pop_scope();
         self.current_self = saved_self;
+        self.current_file = saved_file;
 
         let table = std::mem::take(&mut self.resolutions);
         Lowerer::new(&table).fn_decl(f)
@@ -1862,12 +2051,16 @@ impl TypeChecker {
             Expr::Literal(lit) => self.infer_literal_type(lit),
             Expr::Identifier(name, span) => {
                 if let Some(sym) = self.symbols.lookup(name) {
-                    sym.ty.clone()
+                    let ty = sym.ty.clone();
+                    self.check_visible(name, span);
+                    ty
                 } else if let Some((variant, case)) = self.resolve_bare_case(name, span) {
+                    self.check_visible(&variant.name, span);
                     self.check_case_construction(&variant, &case, None, SiteKind::Ident, span)
                 } else if self.case_index.contains_key(name) {
                     ResolvedType::Error // ambiguity already reported
                 } else if let Some(template) = self.resolve_template_case(name, span) {
+                    self.check_visible(&template, span);
                     self.check_generic_case(&template, name, None, expected, SiteKind::Ident, span)
                 } else if self.templates.case_index.contains_key(name) {
                     ResolvedType::Error
@@ -1918,15 +2111,18 @@ impl TypeChecker {
                     }
                     if self.symbols.lookup(name).is_none() {
                         if let Some((variant, case)) = self.resolve_bare_case(name, ident_span) {
+                            self.check_visible(&variant.name, ident_span);
                             return self.check_case_construction(&variant, &case, Some(args), SiteKind::Call, span);
                         }
                         if self.case_index.contains_key(name) {
                             return ResolvedType::Error;
                         }
                         if self.templates.fns.contains_key(name) {
+                            self.check_visible(name, ident_span);
                             return self.check_generic_call(name, args, expected, span);
                         }
                         if let Some(template) = self.resolve_template_case(name, ident_span) {
+                            self.check_visible(&template, ident_span);
                             return self.check_generic_case(&template, name, Some(args), expected, SiteKind::Call, span);
                         }
                         if self.templates.case_index.contains_key(name) {
@@ -1971,10 +2167,24 @@ impl TypeChecker {
             },
             Expr::Member(obj, field, span) => {
                 if let Expr::Identifier(type_name, _) = obj.as_ref() {
+                    if let Some(module_file) = self.module_named(type_name) {
+                        let module = type_name.clone();
+                        return match self.resolve_module_item(module_file, &module, field, span) {
+                            Some(item) => {
+                                let item_expr = Expr::Identifier(item.clone(), *span);
+                                let ty = self.infer_expecting(&item_expr, expected);
+                                self.record(SiteKind::Member, *span, Resolution::Rename { mangled: item });
+                                ty
+                            }
+                            None => ResolvedType::Error,
+                        };
+                    }
                     if self.symbols.lookup(type_name).is_none() && self.templates.variants.contains_key(type_name) {
+                        self.check_visible(type_name, span);
                         return self.check_generic_case(type_name, field, None, expected, SiteKind::Member, span);
                     }
                     if self.is_type_name(type_name) {
+                        self.check_visible(type_name, span);
                         if let Some(variant) = self.variants.get(type_name).cloned() {
                             if let Some(case) = variant.case(field).cloned() {
                                 return self.check_case_construction(&variant, &case, None, SiteKind::Member, span);
@@ -2024,6 +2234,7 @@ impl TypeChecker {
                 target_ty
             }
             Expr::StructLit(name, fields, span) => {
+                self.check_visible(name, span);
                 if self.templates.structs.contains_key(name) && self.symbols.lookup_struct(name).is_none() {
                     return self.check_generic_struct_lit(name, fields, expected, span);
                 }
@@ -2634,6 +2845,22 @@ impl Default for TypeChecker {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Type check a multi-file program with the visibility rules of `modules`.
+pub fn check_modules(ast: &Ast, modules: &ModuleMap) -> Result<Ast, Vec<TypeError>> {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("reox-typecheck".to_string())
+            .stack_size(CHECK_STACK_BYTES)
+            .spawn_scoped(scope, || TypeChecker::with_modules(modules.clone()).check_and_lower(ast));
+        match worker {
+            Ok(handle) => handle.join().unwrap_or_else(|_| {
+                Err(vec![TypeError::new("type checker thread terminated unexpectedly", &Span::default())])
+            }),
+            Err(_) => TypeChecker::with_modules(modules.clone()).check_and_lower(ast),
+        }
+    })
 }
 
 /// Type check the AST. On success the lowered AST is returned (method calls
@@ -3343,5 +3570,79 @@ mod tests {
         assert!(errors[0].hint.as_deref().unwrap_or("").contains("fn f<T: Drawable>(x: T)"));
         let errors = with_drawable("fn f() { let d: Drawable = 1; }").unwrap_err();
         assert_eq!(errors[0].message, "protocol 'Drawable' cannot be used as a type");
+    }
+
+    // === Modules ===
+
+    /// Check a program made of several files. `files[0]` is the entry;
+    /// `imports[i]` lists the indices file i imports.
+    fn check_files(files: &[(&str, &str)], imports: &[Vec<u32>]) -> Result<Ast, Vec<TypeError>> {
+        let mut declarations = Vec::new();
+        let mut names = Vec::new();
+        for (id, (name, source)) in files.iter().enumerate() {
+            let mut tokens = tokenize(source).unwrap();
+            for t in tokens.iter_mut() { t.span.file = id as u32; }
+            let ast = parse(&tokens).unwrap();
+            declarations.extend(ast.declarations);
+            names.push(name.to_string());
+        }
+        let modules = ModuleMap { names, imports: imports.to_vec() };
+        check_modules(&Ast { declarations }, &modules)
+    }
+
+    const SHAPES: &str = "pub struct Circle { r: int  pub fn area() -> int { return self.r * self.r * 3; } fn secret() -> int { return 1; } } pub fn make(r: int) -> Circle { return Circle { r: r }; } fn helper() -> int { return 2; } pub variant Shade { Light, Dark }";
+
+    #[test]
+    fn pub_items_of_imported_modules_are_usable_unqualified_and_qualified() {
+        let ok = check_files(
+            &[("main", "fn main() -> int { let c = make(2); let d: Circle = shapes.make(3); let s: Shade = Light; return c.area() + d.area(); }"), ("shapes", SHAPES)],
+            &[vec![1], vec![]],
+        );
+        assert!(ok.is_ok(), "{:?}", ok.err());
+        let ast = ok.unwrap();
+        let main = ast.declarations.iter().find_map(|d| match d { Decl::Function(f) if f.name == "main" => Some(f), _ => None }).unwrap();
+        match &main.body.statements[1] {
+            Stmt::Let(l) => assert!(matches!(&l.init, Some(Expr::Call(c, _, _)) if matches!(c.as_ref(), Expr::Identifier(n, _) if n == "make"))),
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn private_items_and_methods_are_rejected_across_files() {
+        let errors = check_files(
+            &[("main", "fn main() -> int { let c = make(1); return helper() + c.secret() + shapes.helper(); }"), ("shapes", SHAPES)],
+            &[vec![1], vec![]],
+        ).unwrap_err();
+        let msgs: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        assert!(msgs.contains(&"'helper' is private to module 'shapes'"), "{:?}", msgs);
+        assert!(msgs.contains(&"method 'secret' of 'Circle' is private to module 'shapes'"), "{:?}", msgs);
+        assert!(errors.iter().any(|e| e.hint.as_deref() == Some("declare it 'pub' in 'shapes'")), "{:?}", errors);
+        assert_eq!(errors[0].span.file, 0);
+    }
+
+    #[test]
+    fn items_of_modules_not_imported_are_rejected_with_a_hint() {
+        let errors = check_files(
+            &[("main", "fn main() -> int { let c: Circle = make(1); return 0; }"), ("shapes", SHAPES)],
+            &[vec![], vec![]],
+        ).unwrap_err();
+        assert_eq!(errors[0].message, "'Circle' is defined in module 'shapes', which this file does not import");
+        assert_eq!(errors[0].hint.as_deref(), Some("add 'import shapes;' at the top of the file"));
+    }
+
+    #[test]
+    fn qualified_access_to_unknown_items_and_module_own_privates_work() {
+        let errors = check_files(
+            &[("main", "fn main() -> int { return shapes.nothing(); }"), ("shapes", SHAPES)],
+            &[vec![1], vec![]],
+        ).unwrap_err();
+        assert_eq!(errors.len(), 1, "{:?}", errors);
+        assert_eq!(errors[0].message, "module 'shapes' has no public item 'nothing'");
+        // A module may use its own private items freely.
+        let ok = check_files(
+            &[("main", "fn main() { }"), ("shapes", &format!("{} pub fn uses() -> int {{ return helper() + make(1).secret(); }}", SHAPES))],
+            &[vec![1], vec![]],
+        );
+        assert!(ok.is_ok(), "{:?}", ok.err());
     }
 }
