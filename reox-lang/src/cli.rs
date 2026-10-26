@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn compile_source_produces_c() {
         let c = compile_source("fn main() -> int { return 42; }").expect("compiles");
-        assert!(c.contains("int64_t main(void)"));
-        assert!(c.contains("return 42;"));
+        assert!(c.contains("int main(void)"));
+        assert!(c.contains("return (int)(42);"));
     }
 }

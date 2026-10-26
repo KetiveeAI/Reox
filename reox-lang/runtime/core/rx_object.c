@@ -76,6 +76,16 @@ void rx_assign(void** slot, void* value) {
     rx_release(old);
 }
 
+void rx_store(void** slot, void* owned_value) {
+    if (!slot) {
+        rx_release(owned_value);
+        return;
+    }
+    void* old = *slot;
+    *slot = owned_value;
+    rx_release(old);
+}
+
 void rx_clear(void** slot) {
     if (!slot) return;
     void* old = *slot;

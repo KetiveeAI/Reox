@@ -91,6 +91,15 @@ void* map_get(rx_map* m, const rx_str* key) {
     return (char*)m->values + i * m->elem_size;
 }
 
+void* rx_map_at(rx_map* m, const rx_str* key) {
+    void* slot = map_get(m, key);
+    if (RX_UNLIKELY(!slot)) {
+        rx_eprintf("map key '%s' not found\n", str_cstr(key));
+        rx_plat_abort("map key not found");
+    }
+    return slot;
+}
+
 bool map_has(const rx_map* m, const rx_str* key) {
     return map_find(m, key) != SIZE_MAX;
 }

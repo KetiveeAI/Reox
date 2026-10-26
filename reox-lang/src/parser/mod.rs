@@ -206,7 +206,8 @@ impl<'a> Parser<'a> {
                     ))
                 }
             }
-            TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
+            TokenKind::Struct => self.parse_struct_decl(false).map(Decl::Struct),
+            TokenKind::Ident(name) if name == "ref" => self.parse_ref_struct_decl(),
             TokenKind::Import => self.parse_import_decl().map(Decl::Import),
             TokenKind::Extern => self.parse_extern_decl().map(Decl::Extern),
             TokenKind::Variant => self.parse_variant_decl(false).map(Decl::Variant),
@@ -247,6 +248,7 @@ impl<'a> Parser<'a> {
             ty,
             init,
             is_bind: false,
+            is_weak: false,
             span,
         }))
     }
@@ -265,6 +267,8 @@ impl<'a> Parser<'a> {
         let params = self.parse_param_list()?;
         self.consume(&TokenKind::RParen, "expected ')' after parameters")?;
 
+        let throws = self.match_contextual("throws");
+
         let return_type = if self.match_token(&[TokenKind::Arrow]) {
             Some(self.parse_type()?)
         } else {
@@ -279,6 +283,7 @@ impl<'a> Parser<'a> {
             return_type,
             body,
             is_async,
+            throws,
             is_pub,
             is_static,
             span: start_span,
@@ -309,7 +314,29 @@ impl<'a> Parser<'a> {
         Ok(Param { name, ty, span })
     }
 
-    fn parse_struct_decl(&mut self) -> Result<StructDecl, ParseError> {
+    /// Consume the identifier `word` when it is the current token. Used for
+    /// the contextual keywords `ref`, `weak`, `throws` and `as`, which stay
+    /// usable as ordinary identifiers elsewhere.
+    fn match_contextual(&mut self, word: &str) -> bool {
+        match self.peek_kind() {
+            TokenKind::Ident(name) if name == word => {
+                self.advance();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Parse: ref struct Name { ... }
+    fn parse_ref_struct_decl(&mut self) -> Result<Decl, ParseError> {
+        self.advance(); // consume 'ref'
+        if !self.check(&TokenKind::Struct) {
+            return Err(self.error_here("expected 'struct' after 'ref'"));
+        }
+        self.parse_struct_decl(true).map(Decl::Struct)
+    }
+
+    fn parse_struct_decl(&mut self, is_ref: bool) -> Result<StructDecl, ParseError> {
         let start_span = self.peek().span;
         self.consume(&TokenKind::Struct, "expected 'struct'")?;
 
@@ -329,17 +356,24 @@ impl<'a> Parser<'a> {
         Ok(StructDecl {
             name,
             fields,
+            is_ref,
             span: start_span,
         })
     }
 
     fn parse_field(&mut self) -> Result<Field, ParseError> {
         let span = self.peek().span;
+        // `weak name: T`; a field literally named `weak` is `weak: T`.
+        let is_weak = matches!(self.peek_kind(), TokenKind::Ident(w) if w == "weak")
+            && matches!(self.tokens.get(self.current + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)));
+        if is_weak {
+            self.advance();
+        }
         let name = self.parse_identifier()?;
         self.consume(&TokenKind::Colon, "expected ':' after field name")?;
         let ty = self.parse_type()?;
 
-        Ok(Field { name, ty, span })
+        Ok(Field { name, ty, is_weak, span })
     }
 
     fn parse_import_decl(&mut self) -> Result<ImportDecl, ParseError> {
@@ -389,7 +423,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<Type, ParseError> {
-        self.nested("type", |p| p.parse_type_inner())
+        self.nested("type", |p| {
+            let mut ty = p.parse_type_inner()?;
+            // Optional suffix: T?  (T?? is rejected as a nesting of optionals)
+            while p.match_token(&[TokenKind::Question]) {
+                ty = Type::Optional(Box::new(ty));
+            }
+            Ok(ty)
+        })
     }
 
     fn parse_type_inner(&mut self) -> Result<Type, ParseError> {
@@ -430,6 +471,12 @@ impl<'a> Parser<'a> {
             TokenKind::LBracket => {
                 self.advance();
                 let inner = self.parse_type()?;
+                if self.match_token(&[TokenKind::Colon]) {
+                    // [K: V] map type
+                    let value = self.parse_type()?;
+                    self.consume(&TokenKind::RBracket, "expected ']' after map value type")?;
+                    return Ok(Type::Map(Box::new(inner), Box::new(value)));
+                }
                 self.consume(&TokenKind::RBracket, "expected ']'")?;
                 Ok(Type::Array(Box::new(inner)))
             }
@@ -461,7 +508,11 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&mut self) -> Result<Stmt, ParseError> {
         match self.peek_kind() {
-            TokenKind::Let => self.parse_let_stmt(),
+            TokenKind::Let => self.parse_let_stmt(false),
+            TokenKind::Ident(name) if name == "weak" && matches!(self.tokens.get(self.current + 1).map(|t| &t.kind), Some(TokenKind::Let)) => {
+                self.advance(); // consume 'weak'
+                self.parse_let_stmt(true)
+            }
             TokenKind::Return => self.parse_return_stmt(),
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),
@@ -490,7 +541,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_let_stmt(&mut self) -> Result<Stmt, ParseError> {
+    fn parse_let_stmt(&mut self, is_weak: bool) -> Result<Stmt, ParseError> {
         let span = self.peek().span;
         self.consume(&TokenKind::Let, "expected 'let'")?;
 
@@ -517,6 +568,7 @@ impl<'a> Parser<'a> {
             ty,
             init,
             is_bind: false,
+            is_weak,
             span,
         }))
     }
@@ -544,6 +596,15 @@ impl<'a> Parser<'a> {
         let span = self.peek().span;
         self.consume(&TokenKind::If, "expected 'if'")?;
 
+        // Optional binding: if let name = expr { ... }
+        let binding = if self.match_token(&[TokenKind::Let]) {
+            let name = self.parse_identifier()?;
+            self.consume(&TokenKind::Eq, "expected '=' after 'if let' binding")?;
+            Some(name)
+        } else {
+            None
+        };
+
         let condition = self.parse_expression()?;
         let then_block = self.parse_block()?;
 
@@ -565,6 +626,7 @@ impl<'a> Parser<'a> {
 
         Ok(Stmt::If(IfStmt {
             condition,
+            binding,
             then_block,
             else_block,
             span,
@@ -629,8 +691,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_try_catch_stmt(&mut self) -> Result<Stmt, ParseError> {
-        // try { ... } catch e { ... }  (single catch only for v1)
+        // try { ... } catch e [as Type] { ... }  (single catch only for v1)
+        // `try expr;` (no block) is a plain expression statement.
         let span = self.peek().span;
+        if !matches!(self.tokens.get(self.current + 1).map(|t| &t.kind), Some(TokenKind::LBrace)) {
+            return self.parse_expr_stmt();
+        }
         self.consume(&TokenKind::Try, "expected 'try'")?;
         let try_block = self.parse_block()?;
         self.consume(&TokenKind::Catch, "expected 'catch'")?;
@@ -638,8 +704,13 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(_) => Some(self.parse_identifier()?),
             _ => None,
         };
+        let catch_type = if catch_var.is_some() && self.match_contextual("as") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
         let catch_block = self.parse_block()?;
-        Ok(Stmt::TryCatch(TryCatchStmt { try_block, catch_var, catch_block, span }))
+        Ok(Stmt::TryCatch(TryCatchStmt { try_block, catch_var, catch_type, catch_block, span }))
     }
 
     fn parse_throw_stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -866,6 +937,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        // Try expression: try call(...)
+        if self.check(&TokenKind::Try) {
+            let span = self.peek().span;
+            self.advance();
+            let operand = self.parse_unary_operand()?;
+            return Ok(Expr::Try(Box::new(operand), span));
+        }
+
         // Await expression: await expr
         if self.match_token(&[TokenKind::Await]) {
             let span = self.peek().span;
@@ -1395,7 +1474,7 @@ impl<'a> Parser<'a> {
                         self.parse_expression()?;
                     }
                     self.consume(&TokenKind::Semicolon, "expected ';'")?;
-                    fields.push(Field { name: field_name, ty: field_ty, span: field_span });
+                    fields.push(Field { name: field_name, ty: field_ty, is_weak: false, span: field_span });
                 }
                 _ => {
                     // Try as a regular field: name: type
@@ -1484,7 +1563,8 @@ impl<'a> Parser<'a> {
         self.advance(); // consume 'pub'
         match self.peek_kind() {
             TokenKind::Fn => self.parse_fn_decl_with_modifiers(false, true, false).map(Decl::Function),
-            TokenKind::Struct => self.parse_struct_decl().map(Decl::Struct),
+            TokenKind::Struct => self.parse_struct_decl(false).map(Decl::Struct),
+            TokenKind::Ident(name) if name == "ref" => self.parse_ref_struct_decl(),
             TokenKind::Variant => self.parse_variant_decl(true).map(Decl::Variant),
             TokenKind::Protocol => self.parse_protocol_decl(true).map(Decl::Protocol),
             TokenKind::Layer => self.parse_layer_decl(true).map(Decl::Layer),
@@ -1587,6 +1667,7 @@ impl<'a> Parser<'a> {
             ty,
             init,
             is_bind: true,
+            is_weak: false,
             span,
         }))
     }

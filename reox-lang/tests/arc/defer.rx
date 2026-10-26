@@ -1,0 +1,28 @@
+// defer runs before the locals of the function are released, in reverse order,
+// on both the early and the normal return path.
+// expect: body
+// expect: second
+// expect: first
+// expect: early
+// expect: cleanup
+// expect: 7
+fn normal() {
+    let s: string = "body";
+    defer { println("first"); }
+    defer { println("second"); }
+    println(s);
+}
+fn early(n: int) -> int {
+    let tag: string = "early";
+    defer { println("cleanup"); }
+    if n > 5 {
+        println(tag);
+        return n;
+    }
+    return 0;
+}
+fn main() -> int {
+    normal();
+    println(early(7));
+    return 0;
+}

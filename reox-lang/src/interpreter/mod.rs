@@ -845,7 +845,19 @@ impl Interpreter {
                 Ok(v)
             },
             Stmt::If(i) => {
-                if self.expr(&i.condition)?.is_truthy() {
+                let cond = self.expr(&i.condition)?;
+                if let Some(name) = &i.binding {
+                    // if let: bind the non-nil value for the then block
+                    if cond != Value::Nil {
+                        self.env.push();
+                        self.env.define(name, cond);
+                        let result = self.block(&i.then_block);
+                        self.env.pop();
+                        return result;
+                    }
+                    return i.else_block.as_ref().map(|b| self.block(b)).transpose().map(|v| v.unwrap_or(Value::Nil));
+                }
+                if cond.is_truthy() {
                     self.block(&i.then_block)
                 } else {
                     i.else_block.as_ref().map(|b| self.block(b)).transpose().map(|v| v.unwrap_or(Value::Nil))
@@ -1103,6 +1115,9 @@ impl Interpreter {
             },
             // Await: await expr (simplified, just evaluates the expr)
             Expr::Await(inner, _) => self.expr(inner),
+            // The interpreter has no Result plumbing: a throwing call either
+            // returns its value or raises the thrown error directly.
+            Expr::Try(inner, _) => self.expr(inner),
             // Range expression: start..end generates array [start, start+1, ..., end]
             Expr::Range(start, end, _) => {
                 let s = self.expr(start)?;
@@ -1480,6 +1495,7 @@ mod tests {
                 return_type: None,
                 body: Block { statements: vec![Stmt::Return(ReturnStmt { value: Some(expr), span })], span },
                 is_async: false,
+                throws: false,
                 is_pub: false,
                 is_static: false,
                 span,

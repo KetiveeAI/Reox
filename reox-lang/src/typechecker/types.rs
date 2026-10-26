@@ -59,6 +59,9 @@ impl ResolvedType {
             crate::parser::Type::Array(inner) => {
                 ResolvedType::Array(Box::new(Self::from_parser_type(inner)))
             }
+            crate::parser::Type::Map(key, value) => {
+                ResolvedType::Map(Box::new(Self::from_parser_type(key)), Box::new(Self::from_parser_type(value)))
+            }
             crate::parser::Type::Optional(inner) => {
                 ResolvedType::Optional(Box::new(Self::from_parser_type(inner)))
             }
@@ -103,6 +106,9 @@ impl ResolvedType {
             (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
             // Float can be assigned from Int (widening)
             (ResolvedType::Float, ResolvedType::Int) => true,
+            // The `Error` existential accepts any named type; conformance is
+            // checked where the value is thrown.
+            (ResolvedType::Struct(name), ResolvedType::Struct(_)) if name == "Error" => true,
             // Integer width coercion (all integer types are mutually assignable)
             (a, b) if a.is_integer() && b.is_integer() => true,
             // Optional<T> can be assigned from T
@@ -180,6 +186,8 @@ pub enum SymbolKind {
 pub struct StructInfo {
     pub name: String,
     pub fields: HashMap<String, ResolvedType>,
+    /// `ref struct`: a reference type whose instances are reference counted
+    pub is_ref: bool,
 }
 
 /// Scope in the symbol table

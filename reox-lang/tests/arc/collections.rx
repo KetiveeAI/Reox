@@ -1,0 +1,33 @@
+// Arrays and maps retain their elements; value structs with reference
+// fields are copied and released field by field.
+// expect: 2
+// expect: ada
+// expect: 3
+// expect: bob
+struct Person { name: string, age: int }
+fn oldest(people: [Person]) -> Person {
+    let mut best: Person = people[0];
+    for p in people {
+        if p.age > best.age {
+            best = p;
+        }
+    }
+    return best;
+}
+fn main() -> int {
+    let ada: Person = Person { name: "ada", age: 36 };
+    let bob: Person = Person { name: "bob", age: 41 };
+    let people: [Person] = [ada, bob];
+    let ages: [string: int] = map_new();
+    map_set(ages, "ada", ada.age);
+    map_set(ages, "bob", bob.age);
+    map_set(ages, "bob", 42);
+    println(len(ages));
+    println(people[0].name);
+    let names: [string] = ["x", "y"];
+    push(names, ada.name);
+    println(len(names));
+    let keys = map_keys(ages);
+    println(oldest(people).name);
+    return 0;
+}

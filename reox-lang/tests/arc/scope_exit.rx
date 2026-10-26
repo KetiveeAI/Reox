@@ -1,0 +1,13 @@
+// Locals are released when their scope ends; nested blocks release in reverse order.
+// expect: hello world
+// expect: 3
+fn main() -> int {
+    let greeting: string = "hello";
+    {
+        let full: string = greeting + " world";
+        println(full);
+    }
+    let parts: [string] = ["a", "b", "c"];
+    println(len(parts));
+    return 0;
+}

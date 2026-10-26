@@ -1,0 +1,52 @@
+// A throw in the middle of a function releases its locals and hands the
+// error object (owned) to the catch; typed catches rethrow other errors.
+// expect: caught parse code 42
+// expect: caught other
+// expect: value 5
+// expect: unwound
+ref struct ParseError { code: int, text: string }
+extension ParseError: Error { }
+ref struct IoError { path: string }
+extension IoError: Error { }
+fn parse(n: int) throws -> int {
+    let scratch: string = "scratch";
+    let buffer: [string] = [scratch, scratch];
+    if n < 0 {
+        throw ParseError { code: 42, text: scratch + "!" };
+    }
+    if n == 0 {
+        throw IoError { path: "/dev/null" };
+    }
+    return n;
+}
+fn forward(n: int) throws -> int {
+    let held: string = "held";
+    let v = try parse(n);
+    return v + len(held);
+}
+fn main() -> int {
+    try {
+        let v = try parse(-1);
+        println(v);
+    } catch e as ParseError {
+        println("caught parse code " + str(e.code));
+    }
+    try {
+        try {
+            let v = try forward(0);
+            println(v);
+        } catch e as ParseError {
+            println("wrong handler");
+        }
+    } catch e {
+        println("caught other");
+    }
+    try {
+        let v = try forward(1);
+        println("value " + str(v));
+    } catch e {
+        println("unexpected");
+    }
+    println("unwound");
+    return 0;
+}

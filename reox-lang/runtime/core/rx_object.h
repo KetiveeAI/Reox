@@ -82,6 +82,10 @@ void rx_assign(void** slot, void* value);
 /* Release *slot and set it to NULL. */
 void rx_clear(void** slot);
 
+/* Store an already owned (+1) value into *slot, releasing the old value.
+ * Unlike rx_assign the new value is not retained. */
+void rx_store(void** slot, void* owned_value);
+
 /* ============================================================================
  * Weak references
  *

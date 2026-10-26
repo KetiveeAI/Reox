@@ -1,0 +1,29 @@
+// Early returns from nested blocks and loops release every live local.
+// expect: 3
+// expect: done
+ref struct Item { name: string }
+fn find(limit: int) -> int {
+    let label: string = "search";
+    let mut i: int = 0;
+    while true {
+        let item = Item { name: label + "!" };
+        if i == 3 {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+fn main() -> int {
+    println(find(10));
+    let names: [string] = ["p", "q"];
+    for n in names {
+        let copy: string = n + n;
+        if copy == "qq" {
+            break;
+        }
+        continue;
+    }
+    println("done");
+    return 0;
+}

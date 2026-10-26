@@ -1,0 +1,24 @@
+// A parent/child cycle broken with a weak back reference is freed;
+// the weak reference reads nil once the parent is gone.
+// expect: child sees parent
+// expect: parent gone
+ref struct Parent { name: string, child: Child? }
+ref struct Child { weak parent: Parent }
+fn make_child() -> Child {
+    let mut p = Parent { name: "root", child: nil };
+    let c = Child { parent: p };
+    p.child = c;
+    if let seen = c.parent {
+        println("child sees parent");
+    }
+    return c;
+}
+fn main() -> int {
+    let c = make_child();
+    if let p = c.parent {
+        println(p.name);
+    } else {
+        println("parent gone");
+    }
+    return 0;
+}

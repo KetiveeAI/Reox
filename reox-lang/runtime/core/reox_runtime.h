@@ -357,6 +357,8 @@ extern RX_PURE size_t map_len(const rx_map* m);
 extern bool map_set(rx_map* m, rx_str* key, const void* value);
 /* Borrowed pointer to the value, NULL when absent. */
 extern void* map_get(rx_map* m, const rx_str* key);
+/* Borrowed pointer to the value; aborts the program when the key is absent. */
+extern void* rx_map_at(rx_map* m, const rx_str* key);
 extern RX_PURE bool map_has(const rx_map* m, const rx_str* key);
 /* Remove the entry, releasing key and value. Returns false when absent. */
 extern bool map_remove(rx_map* m, const rx_str* key);

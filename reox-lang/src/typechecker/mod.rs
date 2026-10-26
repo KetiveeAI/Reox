@@ -74,6 +74,22 @@ pub struct TypeChecker {
     /// Runtime natives (print, len, push, ...). They accept any arguments and
     /// return an unknown type; a user declaration of the same name shadows them.
     builtins: HashSet<String>,
+    /// Names of reference types: `ref struct`s and layers. Strings, arrays
+    /// and maps are reference types as well (see `is_reference_type`).
+    ref_types: HashSet<String>,
+    /// Protocols each named type conforms to (`extension T: P`).
+    conformances: HashMap<String, HashSet<String>>,
+    /// Functions declared `throws`.
+    throwing_fns: HashSet<String>,
+    /// Whether the function being checked is declared `throws`.
+    current_fn_throws: bool,
+    /// Name of the function being checked.
+    current_fn_name: String,
+    /// Nesting depth of `try { }` blocks around the current statement.
+    try_depth: usize,
+    /// Set while checking the operand of a `try` expression so the call
+    /// inside it is allowed to throw.
+    in_try_expr: bool,
 }
 
 impl TypeChecker {
@@ -89,6 +105,48 @@ impl TypeChecker {
             type_aliases: HashMap::new(),
             expr_depth: 0,
             builtins,
+            ref_types: HashSet::new(),
+            conformances: HashMap::new(),
+            throwing_fns: HashSet::new(),
+            current_fn_throws: false,
+            current_fn_name: String::new(),
+            try_depth: 0,
+            in_try_expr: false,
+        }
+    }
+
+    /// Whether values of `ty` are reference counted heap objects.
+    fn is_reference_type(&self, ty: &ResolvedType) -> bool {
+        match self.resolve_type(ty) {
+            ResolvedType::String | ResolvedType::Array(_) | ResolvedType::Map(_, _) => true,
+            ResolvedType::Struct(name) => name == "Error" || self.ref_types.contains(&name),
+            ResolvedType::Optional(inner) => self.is_reference_type(&inner),
+            _ => false,
+        }
+    }
+
+    /// Whether `ty` may be thrown: a `ref struct` that conforms to `Error`,
+    /// or the `Error` existential itself (rethrow).
+    fn conforms_to_error(&self, ty: &ResolvedType) -> bool {
+        match self.resolve_type(ty) {
+            ResolvedType::Struct(name) => {
+                name == "Error"
+                    || (self.ref_types.contains(&name)
+                        && self.conformances.get(&name).is_some_and(|p| p.contains("Error")))
+            }
+            ResolvedType::Error | ResolvedType::Unknown => true,
+            _ => false,
+        }
+    }
+
+    /// Root identifier of an assignment target such as `a.b[0].c`.
+    fn assignment_root(expr: &Expr) -> Option<(&str, &Span)> {
+        match expr {
+            Expr::Identifier(name, span) => Some((name.as_str(), span)),
+            Expr::Member(obj, _, _) | Expr::Index(obj, _, _) | Expr::OptionalChain(obj, _, _) => {
+                Self::assignment_root(obj)
+            }
+            _ => None,
         }
     }
 
@@ -99,6 +157,30 @@ impl TypeChecker {
 
     /// Type check the entire AST
     pub fn check_program(&mut self, ast: &Ast) -> Result<(), Vec<TypeError>> {
+        // Pass zero: which names are reference types and which protocols
+        // they conform to, so that field and `weak` checks in the first pass
+        // can refer to types declared later in the file.
+        for decl in &ast.declarations {
+            match decl {
+                Decl::Struct(s) if s.is_ref => { self.ref_types.insert(s.name.clone()); }
+                Decl::Layer(l) => { self.ref_types.insert(l.name.clone()); }
+                Decl::Extension(ext) => {
+                    self.conformances.entry(ext.target.clone()).or_default()
+                        .extend(ext.protocols.iter().cloned());
+                }
+                Decl::Function(f) if f.throws => { self.throwing_fns.insert(f.name.clone()); }
+                _ => {}
+            }
+        }
+        // The `Error` protocol is intrinsic: every program can throw and
+        // catch it without importing the prelude.
+        let _ = self.symbols.define(Symbol {
+            name: "Error".to_string(),
+            ty: ResolvedType::Struct("Error".to_string()),
+            mutable: false,
+            kind: SymbolKind::Struct,
+        });
+
         // First pass: collect all struct and function declarations
         for decl in &ast.declarations {
             match decl {
@@ -258,13 +340,36 @@ impl TypeChecker {
     fn register_struct(&mut self, s: &StructDecl) {
         let mut fields = std::collections::HashMap::new();
         for field in &s.fields {
-            let ty = ResolvedType::from_parser_type(&field.ty);
+            let mut ty = ResolvedType::from_parser_type(&field.ty);
+            if field.is_weak {
+                if !self.is_reference_type(&ty) {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "weak field '{}' requires a reference type; '{}' is a value type",
+                            field.name,
+                            ty.display_name()
+                        ),
+                        &field.span,
+                    ));
+                }
+                if !s.is_ref {
+                    self.errors.push(TypeError::new(
+                        format!("weak field '{}' is only allowed in a 'ref struct'", field.name),
+                        &field.span,
+                    ));
+                }
+                // A weak slot reads as an optional: the target may be gone.
+                if !matches!(ty, ResolvedType::Optional(_)) {
+                    ty = ResolvedType::Optional(Box::new(ty));
+                }
+            }
             fields.insert(field.name.clone(), ty);
         }
 
         if let Err(e) = self.symbols.define_struct(StructInfo {
             name: s.name.clone(),
             fields,
+            is_ref: s.is_ref,
         }) {
             self.errors.push(TypeError {
                 message: e,
@@ -379,11 +484,21 @@ impl TypeChecker {
         self.current_return_type = f.return_type
             .as_ref()
             .map(ResolvedType::from_parser_type);
+        self.current_fn_throws = f.throws;
+        self.current_fn_name = f.name.clone();
+        if f.throws && f.name == "main" {
+            self.errors.push(TypeError::new(
+                "'main' cannot be declared 'throws'; catch errors with try/catch inside it",
+                &f.span,
+            ));
+        }
 
         // Check function body
         self.check_block(&f.body);
 
         self.current_return_type = None;
+        self.current_fn_throws = false;
+        self.current_fn_name.clear();
         self.symbols.pop_scope();
     }
 
@@ -427,14 +542,34 @@ impl TypeChecker {
             }
             Stmt::TryCatch(t) => {
                 self.symbols.push_scope();
+                self.try_depth += 1;
                 self.check_block(&t.try_block);
+                self.try_depth -= 1;
                 self.symbols.pop_scope();
-                
+
+                // The caught value is the `Error` existential unless the
+                // catch names a concrete error type.
+                let caught_ty = match &t.catch_type {
+                    Some(ty) => {
+                        let resolved = self.resolve_type(&ResolvedType::from_parser_type(ty));
+                        if !self.conforms_to_error(&resolved) {
+                            self.errors.push(TypeError::new(
+                                format!(
+                                    "catch pattern type '{}' is not a 'ref struct' conforming to protocol Error",
+                                    resolved.display_name()
+                                ),
+                                &t.span,
+                            ));
+                        }
+                        resolved
+                    }
+                    None => ResolvedType::Struct("Error".to_string()),
+                };
                 self.symbols.push_scope();
                 if let Some(var) = &t.catch_var {
                     let _ = self.symbols.define(Symbol {
                         name: var.clone(),
-                        ty: ResolvedType::String, // Error type
+                        ty: caught_ty,
                         mutable: false,
                         kind: SymbolKind::Variable,
                     });
@@ -443,7 +578,26 @@ impl TypeChecker {
                 self.symbols.pop_scope();
             }
             Stmt::Throw(t) => {
-                self.infer_expr_type(&t.value);
+                let value_ty = self.infer_expr_type(&t.value);
+                if !self.conforms_to_error(&value_ty) {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "thrown value of type '{}' does not conform to protocol Error; throw a 'ref struct' declared with 'extension {}: Error {{ }}'",
+                            value_ty.display_name(),
+                            value_ty.display_name()
+                        ),
+                        &t.span,
+                    ));
+                }
+                if !self.current_fn_throws && self.try_depth == 0 {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "'throw' in function '{}' which is not declared 'throws' and is outside any try block",
+                            self.current_fn_name
+                        ),
+                        &t.span,
+                    ));
+                }
             }
         }
     }
@@ -482,7 +636,7 @@ impl TypeChecker {
         
         let inferred_type = l.init.as_ref().map(|e| self.infer_expr_type(e));
 
-        let final_type = match (&declared_type, &inferred_type) {
+        let mut final_type = match (&declared_type, &inferred_type) {
             (Some(decl), Some(infer)) => {
                 if !decl.is_assignable_from(infer) {
                     self.errors.push(TypeError {
@@ -506,6 +660,23 @@ impl TypeChecker {
                 ResolvedType::Error
             }
         };
+
+        if l.is_weak {
+            if !self.is_reference_type(&final_type) {
+                self.errors.push(TypeError::new(
+                    format!(
+                        "weak binding '{}' requires a reference type; '{}' is a value type",
+                        l.name,
+                        final_type.display_name()
+                    ),
+                    &l.span,
+                ));
+            }
+            // A weak slot reads as an optional: the target may be gone.
+            if !matches!(final_type, ResolvedType::Optional(_) | ResolvedType::Error) {
+                final_type = ResolvedType::Optional(Box::new(final_type));
+            }
+        }
 
         if let Err(e) = self.symbols.define(Symbol {
             name: l.name.clone(),
@@ -541,7 +712,27 @@ impl TypeChecker {
 
     fn check_if(&mut self, i: &IfStmt) {
         let cond_type = self.infer_expr_type(&i.condition);
-        if cond_type != ResolvedType::Bool {
+        let mut bound: Option<(String, ResolvedType)> = None;
+        if let Some(name) = &i.binding {
+            // `if let x = expr`: expr must be an optional (or a nullable
+            // reference); x gets the unwrapped type inside the then block.
+            let unwrapped = match self.resolve_type(&cond_type) {
+                ResolvedType::Optional(inner) => *inner,
+                other if self.is_reference_type(&other) => other,
+                ResolvedType::Error | ResolvedType::Unknown => ResolvedType::Unknown,
+                other => {
+                    self.errors.push(TypeError {
+                        message: format!(
+                            "'if let' requires an optional or reference value, found '{}'",
+                            other.display_name()
+                        ),
+                        span: i.span,
+                    });
+                    ResolvedType::Error
+                }
+            };
+            bound = Some((name.clone(), unwrapped));
+        } else if cond_type != ResolvedType::Bool {
             self.errors.push(TypeError {
                 message: format!(
                     "if condition must be bool, found '{}'",
@@ -552,6 +743,9 @@ impl TypeChecker {
         }
 
         self.symbols.push_scope();
+        if let Some((name, ty)) = bound {
+            let _ = self.symbols.define(Symbol { name, ty, mutable: false, kind: SymbolKind::Variable });
+        }
         self.check_block(&i.then_block);
         self.symbols.pop_scope();
 
@@ -647,6 +841,7 @@ impl TypeChecker {
                 self.check_unary_op(op, &operand_ty, span)
             }
             Expr::Call(callee, args, span) => {
+                let under_try = std::mem::replace(&mut self.in_try_expr, false);
                 if let Expr::Identifier(name, _) = callee.as_ref() {
                     if self.is_builtin(name) {
                         // Natives are variadic and dynamically typed; still check the arguments.
@@ -655,9 +850,43 @@ impl TypeChecker {
                         }
                         return ResolvedType::Unknown;
                     }
+                    let throws = self.throwing_fns.contains(name) && self.symbols.lookup(name).is_some_and(|s| s.kind == SymbolKind::Function);
+                    if throws && !under_try {
+                        self.errors.push(TypeError::new(
+                            format!("call to throwing function '{}' must be marked with 'try'", name),
+                            span,
+                        ));
+                    }
+                    if !throws && under_try {
+                        self.errors.push(TypeError::new(
+                            format!("'try' applied to a call of '{}', which does not throw", name),
+                            span,
+                        ));
+                    }
+                } else if under_try {
+                    self.errors.push(TypeError::new("'try' must be applied directly to a call of a throwing function", span));
                 }
                 let callee_ty = self.infer_expr_type(callee);
                 self.check_call(&callee_ty, args, span)
+            }
+            Expr::Try(inner, span) => {
+                if !self.current_fn_throws && self.try_depth == 0 {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "'try' in function '{}' which is not declared 'throws' and is outside any try block",
+                            self.current_fn_name
+                        ),
+                        span,
+                    ));
+                }
+                if !matches!(inner.as_ref(), Expr::Call(_, _, _)) {
+                    self.errors.push(TypeError::new("'try' must be applied directly to a call of a throwing function", span));
+                    return self.infer_expr_type(inner);
+                }
+                self.in_try_expr = true;
+                let ty = self.infer_expr_type(inner);
+                self.in_try_expr = false;
+                ty
             }
             Expr::Member(obj, field, span) => {
                 let obj_ty = self.infer_expr_type(obj);
@@ -678,6 +907,17 @@ impl TypeChecker {
                             self.errors.push(TypeError::new(
                                 format!("cannot assign to immutable variable '{}'; declare it with 'let mut'", name),
                                 ident_span,
+                            ));
+                        }
+                    }
+                } else if let Some((root, root_span)) = Self::assignment_root(target) {
+                    // Mutation through a field or element of an immutable
+                    // binding is an error as well, reference types included.
+                    if let Some(sym) = self.symbols.lookup(root) {
+                        if !sym.mutable && matches!(sym.kind, SymbolKind::Variable | SymbolKind::Parameter) {
+                            self.errors.push(TypeError::new(
+                                format!("cannot mutate through immutable binding '{}'; declare it with 'let mut'", root),
+                                root_span,
                             ));
                         }
                     }
@@ -801,15 +1041,37 @@ impl TypeChecker {
                 }
                 ty
             }
-            Expr::NullCoalesce(left, right, _span) => {
-                let _left_ty = self.infer_expr_type(left);
+            Expr::NullCoalesce(left, right, span) => {
+                let left_ty = self.infer_expr_type(left);
                 let right_ty = self.infer_expr_type(right);
-                // Return the right type as fallback, ideally unwrapped optional
-                right_ty
+                // `a ?? b` has the unwrapped type of a; b must fit it.
+                let unwrapped = match self.resolve_type(&left_ty) {
+                    ResolvedType::Optional(inner) => *inner,
+                    other => other,
+                };
+                if !unwrapped.is_assignable_from(&right_ty) {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "'??' fallback has type '{}', expected '{}'",
+                            right_ty.display_name(),
+                            unwrapped.display_name()
+                        ),
+                        span,
+                    ));
+                }
+                unwrapped
             }
             Expr::OptionalChain(obj, field, span) => {
                 let obj_ty = self.infer_expr_type(obj);
-                self.check_member_access(&obj_ty, field, span)
+                let inner = match self.resolve_type(&obj_ty) {
+                    ResolvedType::Optional(inner) => *inner,
+                    other => other,
+                };
+                let field_ty = self.check_member_access(&inner, field, span);
+                match field_ty {
+                    ResolvedType::Optional(_) | ResolvedType::Error | ResolvedType::Unknown => field_ty,
+                    other => ResolvedType::Optional(Box::new(other)),
+                }
             }
             Expr::TrailingClosure(callee, body, span) => {
                 let callee_ty = self.infer_expr_type(callee);
@@ -873,6 +1135,15 @@ impl TypeChecker {
     }
 
     fn check_binary_op(&mut self, left: &ResolvedType, op: &BinOp, right: &ResolvedType, span: &Span) -> ResolvedType {
+        // A runtime native's result is dynamically typed: let it combine with
+        // anything and take the other operand's type.
+        if matches!(left, ResolvedType::Unknown) || matches!(right, ResolvedType::Unknown) {
+            return match op {
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::And | BinOp::Or => ResolvedType::Bool,
+                _ if matches!(left, ResolvedType::Unknown) => right.clone(),
+                _ => left.clone(),
+            };
+        }
         match op {
             // Arithmetic operators
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
@@ -899,7 +1170,9 @@ impl TypeChecker {
             }
             // Comparison operators
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                if left == right || 
+                let nil_check = matches!(op, BinOp::Eq | BinOp::Ne)
+                    && (matches!(left, ResolvedType::Unknown) || matches!(right, ResolvedType::Unknown));
+                if nil_check || left == right || 
                    (matches!(left, ResolvedType::Int | ResolvedType::Float) && 
                     matches!(right, ResolvedType::Int | ResolvedType::Float)) {
                     ResolvedType::Bool
@@ -1052,6 +1325,18 @@ impl TypeChecker {
                     ));
                     ResolvedType::Error
                 }
+            }
+            ResolvedType::Optional(inner) => {
+                self.errors.push(TypeError::new(
+                    format!(
+                        "cannot access field '{}' on optional '{}'; unwrap it with 'if let', '?.' or '??'",
+                        field,
+                        obj.display_name()
+                    ),
+                    span,
+                ));
+                let _ = inner;
+                ResolvedType::Error
             }
             ResolvedType::Error => ResolvedType::Error,
             _ => {
@@ -1270,6 +1555,7 @@ mod tests {
                 return_type: None,
                 body: Block { statements: vec![Stmt::Expr(expr)], span },
                 is_async: false,
+                throws: false,
                 is_pub: false,
                 is_static: false,
                 span,
@@ -1307,5 +1593,97 @@ mod tests {
         let errors = check_source("fn main() { println(undefined_thing); }").unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("undefined variable 'undefined_thing'"));
+    }
+    // === ARC and typed errors ===
+
+    fn first_error(source: &str) -> String {
+        check_source(source).unwrap_err()[0].message.clone()
+    }
+
+    #[test]
+    fn weak_requires_a_reference_type() {
+        let msg = first_error("fn main() { weak let n = 1; }");
+        assert!(msg.contains("weak binding 'n' requires a reference type"), "{}", msg);
+        let msg = first_error("ref struct N { weak count: int }");
+        assert!(msg.contains("weak field 'count' requires a reference type"), "{}", msg);
+        let msg = first_error("struct V { weak s: string }");
+        assert!(msg.contains("only allowed in a 'ref struct'"), "{}", msg);
+        assert!(check_source("ref struct N { weak next: N } fn main() { let n = N { }; weak let w = n; }").is_ok());
+    }
+
+    #[test]
+    fn weak_slots_read_as_optional() {
+        let msg = first_error(r#"
+            ref struct N { value: int, weak parent: N }
+            fn main() { let n = N { value: 1 }; let v: int = n.parent.value; }
+        "#);
+        assert!(msg.contains("cannot access field 'value' on optional 'N?'"), "{}", msg);
+        assert!(check_source(r#"
+            ref struct N { value: int, weak parent: N }
+            fn main() {
+                let n = N { value: 1 };
+                if let p = n.parent { let v: int = p.value; }
+                let w: int = n.parent?.value ?? 0;
+                let mut q = N { value: 2 };
+                q.parent = n;
+            }
+        "#).is_ok());
+    }
+
+    #[test]
+    fn mutation_through_immutable_binding_is_an_error() {
+        let msg = first_error("ref struct N { value: int } fn main() { let n = N { value: 1 }; n.value = 2; }");
+        assert!(msg.contains("cannot mutate through immutable binding 'n'"), "{}", msg);
+        let msg = first_error("fn main() { let a: [int] = [1]; a[0] = 2; }");
+        assert!(msg.contains("cannot mutate through immutable binding 'a'"), "{}", msg);
+        assert!(check_source("ref struct N { value: int } fn main() { let mut n = N { value: 1 }; n.value = 2; }").is_ok());
+    }
+
+    #[test]
+    fn throw_requires_an_error_type_and_a_throwing_context() {
+        let msg = first_error("fn f() throws { throw 1; }");
+        assert!(msg.contains("does not conform to protocol Error"), "{}", msg);
+        let msg = first_error("ref struct E { } fn f() throws { throw E { }; }");
+        assert!(msg.contains("does not conform to protocol Error"), "{}", msg);
+        let msg = first_error("ref struct E { } extension E: Error { } fn f() { throw E { }; }");
+        assert!(msg.contains("'throw' in function 'f' which is not declared 'throws'"), "{}", msg);
+        assert!(check_source("ref struct E { } extension E: Error { } fn f() throws { throw E { }; }").is_ok());
+        assert!(check_source("ref struct E { } extension E: Error { } fn f() { try { throw E { }; } catch e { } }").is_ok());
+    }
+
+    #[test]
+    fn throwing_calls_need_try_and_vice_versa() {
+        let base = "ref struct E { } extension E: Error { } fn risky() throws -> int { return 1; } fn safe() -> int { return 2; }";
+        let msg = first_error(&format!("{} fn main() {{ let v = risky(); }}", base));
+        assert!(msg.contains("call to throwing function 'risky' must be marked with 'try'"), "{}", msg);
+        let msg = first_error(&format!("{} fn main() {{ try {{ let v = try safe(); }} catch e {{ }} }}", base));
+        assert!(msg.contains("'try' applied to a call of 'safe', which does not throw"), "{}", msg);
+        let msg = first_error(&format!("{} fn main() {{ let v = try risky(); }}", base));
+        assert!(msg.contains("'try' in function 'main' which is not declared 'throws'"), "{}", msg);
+        assert!(check_source(&format!("{} fn g() throws -> int {{ return try risky(); }}", base)).is_ok());
+        assert!(check_source(&format!("{} fn main() {{ try {{ let v = try risky(); }} catch e {{ }} }}", base)).is_ok());
+    }
+
+    #[test]
+    fn catch_patterns_bind_typed_errors() {
+        let base = "ref struct E { code: int } extension E: Error { } fn risky() throws { throw E { code: 1 }; }";
+        assert!(check_source(&format!("{} fn main() {{ try {{ try risky(); }} catch e as E {{ let c: int = e.code; }} }}", base)).is_ok());
+        let msg = first_error(&format!("{} fn main() {{ try {{ try risky(); }} catch e {{ let c: int = e.code; }} }}", base));
+        assert!(msg.contains("no field 'code'") || msg.contains("undefined struct 'Error'"), "{}", msg);
+        let msg = first_error(&format!("{} fn main() {{ try {{ try risky(); }} catch e as int {{ }} }}", base));
+        assert!(msg.contains("catch pattern type 'int' is not a 'ref struct'"), "{}", msg);
+    }
+
+    #[test]
+    fn main_cannot_throw() {
+        let msg = first_error("fn main() throws { }");
+        assert!(msg.contains("'main' cannot be declared 'throws'"), "{}", msg);
+    }
+
+    #[test]
+    fn map_types_and_optional_suffix_parse_and_check() {
+        assert!(check_source("fn f(m: [string: int], s: string?) -> int? { return nil; }").is_ok());
+        let msg = first_error("fn main() { let m: [string: int] = 1; }");
+        assert!(msg.contains("expected '[string: int]'") || msg.contains("Map<string, int>"), "{}", msg);
     }
 }
