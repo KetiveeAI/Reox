@@ -145,6 +145,17 @@ fn run(args: &cli::Args) -> Result<(), String> {
 }
 
 fn compile(args: &cli::Args) -> Result<(), String> {
+    // NeolyxOS binaries are built by the NeolyxOS SDK with its freestanding
+    // flags and linker script; handing the C to the host gcc would silently
+    // produce a Linux binary instead.
+    if args.target == cli::Target::Neolyx && args.emit != cli::EmitType::C {
+        eprintln!(
+            "error: --emit {} requires the NeolyxOS SDK; use --emit c",
+            if args.emit == cli::EmitType::Obj { "obj" } else { "exe" }
+        );
+        process::exit(2);
+    }
+
     let output_path = args.output.clone()
         .unwrap_or_else(|| {
             let stem = std::path::Path::new(&args.input)
@@ -154,7 +165,7 @@ fn compile(args: &cli::Args) -> Result<(), String> {
             format!("{}.c", stem)
         });
 
-    let c_code = match cli::compile_file(std::path::Path::new(&args.input)) {
+    let c_code = match cli::compile_file_for(std::path::Path::new(&args.input), args.target) {
         Ok((c_code, _sources)) => c_code,
         Err((diagnostics, sources)) => {
             cli::report_program_diagnostics(&sources, &diagnostics);

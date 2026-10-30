@@ -17,7 +17,7 @@
 | **Modules**           | Complete      | `import a.b.c;` resolves `a/b/c.rx` next to the entry file, then `stdlib/`; cycles and private access are diagnostics; `reoxc compile/run` take multi-file programs |
 | **C Runtime**         | Extensive     | 50+ files: UI widgets, animation system, transitions, themes, color system, SDL backend, FFI, accessibility, display, desktop integration           |
 | **Stdlib (.rx)**      | Extensive     | 649-line prelude with extern declarations for UI (views, widgets, forms, shapes, effects, media, state management, timers, platform API)            |
-| **CLI**               | Complete      | `reoxc compile`, `reoxc run`, `reoxc init`, `reoxc new`, `reoxc pkg`, project templates                                                             |
+| **CLI**               | Complete      | `reoxc compile`, `reoxc run`, `reoxc init`, `reoxc new`, `reoxc pkg`, project templates; `--target neolyx` emits freestanding C for the NeolyxOS SDK |
 | **Package Manager**   | Complete      | `reoxc pkg init/add/remove/install/list/publish`                                                                                                    |
 | **Benchmarks**        | Working       | Fibonacci benchmark comparing REOX vs C vs Rust                                                                                                     |
 | **VS Code Extension** | Working       | Syntax highlighting for `.rx`/`.reox` files                                                                                                         |

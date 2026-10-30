@@ -2,6 +2,10 @@
 #
 #   make                      -> librx_linux.a  (+ libreox_runtime.a compat copy)
 #   make PLATFORM=neolyx      -> librx_neolyx.a (freestanding, NeolyxOS flags)
+#   make neolyx / make linux  -> same as PLATFORM=..., the spelling the
+#                                NeolyxOS SDK uses (sdk/REOXC_REQUIREMENTS.md)
+#   make symcheck             -> fail if librx_neolyx.a needs a symbol outside
+#                                the NeolyxOS link contract
 #   make check                -> fail if core/ includes anything but the
 #                                four freestanding headers
 #   make clean
@@ -54,7 +58,7 @@ SRC := $(CORE_SRC) $(PLAT_SRC)
 OBJ := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRC))
 DEP := $(OBJ:.o=.d)
 
-.PHONY: all clean check sdl-visual
+.PHONY: all clean check sdl-visual neolyx linux symcheck
 
 all: $(LIB)
 
@@ -68,6 +72,32 @@ endif
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+neolyx:
+	$(MAKE) PLATFORM=neolyx NEOLYX_ROOT=$(NEOLYX_ROOT)
+
+linux:
+	$(MAKE) PLATFORM=linux
+
+# The NeolyxOS link contract: everything librx_neolyx.a references must be
+# defined inside it, or be one of the symbols the NeolyxOS SDK links in:
+# the heap (desktop/lib/nx_malloc.c), the libc subset (desktop/lib/libc_stubs.c,
+# sdk/crt/rx_mem_neolyx.c) and the nx_*/nxgfx_*/reox_* API of gui/nxrender_c.
+# nxsyscall.h wrappers are static inline and never appear here.
+NEOLYX_ALLOWED_EXTERNS := malloc free calloc realloc strlen memcpy memset memmove \
+                          memcmp strcmp strncmp strdup nx_malloc nx_mfree
+symcheck:
+	$(MAKE) PLATFORM=neolyx NEOLYX_ROOT=$(NEOLYX_ROOT)
+	@nm -u librx_neolyx.a | awk '{print $$2}' | sort -u > build/neolyx/undefined.txt
+	@nm --defined-only librx_neolyx.a | awk 'NF==3 {print $$3}' | sort -u > build/neolyx/defined.txt
+	@bad=$$(comm -23 build/neolyx/undefined.txt build/neolyx/defined.txt \
+	    | grep -vxE '$(subst $(eval) ,|,$(NEOLYX_ALLOWED_EXTERNS))' \
+	    | grep -vE '^(nx_|nxgfx_|reox_)' || true); \
+	if [ -n "$$bad" ]; then \
+	    echo "make symcheck: librx_neolyx.a needs symbols outside the NeolyxOS contract:"; \
+	    echo "$$bad"; exit 1; \
+	fi; \
+	echo "make symcheck: librx_neolyx.a external symbols are within the NeolyxOS contract"
 
 # Standalone SDL2 + SDL_ttf visual harness (Linux only, not part of the
 # archive because it redefines the print/UI wrapper symbols).

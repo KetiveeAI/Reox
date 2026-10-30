@@ -35,6 +35,38 @@ pub struct Args {
     pub verbose: bool,
     pub runtime_path: Option<String>,
     pub run: bool,
+    pub target: Target,
+}
+
+/// Platform the generated C is built for.
+///
+/// `Host` keeps the hosted prologue (`reox_runtime.h` plus the NXRender
+/// bridge) that links against `librx_linux.a`. `Neolyx` emits C for the
+/// NeolyxOS freestanding userspace: only `<stdint.h>`, `<stdbool.h>`,
+/// `<stddef.h>` and `rx_core.h`, linked against `librx_neolyx.a` by the
+/// NeolyxOS SDK (`sdk/reox.mk`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Target {
+    #[default]
+    Host,
+    Neolyx,
+}
+
+impl Target {
+    pub fn parse(name: &str) -> Result<Target, String> {
+        match name {
+            "host" => Ok(Target::Host),
+            "neolyx" | "neolyxos" => Ok(Target::Neolyx),
+            other => Err(format!("unknown target: '{}' (expected host or neolyx)", other)),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Target::Host => "host",
+            Target::Neolyx => "neolyx",
+        }
+    }
 }
 
 /// Output type
@@ -175,6 +207,7 @@ fn parse_compile_args(args: &[String]) -> Result<Args, String> {
     let mut verbose = false;
     let mut runtime_path: Option<String> = None;
     let mut run = false;
+    let mut target = Target::Host;
 
     let mut i = 0;
     while i < args.len() {
@@ -199,6 +232,16 @@ fn parse_compile_args(args: &[String]) -> Result<Args, String> {
                     "exe" => EmitType::Exe,
                     other => return Err(format!("unknown emit type: {}", other)),
                 };
+            }
+            "--target" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("expected target after --target".to_string());
+                }
+                target = Target::parse(&args[i])?;
+            }
+            other if other.starts_with("--target=") => {
+                target = Target::parse(&other["--target=".len()..])?;
             }
             "-O0" => opt_level = OptLevel::O0,
             "-O1" => opt_level = OptLevel::O1,
@@ -262,6 +305,7 @@ fn parse_compile_args(args: &[String]) -> Result<Args, String> {
         verbose,
         runtime_path,
         run,
+        target,
     })
 }
 
@@ -348,6 +392,8 @@ pub fn print_usage() {
     println!("COMPILE OPTIONS:");
     println!("    -o, --output <FILE>    Output file path");
     println!("    --emit <TYPE>          Output type: c, obj, exe (default: c)");
+    println!("    --target <TARGET>      host (default) or neolyx (freestanding NeolyxOS C;");
+    println!("                           only --emit c, built by the NeolyxOS SDK)");
     println!();
     println!("  Optimization:");
     println!("    -O0                    No optimization");
@@ -371,6 +417,7 @@ pub fn print_usage() {
     println!("    reoxc main.rx -o main.c              Generate C code");
     println!("    reoxc app.reox --emit exe -o app     Compile to executable");
     println!("    reoxc main.rx --emit exe -O3 --lto   Full optimization");
+    println!("    reoxc compile --emit c --target neolyx -o app.c app.rx");
     println!();
     println!("FILE EXTENSIONS:");
     println!("    .rx      REOX source file (short form)");
@@ -390,8 +437,13 @@ pub fn check_source(source: &str) -> Result<Ast, Vec<Diagnostic>> {
 
 /// Run the whole compiler over `source` and return the generated C code.
 pub fn compile_source(source: &str) -> Result<String, Vec<Diagnostic>> {
+    compile_source_for(source, Target::Host)
+}
+
+/// `compile_source` for an explicit target.
+pub fn compile_source_for(source: &str, target: Target) -> Result<String, Vec<Diagnostic>> {
     let ast = check_source(source)?;
-    crate::codegen::generate_string(&ast).map_err(|e| vec![Diagnostic::from(e)])
+    crate::codegen::generate_string_for(&ast, target).map_err(|e| vec![Diagnostic::from(e)])
 }
 
 /// Load the program rooted at `path` (resolving every `import`) and run the
@@ -417,8 +469,13 @@ fn check_program(program: modules::Program) -> Result<(Ast, SourceMap), (Vec<Dia
 
 /// Compile the program rooted at `path` and its imports to C.
 pub fn compile_file(path: &Path) -> Result<(String, SourceMap), (Vec<Diagnostic>, SourceMap)> {
+    compile_file_for(path, Target::Host)
+}
+
+/// `compile_file` for an explicit target.
+pub fn compile_file_for(path: &Path, target: Target) -> Result<(String, SourceMap), (Vec<Diagnostic>, SourceMap)> {
     let (ast, sources) = check_file(path)?;
-    match crate::codegen::generate_string(&ast) {
+    match crate::codegen::generate_string_for(&ast, target) {
         Ok(c) => Ok((c, sources)),
         Err(e) => Err((vec![Diagnostic::from(e)], sources)),
     }
@@ -562,5 +619,42 @@ mod tests {
         let c = compile_source("fn main() -> int { return 42; }").expect("compiles");
         assert!(c.contains("int main(void)"));
         assert!(c.contains("return (int)(42);"));
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn target_defaults_to_host() {
+        let a = parse_compile_args(&strings(&["app.rx"])).expect("parses");
+        assert_eq!(a.target, Target::Host);
+    }
+
+    #[test]
+    fn target_flag_selects_neolyx() {
+        let a = parse_compile_args(&strings(&["--emit", "c", "--target", "neolyx", "-o", "a.c", "app.rx"])).expect("parses");
+        assert_eq!(a.target, Target::Neolyx);
+        assert_eq!(a.output.as_deref(), Some("a.c"));
+        let b = parse_compile_args(&strings(&["--target=neolyx", "app.rx"])).expect("parses");
+        assert_eq!(b.target, Target::Neolyx);
+    }
+
+    #[test]
+    fn target_flag_rejects_unknown_and_missing_values() {
+        let e = parse_compile_args(&strings(&["--target", "windows", "app.rx"])).expect_err("unknown target");
+        assert!(e.contains("unknown target"), "{}", e);
+        assert!(parse_compile_args(&strings(&["app.rx", "--target"])).is_err());
+    }
+
+    #[test]
+    fn neolyx_prologue_is_freestanding() {
+        let c = compile_source_for("fn main() -> int { return 0; }", Target::Neolyx).expect("compiles");
+        assert!(c.contains("#include \"rx_core.h\""));
+        for hosted in ["reox_runtime.h", "reox_nxrender_bridge.h", "<stdio.h>", "<stdlib.h>", "<string.h>", "<setjmp.h>"] {
+            assert!(!c.contains(hosted), "neolyx C must not include {}", hosted);
+        }
+        let host = compile_source("fn main() -> int { return 0; }").expect("compiles");
+        assert!(host.contains("#include \"reox_runtime.h\""));
     }
 }
