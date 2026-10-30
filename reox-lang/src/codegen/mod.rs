@@ -23,6 +23,7 @@ use crate::parser::{
     VariantDecl, ProtocolDecl, ExtensionDecl, LayerDecl, PanelDecl,
     ConstDecl, TypealiasDecl, Pattern, MatchArm,
 };
+use crate::cli::Target;
 use crate::lexer::Span;
 use std::collections::HashMap;
 use std::io::Write;
@@ -233,10 +234,16 @@ pub struct CodeGen {
     stmt_temps: Vec<(String, CType)>,
     hoisted: HashMap<String, CType>,
     label_counter: usize,
+    target: Target,
 }
 
 impl CodeGen {
     pub fn new() -> Self {
+        Self::for_target(Target::Host)
+    }
+
+    /// A generator whose prologue matches `target` (see `cli::Target`).
+    pub fn for_target(target: Target) -> Self {
         Self {
             output: String::new(),
             indent: 0,
@@ -262,6 +269,7 @@ impl CodeGen {
             stmt_temps: Vec::new(),
             hoisted: HashMap::new(),
             label_counter: 0,
+            target,
         }
     }
 
@@ -629,8 +637,17 @@ impl CodeGen {
         self.emit_line("#include <stdint.h>");
         self.emit_line("#include <stdbool.h>");
         self.emit_line("#include <stddef.h>");
-        self.emit_line("#include \"reox_runtime.h\"");
-        self.emit_line("#include \"reox_nxrender_bridge.h\"");  // NXRender integration
+        match self.target {
+            Target::Host => {
+                self.emit_line("#include \"reox_runtime.h\"");
+                self.emit_line("#include \"reox_nxrender_bridge.h\"");  // NXRender integration
+            }
+            Target::Neolyx => {
+                // Freestanding: rx_core.h is the language runtime and the
+                // rx_platform.h contract, nothing hosted (sdk/reox.mk).
+                self.emit_line("#include \"rx_core.h\"");
+            }
+        }
         self.emit_line("");
 
         // Forward declarations for structs and variants
@@ -1120,7 +1137,7 @@ impl CodeGen {
                 format!("{} {}", c, field)
             }).collect();
             let params_str = if params.is_empty() { "void".to_string() } else { params.join(", ") };
-            self.emit_line(&format!("static {0}* {0}__make({1}) {{", name, params_str));
+            self.emit_line(&format!("static inline {0}* {0}__make({1}) {{", name, params_str));
             self.indent();
             self.emit_line(&format!("{0}* o = ({0}*)rx_calloc(1, sizeof({0}));", name));
             self.emit_line(&format!("if (!o) rx_panic(\"out of memory allocating {}\");", name));
@@ -3571,16 +3588,21 @@ const CODEGEN_STACK_BYTES: usize = 64 * 1024 * 1024;
 /// Generate C code from AST as a string. Code generation recurses over the
 /// expression tree, so it runs on a thread with room for `MAX_EXPR_DEPTH` levels.
 pub fn generate_string(ast: &Ast) -> Result<String, CodegenError> {
+    generate_string_for(ast, Target::Host)
+}
+
+/// `generate_string` with the prologue for `target`.
+pub fn generate_string_for(ast: &Ast, target: Target) -> Result<String, CodegenError> {
     std::thread::scope(|scope| {
         let worker = std::thread::Builder::new()
             .name("reox-codegen".to_string())
             .stack_size(CODEGEN_STACK_BYTES)
-            .spawn_scoped(scope, || CodeGen::new().generate(ast));
+            .spawn_scoped(scope, || CodeGen::for_target(target).generate(ast));
         match worker {
             Ok(handle) => handle.join().unwrap_or_else(|_| {
                 Err(CodegenError::new("code generator thread terminated unexpectedly", Span::default()))
             }),
-            Err(_) => CodeGen::new().generate(ast),
+            Err(_) => CodeGen::for_target(target).generate(ast),
         }
     })
 }

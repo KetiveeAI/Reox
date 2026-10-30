@@ -37,11 +37,19 @@ runtime/
 make                    # librx_linux.a (+ libreox_runtime.a compatibility copy)
 make PLATFORM=neolyx    # librx_neolyx.a with the NeolyxOS userspace flags
 make check              # fail if core/ includes a libc or OS header
+make neolyx / make linux   # same as PLATFORM=..., the spelling the NeolyxOS SDK uses
+make symcheck           # fail if librx_neolyx.a needs a symbol outside the
+                        # NeolyxOS link contract (heap, libc subset, nxrender API)
 make test               # host tests (Linux)
 ```
 
 `NEOLYX_ROOT` (default `/home/swa/NEOLYXOS/neolyx-os`) points at the NeolyxOS
 checkout for `desktop/include` and `gui/nxrender_c/include`.
+
+Programs compiled with `reoxc compile --target neolyx` include only
+`<stdint.h>`, `<stdbool.h>`, `<stddef.h>` and `rx_core.h`, and build with
+`-Icore -Iplatform`; the NeolyxOS SDK (`sdk/reox.mk` in the NeolyxOS repo)
+links them against `librx_neolyx.a`.
 
 Both targets build warning-free with `-Wall -Wextra`. The NeolyxOS target adds
 `-fno-tree-loop-distribute-patterns` so GCC never rewrites the runtime's own
