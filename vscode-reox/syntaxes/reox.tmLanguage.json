@@ -112,7 +112,7 @@
                 },
                 {
                     "name": "keyword.declaration.reox",
-                    "match": "\\b(fn|let|struct|variant|kind|layer|panel|action|signal|emit|extern|import|async|await|protocol|extension|typealias)\\b"
+                    "match": "\\b(fn|let|struct|variant|layer|panel|action|signal|emit|extern|import|async|await|protocol|extension|typealias)\\b"
                 },
                 {
                     "name": "keyword.modifier.reox",
@@ -124,11 +124,11 @@
                 },
                 {
                     "name": "constant.language.null.reox",
-                    "match": "\\b(null|none|nil|maybe)\\b"
+                    "match": "\\b(nil|maybe)\\b"
                 },
                 {
                     "name": "keyword.other.reox",
-                    "match": "\\b(self|super|as|bind)\\b"
+                    "match": "\\bself\\b"
                 },
                 {
                     "name": "keyword.gesture.reox",
@@ -140,11 +140,11 @@
             "patterns": [
                 {
                     "name": "storage.type.primitive.reox",
-                    "match": "\\b(int|float|bool|string|void|char|byte)\\b"
+                    "match": "\\b(int|float|bool|string|void)\\b"
                 },
                 {
                     "name": "storage.type.sized.reox",
-                    "match": "\\b(int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64)\\b"
+                    "match": "\\b(i8|u8|i16|u16|i32|u32|i64|u64|usize)\\b"
                 },
                 {
                     "name": "entity.name.type.reox",

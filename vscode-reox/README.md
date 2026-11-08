@@ -11,10 +11,10 @@
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=ketiveeai.reox-language">
-    <img src="https://img.shields.io/badge/VS%20Marketplace-v1.2.1-blue?style=flat-square&logo=visual-studio-code" alt="VS Marketplace" />
+    <img src="https://img.shields.io/badge/VS%20Marketplace-v1.3.1-blue?style=flat-square&logo=visual-studio-code" alt="VS Marketplace" />
   </a>
   <a href="https://open-vsx.org/extension/ketiveeai/reox-language">
-    <img src="https://img.shields.io/badge/Open%20VSX-v1.2.1-purple?style=flat-square&logo=eclipse" alt="Open VSX" />
+    <img src="https://img.shields.io/badge/Open%20VSX-v1.3.1-purple?style=flat-square&logo=eclipse" alt="Open VSX" />
   </a>
   <a href="https://reox.ketivee.com">
     <img src="https://img.shields.io/badge/docs-online-green?style=flat-square" alt="Documentation" />
@@ -25,13 +25,13 @@
 
 ## Overview
 
-**REOX** is a statically-typed, declarative programming language designed specifically for **NeolyxOS**. It combines the expressive power of modern UI composition (inspired by SwiftUI) with the predictable, system-level performance of C/C++.
+**REOX** is a statically typed language and C transpiler with declarative UI syntax and a NeolyxOS focus. The repository includes compiler and runtime components, while production NeolyxOS SDK integration remains in progress.
 
 Reox is built to be:
 
-- **Native**: Directly integrates with NeolyxOS rendering primitives.
-- **Safe**: Strong typing and memory safety features.
-- **Fast**: Compiles to optimized native machine code (LLVM/C backend).
+- **NeolyxOS-focused**: Includes UI declarations and runtime/FFI components for platform integration.
+- **Typed**: The compiler checks supported declarations and expressions before C generation.
+- **Fast**: Generates C for native compilation with a system C toolchain.
 - **AI-First**: First-class support for AI model integration.
 
 ## Why Reox?
@@ -49,10 +49,11 @@ Reox is built to be:
 
 - 🎨 **Declarative UI**: Build interfaces with a composable, intuitive syntax.
 - 🔒 **Strong Typing**: Catch errors at compile-time with type inference.
-- ⚡ **Async/Await**: Native asynchronous programming for non-blocking operations.
-- 🚀 **Zero Dependencies**: Standard library includes everything you need.
-- 🤖 **AI Integration**: Built-in keywords for defining AI assistants and contexts.
+- ⚡ **Async/Await syntax**: Language support is present; runtime scheduling support depends on the target integration.
+- 🧰 **Editor support**: VS Code syntax highlighting, completions, snippets, and selected hover documentation.
+- 🤖 **AI Integration**: Interpreter and library AI helpers are available where configured.
 - 🌙 **Dark Theme**: Includes a custom VS Code theme optimized for Reox.
+- 🎨 **Two branded editor themes**: REOX Obsidian Purple and REOX Ketivee Light.
 
 ---
 
