@@ -1,3 +1,19 @@
+## [1.3.1] - 2026-11-08
+
+### Added
+- **REOX Obsidian Purple** dark theme with espresso-black surfaces and purple syntax accents.
+- **REOX Ketivee Light** theme with high-contrast dark text and the purple/blue palette from the project logo.
+
+### Updated
+- Registered both themes in the extension and updated release metadata to 1.3.1.
+
+### Changed
+- Aligned completion and syntax token lists with reoxc 1.1.1: `variant`, `nil`, `maybe`, and supported sized integer types (`i8` through `u64`, plus `usize`).
+- Removed legacy tokens and type spellings that the current lexer does not define.
+- Documented the compiler version targeted by this extension.
+
+---
+
 ## [1.3.0] - 2026-10-26
 
 ### Added

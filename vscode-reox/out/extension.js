@@ -196,20 +196,19 @@ function registerFallbackProviders(context) {
             ];
             // Declaration keywords
             const declarations = [
-                'fn', 'let', 'struct', 'kind', 'layer', 'panel', 'action', 'signal', 'emit',
-                'extern', 'import', 'async', 'await', 'protocol', 'extension', 'typealias', 'variant'
+                'fn', 'let', 'struct', 'variant', 'layer', 'panel', 'action', 'signal', 'emit',
+                'extern', 'import', 'async', 'await', 'protocol', 'extension', 'typealias'
             ];
             // Modifiers
             const modifiers = ['mut', 'pub', 'const', 'static', 'effect'];
             // Gesture keywords (REOX-specific)
             const gestures = ['gesture', 'on_tap', 'on_pan', 'on_swipe', 'on_pinch', 'on_rotate'];
             // Other keywords
-            const otherKeywords = ['self', 'super', 'as', 'bind', 'nil', 'none', 'null', 'maybe', 'true', 'false'];
+            const otherKeywords = ['self', 'as', 'nil', 'maybe', 'true', 'false'];
             // Native types
             const types = [
-                'int', 'float', 'bool', 'string', 'void', 'char', 'byte',
-                'int8', 'int16', 'int32', 'int64', 'uint8', 'uint16', 'uint32', 'uint64',
-                'float32', 'float64'
+                'int', 'float', 'bool', 'string', 'void',
+                'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64', 'usize'
             ];
             // Built-in functions (Standard Library)
             const builtins = [
