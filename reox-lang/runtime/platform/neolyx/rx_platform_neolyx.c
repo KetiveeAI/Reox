@@ -326,9 +326,12 @@ int rx_plat_fb_flip(const void* backbuffer) {
 int rx_plat_input_poll(rx_plat_input_event_t* ev) {
     if (!ev) return RX_PLAT_EINVAL;
     input_event_t raw;
-    raw.type = 0; raw.timestamp = 0;
-    raw.mouse.dx = 0; raw.mouse.dy = 0; raw.mouse.buttons = 0;
-    raw.mouse._pad[0] = raw.mouse._pad[1] = raw.mouse._pad[2] = 0;
+    /* Zero every byte: the kernel's event layout has grown fields (wheel)
+     * where this code once wrote padding, so name no field here. */
+    {
+        volatile uint8_t* b = (volatile uint8_t*)&raw;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(raw); i++) b[i] = 0;
+    }
     int rc = nx_input_poll(&raw);
     if (rc < 0) return rx_nx_err(rc);
     if (rc == 0) return 0;

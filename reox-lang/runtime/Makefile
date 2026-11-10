@@ -48,6 +48,7 @@ else ifeq ($(PLATFORM),neolyx)
               -ffreestanding -fno-stack-protector -mno-red-zone -nostdlib \
               -D__NEOLYXOS__ -fno-tree-loop-distribute-patterns \
               -I$(NEOLYX_ROOT)/desktop/include \
+              -I$(NEOLYX_ROOT)/kernel/include/core \
               -I$(NEOLYX_ROOT)/gui/nxrender_c/include
   PLAT_SRC := $(sort $(wildcard platform/neolyx/*.c))
 else
